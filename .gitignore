@@ -9,7 +9,6 @@ __pycache__/
 *.parquet
 *.hdf5
 *.zip
-*.txt
 data/*
 
 # C extensions
