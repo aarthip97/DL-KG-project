@@ -336,11 +336,11 @@ class LakhMSDLinker:
     match_scores_path : str | Path | None
         Path to ``match_scores.json``.  If *None*, no score filtering is done.
     min_score : float
-        DTW match score threshold.  Tracks with *all* candidates above this
-        value are dropped.  Default ``0.70`` keeps ≈ 50 % of the dataset.
-        **Lower score = better match.**
+        DTW match score threshold.  Tracks with *all* candidates below this
+        value are dropped.  Default ``0.55`` keeps ≈ 50 % of the dataset.
+        **Higher score = better match.**
     pick_midi : ``'best'`` | ``'all'``
-        ``'best'``  → one row per track (lowest score MIDI).
+        ``'best'``  → one row per track (highest score MIDI).
         ``'all'``   → one row per (track, MIDI candidate).
     """
 
@@ -349,7 +349,7 @@ class LakhMSDLinker:
         midi_root: str | pathlib.Path,
         h5_root:   str | pathlib.Path,
         match_scores_path: Optional[str | pathlib.Path] = None,
-        min_score: float = 0.70,
+        min_score: float = 0.55,
         pick_midi: str   = 'best',
     ):
         self.midi_root  = pathlib.Path(midi_root)
@@ -393,7 +393,7 @@ class LakhMSDLinker:
               'midi_paths': [(midi_path, score), ...]   sorted best-first
             }
 
-        Tracks whose best MIDI candidate exceeds ``self.min_score`` are
+        Tracks whose best MIDI candidate falls below ``self.min_score`` are
         excluded (when ``match_scores`` is loaded).
         """
         records   = []
@@ -423,11 +423,11 @@ class LakhMSDLinker:
                 sc  = scores.get(md5, float('inf'))
                 midi_with_scores.append((m, sc))
 
-            # sort by score ascending (lower = better)
-            midi_with_scores.sort(key=lambda x: x[1])
+            # sort by score descending (higher = better)
+            midi_with_scores.sort(key=lambda x: x[1], reverse=True)
 
-            # filter: skip if even the best candidate is above threshold
-            if self.match_scores and midi_with_scores[0][1] > self.min_score:
+            # filter: skip if even the best candidate is below threshold
+            if self.match_scores and midi_with_scores[0][1] < self.min_score:
                 continue
 
             records.append({
