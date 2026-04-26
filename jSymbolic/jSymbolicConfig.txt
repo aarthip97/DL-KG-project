@@ -4,7 +4,7 @@ window_overlap=0.0
 save_features_for_each_window=false
 save_overall_recording_features=true
 convert_to_arff=false
-convert_to_csv=false
+convert_to_csv=true
 <features_to_extract>
 Basic Pitch Histogram
 Pitch Class Histogram
