@@ -406,7 +406,7 @@ Uses mrc:Track (not mo:Track) as the range, since mo:Track represents a MusicalI
 in the FRBR sense (a manifestation-item), while mrc:Track represents a concrete musical track as encountered in datasets such as the MSD.
 Domain: mo:Performance  —  Range: mrc:Track (typically mrc:MSDTrack)."""@en ;
              rdfs:isDefinedBy <http://purl.org/ontology/mrc/> ;
-             rdfs:label "has track"@en ;
+             rdfs:label "has track"@en .
 
 
 #################################################################
