@@ -290,6 +290,7 @@ mo:musicbrainz rdf:type owl:ObjectProperty ;
                rdfs:label "musicbrainz" ;
                vs:term_status "stable" .
 
+               
 
 ###  http://purl.org/ontology/mo/performed
 mo:performed rdf:type owl:ObjectProperty ;
@@ -304,7 +305,6 @@ mo:performed rdf:type owl:ObjectProperty ;
              rdfs:label "performed" ;
              vs:term_status "unstable" .
 
-
 ###  http://purl.org/ontology/mo/performer
 mo:performer rdf:type owl:ObjectProperty ;
              rdfs:subPropertyOf event:agent ;
@@ -314,16 +314,6 @@ mo:performer rdf:type owl:ObjectProperty ;
              rdfs:comment "Relates a performance to the performers involved" ;
              rdfs:isDefinedBy mo: ;
              vs:term_status "stable" .
-
-
-###  http://purl.org/ontology/mo/track
-mo:track rdf:type owl:ObjectProperty ;
-         mo:level "1" ;
-         rdfs:comment "Indicates a part of a musical manifestation - in this particular case, a track. NOTE: Not used in MRC; replaced by mrc:hasTrack → mrc:Track." ;
-         rdfs:isDefinedBy mo: ;
-         rdfs:label "track" ;
-         owl:deprecated "true"^^xsd:boolean ;
-         vs:term_status "stable" .
 
 ###  http://purl.org/ontology/mrc/hasChordFeature
 mrc:hasChordFeature rdf:type owl:ObjectProperty ;
@@ -413,28 +403,10 @@ mrc:hasTrack rdf:type owl:ObjectProperty ;
              rdfs:range mrc:Track ;
              rdfs:comment """Links a Performance to the MRC Track that results from it.
 Uses mrc:Track (not mo:Track) as the range, since mo:Track represents a MusicalItem
-in the FRBR sense (a manifestation-item), while mrc:Track represents a concrete
-audio/MIDI track as encountered in datasets such as the MSD.
+in the FRBR sense (a manifestation-item), while mrc:Track represents a concrete musical track as encountered in datasets such as the MSD.
 Domain: mo:Performance  —  Range: mrc:Track (typically mrc:MSDTrack)."""@en ;
              rdfs:isDefinedBy <http://purl.org/ontology/mrc/> ;
              rdfs:label "has track"@en ;
-             vs:term_status "stable" .
-
-
-
-###  http://purl.org/ontology/mrc/wikidataGenre
-mrc:wikidataGenre rdf:type owl:ObjectProperty ;
-                  rdfs:domain mrc:Genre ;
-                  rdfs:range owl:Thing ;
-                  rdfs:comment """Links an mrc:Genre to its corresponding Wikidata entity (e.g.
-wd:Q11401 for 'blues') to enable genre hierarchy traversal via Wikidata's
-subgenre/supergenre relations. Populated in a later iteration."""@en ;
-                  rdfs:isDefinedBy <http://purl.org/ontology/mrc/> ;
-                  rdfs:label "Wikidata genre"@en .
-
-
-###  http://purl.org/vocab/bio/0.1/event
-bio:event rdf:type owl:ObjectProperty .
 
 
 #################################################################
