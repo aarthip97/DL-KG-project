@@ -29,3 +29,6 @@ jupyterlab>=4.0
 
 # ── Dev utilities ─────────────────────────────────────────────────────────────
 scikit-learn>=1.4       # PCA, cosine similarity helpers
+
+# ── Experiment tracking (optional — code guards the import) ──────────────────
+wandb>=0.16
