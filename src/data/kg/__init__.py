@@ -48,4 +48,5 @@ from .listening import (  # noqa: F401
     user_uri,
     add_listening_schema,
     add_users_to_graph,
+    stream_users_to_ntriples,
 )

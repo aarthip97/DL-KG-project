@@ -263,8 +263,204 @@ def add_users_to_graph(
     return counts
 
 
+# ── Streaming sidecar variant (RAM-friendly) ──────────────────────────────
+# Listening events are write-only: nothing else in the build pipeline queries
+# them. So instead of materialising ~11 M extra rdflib triples in RAM, we
+# append them straight to a sidecar N-Triples file. Downstream notebooks
+# load it back into a Graph with `g.parse(sidecar, format="nt")` (or use
+# the union of the base TTL + the sidecar in their own store).
+#
+# RAM cost drops from O(n_rows) to O(n_unique_users) — only the user-seen
+# set stays in memory, and one Python str per ~n_buffer triples in the
+# write buffer.
+
+# Constants used by the N-Triples writer.
+_RDF_TYPE_NT      = "<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>"
+_FOAF_AGENT_NT    = "<http://xmlns.com/foaf/0.1/Agent>"
+_FOAF_NAME_NT     = "<http://xmlns.com/foaf/0.1/name>"
+_DCT_ID_NT        = "<http://purl.org/dc/terms/identifier>"
+_XSD_INTEGER_NT   = "<http://www.w3.org/2001/XMLSchema#integer>"
+
+def _esc_nt_literal(s: str) -> str:
+    """Escape a Python string for use inside an N-Triples literal."""
+    return (
+        s.replace("\\", "\\\\")
+         .replace("\"", "\\\"")
+         .replace("\n", "\\n")
+         .replace("\r", "\\r")
+         .replace("\t", "\\t")
+    )
+
+
+def stream_users_to_ntriples(
+    builder: KGBuilder,
+    taste: pd.DataFrame,
+    sidecar_path,
+    *,
+    song_to_track: Optional[Mapping[str, str]] = None,
+    merged: Optional[pd.DataFrame] = None,
+    user_col: str = "user_id",
+    song_col: str = "song_id",
+    count_col: str = "play_count",
+    simple: Optional[bool] = None,
+    batch_size: int = 100_000,
+    flush_every: int = 1_000_000,
+    verbose: bool = True,
+) -> dict[str, int]:
+    """Append listening interactions to a **sidecar N-Triples file** instead
+    of growing ``builder.g``.
+
+    This is the RAM-friendly version of :func:`add_users_to_graph` — use it
+    when the rich (4 triples/row) variant would otherwise OOM. Listening
+    events are pure data leaves, so leaving them out of the in-memory graph
+    is safe; downstream code that needs them can load the sidecar with
+    ``rdflib.Graph().parse(sidecar_path, format="nt")``.
+
+    The schema declarations (``mrc:ListeningEvent`` etc.) are still written
+    onto ``builder.g`` so the populated TTL remains self-describing.
+
+    Parameters mirror :func:`add_users_to_graph`. Two extras:
+
+    sidecar_path : path to the ``.nt`` file. Will be **overwritten** at the
+        start of the call (one fold = one sidecar).
+    flush_every : flush the write buffer to disk every N triples (defaults
+        to 1 M; tune down on slow disks).
+    """
+    from pathlib import Path
+    sidecar_path = Path(sidecar_path)
+
+    required = {user_col, song_col, count_col}
+    missing = required - set(taste.columns)
+    if missing:
+        raise KeyError(f"taste profile missing columns: {missing}")
+
+    use_simple = bool(getattr(builder, "simple", False)) if simple is None else bool(simple)
+
+    # Always declare the schema on the in-memory graph so consumers can
+    # discover the predicates by introspecting the populated TTL alone.
+    if not use_simple:
+        add_listening_schema(builder)
+    else:
+        g = builder.g
+        p = MRC["listenedTo"]
+        g.add((p, RDF.type, OWL.ObjectProperty))
+        g.add((p, RDFS.domain, MRC["Listener"]))
+        g.add((p, RDFS.range,  MRC["Track"]))
+        g.add((p, RDFS.label,  Literal("listened to", lang="en")))
+
+    # song_id -> track_id lookup
+    if song_to_track is None:
+        if merged is None:
+            raise ValueError(
+                "stream_users_to_ntriples: provide either song_to_track or merged."
+            )
+        s2t = (
+            merged[["song_id", "track_id"]]
+            .dropna()
+            .drop_duplicates(subset="song_id")
+        )
+        song_to_track = dict(zip(s2t["song_id"].astype(str),
+                                 s2t["track_id"].astype(str)))
+
+    # Pre-resolve N-Triples constants for the predicates we'll emit.
+    LISTENER_NT     = f"<{MRC['Listener']}>"
+    LISTENED_TO_NT  = f"<{MRC['listenedTo']}>"
+    HAS_INTER_NT    = f"<{MRC['hasListeningInteraction']}>"
+    LISTEN_EVENT_NT = f"<{MRC['ListeningEvent']}>"
+    ON_TRACK_NT     = f"<{MRC['onTrack']}>"
+    LISTEN_COUNT_NT = f"<{MRC['listenCount']}>"
+
+    counts = {"listeners": 0, "interactions": 0, "orphan_songs": 0}
+    seen_users: set[str] = set()
+    n_rows = len(taste)
+
+    taste_view = taste[[user_col, song_col, count_col]]
+
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    buf: list[str] = []
+    bnode_counter = 0
+
+    progress = tqdm(
+        total=n_rows,
+        desc="listening→nt",
+        unit="row",
+        unit_scale=True,
+        disable=not verbose,
+        leave=True,
+    )
+
+    try:
+        with open(sidecar_path, "w", encoding="utf-8") as fout:
+            for chunk_start in range(0, n_rows, max(batch_size, 1)):
+                chunk = taste_view.iloc[chunk_start : chunk_start + batch_size]
+                for uid, sid, plays in chunk.itertuples(index=False, name=None):
+                    if pd.isna(uid) or pd.isna(sid) or pd.isna(plays):
+                        progress.update(1)
+                        continue
+                    track_id = song_to_track.get(str(sid))
+                    if track_id is None:
+                        counts["orphan_songs"] += 1
+                        progress.update(1)
+                        continue
+
+                    user_uri_str = str(user_uri(uid))
+                    user_nt      = f"<{user_uri_str}>"
+                    track_nt     = f"<{builder.track_uri(track_id)}>"
+
+                    if user_uri_str not in seen_users:
+                        uid_lit = _esc_nt_literal(str(uid))
+                        buf.append(f"{user_nt} {_RDF_TYPE_NT} {LISTENER_NT} .\n")
+                        buf.append(f"{user_nt} {_RDF_TYPE_NT} {_FOAF_AGENT_NT} .\n")
+                        buf.append(f'{user_nt} {_FOAF_NAME_NT} "{uid_lit}" .\n')
+                        buf.append(f'{user_nt} {_DCT_ID_NT} "{uid_lit}" .\n')
+                        seen_users.add(user_uri_str)
+                        counts["listeners"] += 1
+
+                    if use_simple:
+                        buf.append(f"{user_nt} {LISTENED_TO_NT} {track_nt} .\n")
+                    else:
+                        bnode_counter += 1
+                        ev_nt = f"_:ev{bnode_counter}"
+                        buf.append(f"{user_nt} {HAS_INTER_NT} {ev_nt} .\n")
+                        buf.append(f"{ev_nt} {_RDF_TYPE_NT} {LISTEN_EVENT_NT} .\n")
+                        buf.append(f"{ev_nt} {ON_TRACK_NT} {track_nt} .\n")
+                        buf.append(
+                            f'{ev_nt} {LISTEN_COUNT_NT} '
+                            f'"{int(plays)}"^^{_XSD_INTEGER_NT} .\n'
+                        )
+                    counts["interactions"] += 1
+                    progress.update(1)
+
+                    if len(buf) >= flush_every:
+                        fout.write("".join(buf))
+                        buf.clear()
+
+                progress.set_postfix(
+                    listeners=counts["listeners"],
+                    interactions=counts["interactions"],
+                    orphan=counts["orphan_songs"],
+                    refresh=False,
+                )
+
+            # Final flush.
+            if buf:
+                fout.write("".join(buf))
+                buf.clear()
+    finally:
+        progress.close()
+
+    if verbose:
+        size_mb = sidecar_path.stat().st_size / 1024 / 1024
+        print(f"[listening→nt] wrote {counts['interactions']:,} interactions "
+              f"for {counts['listeners']:,} listeners "
+              f"(orphaned rows: {counts['orphan_songs']:,}) "
+              f"-> {sidecar_path} ({size_mb:,.1f} MiB)")
+    return counts
+
+
 __all__ = (
     "user_uri",
     "add_listening_schema",
     "add_users_to_graph",
+    "stream_users_to_ntriples",
 )
