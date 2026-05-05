@@ -33,11 +33,19 @@ import urllib.parse
 from typing import Iterable, Optional, Sequence
 
 import pandas as pd
+from tqdm.auto import tqdm
 
-from rdflib import Graph, Literal, Namespace, URIRef
-from rdflib.namespace import OWL, RDF, RDFS, XSD, FOAF as _FOAF
+from rdflib import BNode, Graph, Literal, Namespace, URIRef
+from rdflib.namespace import OWL, RDF, RDFS, SKOS, XSD, FOAF as _FOAF
 
 from .tempo_classes import TEMPO_CLASSES, classify_tempo
+
+
+# ConceptScheme URIs (kept here so kg_builder doesn't need to import the
+# wikidata module just to type a node as a SKOS concept).
+INSTRUMENT_SCHEME_URI = "http://purl.org/ontology/mrc/scheme/Instruments"
+GENRE_SCHEME_URI      = "http://purl.org/ontology/mrc/scheme/Genres"
+DECADE_SCHEME_URI     = "http://purl.org/ontology/mrc/scheme/Decades"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -134,6 +142,57 @@ def _iter_strings(v) -> list[str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Key / mode → URI maps (mirrors individuals declared in MusicRecSyst.ttl
+# under <http://purl.org/ontology/mrc/Key/...> and mrc:MajorMode / mrc:MinorMode)
+# ─────────────────────────────────────────────────────────────────────────────
+KEY_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+
+
+def _key_iri_frag(name: str) -> str:
+    """Sharps are escaped as `_sharp` to match the TTL anchors."""
+    return name.replace("#", "_sharp")
+
+
+KEY_URI_MAP: dict[str, URIRef] = {
+    name: URIRef(f"http://purl.org/ontology/mrc/Key/{_key_iri_frag(name)}")
+    for name in KEY_NAMES
+}
+
+# Accept the canonical strings produced by ``dataset_extraction``
+# (`major`, `minor`) *and* the integer codes (1, 0) of raw MSD.
+MODE_URI_MAP: dict[object, URIRef] = {
+    "major": MRC["MajorMode"], "Major": MRC["MajorMode"], "MAJOR": MRC["MajorMode"],
+    "minor": MRC["MinorMode"], "Minor": MRC["MinorMode"], "MINOR": MRC["MinorMode"],
+    1: MRC["MajorMode"],
+    0: MRC["MinorMode"],
+}
+
+
+def _resolve_key_uri(value) -> Optional[URIRef]:
+    """Map an MSD key value (``'C'`` … ``'B'`` or 0–11) to a `mrc:Key/<x>` URI."""
+    if _is_missing(value):
+        return None
+    # numeric (incl. floats that round to ints, e.g. parquet)
+    if isinstance(value, (int,)) or (
+        isinstance(value, float) and float(value).is_integer()
+    ):
+        return KEY_URI_MAP[KEY_NAMES[int(value) % 12]]
+    return KEY_URI_MAP.get(str(value).strip())
+
+
+def _resolve_mode_uri(value) -> Optional[URIRef]:
+    """Map an MSD mode value (``'major'`` / ``'minor'`` or 1/0) to a Mode URI."""
+    if _is_missing(value):
+        return None
+    if isinstance(value, str):
+        return MODE_URI_MAP.get(value.strip())
+    try:
+        return MODE_URI_MAP.get(int(value))
+    except (TypeError, ValueError):
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Builder
 # ─────────────────────────────────────────────────────────────────────────────
 class KGBuilder:
@@ -154,7 +213,7 @@ class KGBuilder:
     """
 
     # Map of jSymbolic feature → rdflib predicate URI used by
-    # _add_jsymbolic_features.  Kept here so the user can extend it.
+    # _add_jsymbolic_features. (extendable)
     # All ranges are xsd:double.
     JSYMBOLIC_PROPS: dict[str, URIRef] = {
         "Mean_Tempo":                MRC["meanTempo"],
@@ -179,9 +238,21 @@ class KGBuilder:
         base_ttl: str | pathlib.Path,
         out_ttl: str | pathlib.Path,
         overwrite_copy: bool = True,
+        simple: bool = False,
     ):
         self.base_ttl = pathlib.Path(base_ttl)
         self.out_ttl  = pathlib.Path(out_ttl)
+        # ``simple=True`` produces a flatter KG variant intended for the
+        # baseline DL pipeline:
+        #   * no genre-association blank nodes — direct ``artist mrc:hasGenre``
+        #     edges only (no per-edge weight);
+        #   * no key/mode confidence — key & mode are attached to the *Track*
+        #     directly via ``mrc:hasKey`` / ``mrc:hasMode``;
+        #   * the listening module skips the ListeningEvent blank node and
+        #     emits ``user mrc:listenedTo track`` instead (no listenCount).
+        # ``simple=False`` (default) keeps the rich, weighted, per-Performance
+        # encoding plus the blank-node listening events with listenCount.
+        self.simple = bool(simple)
         if not self.base_ttl.exists():
             raise FileNotFoundError(f"Base ontology not found: {self.base_ttl}")
 
@@ -198,6 +269,9 @@ class KGBuilder:
         self.g.bind("event", EVENT)
         self.g.bind("dcterms", DCT)
         self.g.bind("ex",  EX)
+        self.g.bind("skos", SKOS)
+        self.g.bind("wd",  Namespace("http://www.wikidata.org/entity/"))
+        self.g.bind("wdt", Namespace("http://www.wikidata.org/prop/direct/"))
 
         # Cache to avoid re-asserting rdf:type triples.
         self._known_uris: set[URIRef] = set()
@@ -226,6 +300,11 @@ class KGBuilder:
     @staticmethod
     def tempo_class_uri(name: str) -> URIRef:
         return MRC[f"TempoClass/{name}"]
+
+    @staticmethod
+    def decade_uri(start_year: int) -> URIRef:
+        """Local URI for a decade, e.g. 2010 -> ex:decade/2010s."""
+        return EX[f"decade/{int(start_year)}s"]
 
     # ── Schema additions: tempo-class controlled vocabulary ─────────────────
     def add_tempo_class_individuals(self) -> None:
@@ -290,15 +369,31 @@ class KGBuilder:
         counts = {"artists": 0, "tracks": 0, "performances": 0,
                   "genres": 0, "instruments": 0, "rows_skipped": 0}
 
-        for i, (_, row) in enumerate(df.iterrows()):
-            if max_rows is not None and i >= max_rows:
-                break
+        sub_df = df if max_rows is None else df.iloc[:max_rows]
+        progress = tqdm(
+            sub_df.iterrows(),
+            total=len(sub_df),
+            desc="populate",
+            unit="row",
+            unit_scale=True,
+            disable=not verbose,
+            leave=True,
+        )
+        for i, (_, row) in enumerate(progress):
             try:
                 self._add_row(row, counts)
             except Exception as e:                            # noqa: BLE001
                 counts["rows_skipped"] += 1
                 if verbose:
-                    print(f"[WARN] row {i} ({row.get('track_id')}): {e}")
+                    tqdm.write(f"[WARN] row {i} ({row.get('track_id')}): {e}")
+            if verbose and i > 0 and (i & 0x3FF) == 0:
+                progress.set_postfix(
+                    artists=counts["artists"],
+                    tracks=counts["tracks"],
+                    perf=counts["performances"],
+                    refresh=False,
+                )
+        progress.close()
 
         if verbose:
             print("KG population summary:", counts)
@@ -327,15 +422,38 @@ class KGBuilder:
             self._known_uris.add(artist)
             counts["artists"] += 1
 
-        # Genres (one tag per artist; primary_genre is canonical, top3 add color)
-        for genre_label in self._collect_genres(row):
+        # Genres (one tag per artist; primary_genre is canonical, top3 add color).
+        # In the *rich* variant we materialise a per-edge weight via a blank
+        # node so a single artist→genre edge can carry MSD's term-weight; in
+        # the *simple* variant we just emit the direct ``mrc:hasGenre`` triple.
+        for genre_label, weight in self._collect_genres(row):
             g_uri = self.genre_uri(genre_label)
             if g_uri not in self._known_uris:
+                # Dual-typed: stays a mrc:Genre (so the existing
+                # mrc:hasGenre range is satisfied) AND a skos:Concept in
+                # the GenreScheme so the Wikidata enrichment can attach
+                # skos:broader / skos:exactMatch on top.
                 self.g.add((g_uri, RDF.type, MRC["Genre"]))
+                self.g.add((g_uri, RDF.type, SKOS.Concept))
+                self.g.add((g_uri, SKOS.inScheme, URIRef(GENRE_SCHEME_URI)))
+                self.g.add((g_uri, SKOS.prefLabel, Literal(genre_label, lang="en")))
                 self.g.add((g_uri, RDFS.label, Literal(genre_label, lang="en")))
                 self._known_uris.add(g_uri)
                 counts["genres"] += 1
-            self.g.add((artist, MRC["hasGenre"], g_uri))
+            if self.simple or weight is None:
+                # Direct, unweighted edge — sufficient for the simple variant
+                # and a sensible fallback when no weight was published.
+                self.g.add((artist, MRC["hasGenre"], g_uri))
+            else:
+                # Rich variant: blank-node association carrying the weight.
+                assoc = BNode()
+                self.g.add((artist, MRC["hasGenreAssoc"], assoc))
+                self.g.add((assoc, RDF.type, MRC["GenreAssociation"]))
+                self.g.add((assoc, MRC["genre"], g_uri))
+                self.g.add((assoc, MRC["weight"],
+                            Literal(float(weight), datatype=XSD.double)))
+                # Keep the direct edge too so simple SPARQL still works.
+                self.g.add((artist, MRC["hasGenre"], g_uri))
 
         # ── Track (mrc:MSDTrack) ────────────────────────────────────────────
         if track not in self._known_uris:
@@ -377,12 +495,30 @@ class KGBuilder:
             if tc is not None:
                 self.g.add((perf, MRC["hasTempoClass"], self.tempo_class_uri(tc)))
 
-        # Key / mode → mo:key on the Performance (literal label form for now)
-        key_name = row.get("key")
-        mode_name = row.get("mode")
-        if not _is_missing(key_name):
-            self.g.add((perf, MO["key"],
-                        Literal(f"{key_name} {mode_name or ''}".strip())))
+        # ── Key / mode → URI references to mrc:Key/<x> and mrc:MajorMode /
+        #    mrc:MinorMode (declared in the SKOS upper layer of the TTL).
+        #    * rich variant: attach to the *Performance* and carry the MSD
+        #      key/mode confidence values as datatype properties on the
+        #      Performance (so two Performances of the same Track may
+        #      disagree on the interpretation);
+        #    * simple variant: attach directly to the *Track* and skip
+        #      confidences entirely.
+        key_uri  = _resolve_key_uri(row.get("key"))
+        mode_uri = _resolve_mode_uri(row.get("mode"))
+        anchor   = track if self.simple else perf
+        if key_uri is not None:
+            self.g.add((anchor, MRC["hasKey"], key_uri))
+        if mode_uri is not None:
+            self.g.add((anchor, MRC["hasMode"], mode_uri))
+        if not self.simple:
+            kc = _to_float(row.get("key_confidence"))
+            if kc is not None:
+                self.g.add((perf, MRC["keyConfidence"],
+                            Literal(kc, datatype=XSD.double)))
+            mc = _to_float(row.get("mode_confidence"))
+            if mc is not None:
+                self.g.add((perf, MRC["modeConfidence"],
+                            Literal(mc, datatype=XSD.double)))
 
         # Duration / loudness / danceability / energy → datatype properties on Track
         for src, pred, dt in (
@@ -398,6 +534,11 @@ class KGBuilder:
             inst = self.instrument_uri(inst_label)
             if inst not in self._known_uris:
                 self.g.add((inst, RDF.type, MO["Instrument"]))
+                self.g.add((inst, RDF.type, SKOS.Concept))
+                self.g.add((inst, SKOS.inScheme,
+                            URIRef(INSTRUMENT_SCHEME_URI)))
+                self.g.add((inst, SKOS.prefLabel,
+                            Literal(inst_label, lang="en")))
                 self.g.add((inst, RDFS.label, Literal(inst_label, lang="en")))
                 self._known_uris.add(inst)
                 counts["instruments"] += 1
@@ -407,19 +548,56 @@ class KGBuilder:
         self._add_jsymbolic_features(track, row)
 
     # ── ancillary helpers ───────────────────────────────────────────────────
-    def _collect_genres(self, row: pd.Series) -> list[str]:
-        labels: list[str] = []
+    def _collect_genres(
+        self, row: pd.Series
+    ) -> list[tuple[str, Optional[float]]]:
+        """Return ``[(label, weight_or_None), ...]`` deduped by label.
+
+        Weight sources, in priority order:
+          1. ``artist_terms_weight`` (MSD-published per-term weight, paired
+             positionally with ``artist_terms``);
+          2. rank-based fallback for ``primary_genre`` (=1.0) and
+             ``top3_genres`` positions 0/1/2 (0.9 / 0.6 / 0.3) when no
+             upstream weight is available;
+          3. ``None`` otherwise (caller falls back to an unweighted edge).
+        """
+        out: list[tuple[str, Optional[float]]] = []
         seen: set[str] = set()
-        # primary_genre is a single canonical string
+
+        def _push(label: str, weight: Optional[float]) -> None:
+            label = label.strip()
+            if not label or label in seen:
+                return
+            seen.add(label)
+            out.append((label, weight))
+
+        # 1. primary genre (canonical) — rank 0 fallback weight = 1.0
         v = row.get("primary_genre")
-        if isinstance(v, str) and v.strip() and v not in seen:
-            labels.append(v.strip()); seen.add(v.strip())
-        # top3_genres / artist_terms are list-like (may be ndarray after parquet)
-        for src in ("top3_genres", "artist_terms"):
-            for label in _iter_strings(row.get(src)):
-                if label not in seen:
-                    labels.append(label); seen.add(label)
-        return labels
+        if isinstance(v, str) and v.strip():
+            _push(v, 1.0)
+
+        # 2. top3_genres — rank-based fallback weights
+        TOP3_FALLBACK = (0.9, 0.6, 0.3)
+        for i, label in enumerate(_iter_strings(row.get("top3_genres"))):
+            _push(label, TOP3_FALLBACK[i] if i < len(TOP3_FALLBACK) else 0.2)
+
+        # 3. artist_terms (+ optional artist_terms_weight) — authoritative
+        #    weights when present
+        terms = _iter_strings(row.get("artist_terms"))
+        weights_cell = row.get("artist_terms_weight") if "artist_terms_weight" in row.index else None
+        weights: list[Optional[float]] = []
+        if weights_cell is not None:
+            try:
+                weights = [
+                    _to_float(w) if w is not None else None
+                    for w in weights_cell
+                ]
+            except TypeError:
+                weights = []
+        for i, label in enumerate(terms):
+            w = weights[i] if i < len(weights) else None
+            _push(label, w)
+        return out
 
     def _add_jsymbolic_features(self, track: URIRef, row: pd.Series) -> None:
         for col, predicate in self.JSYMBOLIC_PROPS.items():
@@ -453,7 +631,14 @@ class KGBuilder:
             "genres":        count_instances(MRC["Genre"]),
             "instruments":   count_instances(MO["Instrument"]),
             "tempo_classes": count_instances(MRC["TempoClass"]),
+            "decades":       count_instances(MRC["Decade"]),
+            "skos_concepts": count_instances(SKOS.Concept),
         }
 
 
-__all__ = ("MRC", "MO", "FOAF", "EVENT", "DCT", "EX", "KGBuilder")
+__all__ = (
+    "MRC", "MO", "FOAF", "EVENT", "DCT", "EX",
+    "INSTRUMENT_SCHEME_URI", "GENRE_SCHEME_URI", "DECADE_SCHEME_URI",
+    "KEY_NAMES", "KEY_URI_MAP", "MODE_URI_MAP",
+    "KGBuilder",
+)

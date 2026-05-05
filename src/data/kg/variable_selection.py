@@ -52,9 +52,11 @@ DEFAULT_KG_COLUMNS: tuple[str, ...] = (
     "loudness",
     # year for biographical / temporal axis
     "year",
-    # genre / tags
+    # genre / tags  (artist_terms_weight pairs 1-to-1 with artist_terms and
+    # carries the MSD-published weight per term; used for weighted
+    # artist→genre edges in the rich KG variant)
     "primary_genre", "top3_genres",
-    "artist_terms",
+    "artist_terms", "artist_terms_weight",
     # MIDI instrumentation
     "midi_n_instruments", "midi_instrument_names",
 )

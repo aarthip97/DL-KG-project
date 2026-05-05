@@ -206,22 +206,6 @@ event:isFactorOf rdf:type owl:ObjectProperty .
 event:product rdf:type owl:ObjectProperty .
 
 
-
-###  http://purl.org/ontology/mo/encodes
-mo:encodes rdf:type owl:ObjectProperty ;
-           rdfs:domain mrc:Track ;
-           rdfs:range mo:MusicalExpression ;
-           mo:level "1" ;
-           rdfs:comment """
-        Relates a MusicalItem (a track on a particular CD, an audio file, a stream somewhere) to the signal it encodes.
-
-        This is usually a lower-resolution version of the master signal (issued from a Recording event).
-    """ ;
-           rdfs:isDefinedBy mo: ;
-           rdfs:label "encodes" ;
-           vs:term_status "unstable" .
-
-
 ###  http://purl.org/ontology/mo/instrument
 mo:instrument rdf:type owl:ObjectProperty ;
               rdfs:subPropertyOf event:factor ;
@@ -3422,20 +3406,178 @@ foaf:Agent rdf:type owl:Class .
  ] .
 
 #################################################################
+#    Music elements — SKOS extension
+#    Adds a top concept "element of music" (wd:Q11696608) and folds
+#    Genre, Key, Mode and TempoClass under it via skos:broader
+#    (and rdfs:subClassOf where the targets are also owl:Class).
+#    English labels / descriptions / aliases for every wd:Q* node
+#    declared below are populated at notebook run-time via
+#    fetch_qid_metadata + _attach_qid_metadata (no hand-typed labels).
+#################################################################
+
+###  http://purl.org/ontology/mrc/scheme/Keys
+<http://purl.org/ontology/mrc/scheme/Keys> rdf:type skos:ConceptScheme ;
+    skos:prefLabel "Musical Keys"@en .
+
+###  http://purl.org/ontology/mrc/scheme/Modes
+<http://purl.org/ontology/mrc/scheme/Modes> rdf:type skos:ConceptScheme ;
+    skos:prefLabel "Musical Modes"@en .
+
+###  http://purl.org/ontology/mrc/scheme/Tempos
+<http://purl.org/ontology/mrc/scheme/Tempos> rdf:type skos:ConceptScheme ;
+    skos:prefLabel "Musical Tempos"@en .
+
+###  http://purl.org/ontology/mrc/scheme/ElementsOfMusic
+<http://purl.org/ontology/mrc/scheme/ElementsOfMusic> rdf:type skos:ConceptScheme ;
+    skos:prefLabel "Elements of Music"@en ;
+    skos:hasTopConcept mrc:ElementOfMusic .
+
+###  http://purl.org/ontology/mrc/ElementOfMusic
+mrc:ElementOfMusic rdf:type owl:Class , skos:Concept ;
+    skos:inScheme    <http://purl.org/ontology/mrc/scheme/ElementsOfMusic> ;
+    skos:exactMatch  wd:Q11696608 ;
+    skos:prefLabel   "element of music"@en ;
+    rdfs:label       "Element of Music"@en ;
+    rdfs:comment     "Top-level music dimension grouping Genre, Key, Mode and TempoClass. Aligned to wd:Q11696608 (elements of music)."@en ;
+    rdfs:isDefinedBy <http://purl.org/ontology/mrc/> .
+
+###  Re-anchor existing mrc:Genre under ElementOfMusic
+mrc:Genre rdf:type        skos:Concept ;
+    skos:inScheme         <http://purl.org/ontology/mrc/scheme/Genres> ;
+    skos:broader          mrc:ElementOfMusic ;
+    skos:exactMatch       wd:Q188451 ;
+    rdfs:subClassOf       mrc:ElementOfMusic .
+
+# Wikidata properties referenced below.
+wdt:P13044 rdf:type owl:ObjectProperty ;
+    rdfs:label   "is characteristic of"@en ;
+    rdfs:comment "Wikidata property P13044 — used here to relate Mode to Key."@en .
+
+wdt:P461 rdf:type owl:ObjectProperty ;
+    rdfs:label   "opposite of"@en ;
+    rdfs:comment "Wikidata property P461 — used here to pair major and minor modes."@en .
+
+#################################################################
+#    Key
+#################################################################
+
+###  http://purl.org/ontology/mrc/Key
+mrc:Key rdf:type owl:Class , skos:Concept ;
+    rdfs:subClassOf  mrc:ElementOfMusic ;
+    skos:inScheme    <http://purl.org/ontology/mrc/scheme/Keys> ;
+    skos:broader     mrc:ElementOfMusic ;
+    skos:exactMatch  wd:Q534932 ;
+    skos:prefLabel   "musical key"@en ;
+    rdfs:label       "Musical Key"@en ;
+    rdfs:comment     "A musical key (e.g. C, C#, …, B). Aligned to wd:Q534932."@en ;
+    rdfs:isDefinedBy <http://purl.org/ontology/mrc/> .
+
+# Twelve chromatic-pitch-class key individuals.
+# URI: <…/Key/<slug>>  (e.g. C# → C_sharp).
+<http://purl.org/ontology/mrc/Key/C>       a mrc:Key , skos:Concept ; skos:inScheme <http://purl.org/ontology/mrc/scheme/Keys> ; skos:prefLabel "C"@en   ; rdfs:label "C"@en   .
+<http://purl.org/ontology/mrc/Key/C_sharp> a mrc:Key , skos:Concept ; skos:inScheme <http://purl.org/ontology/mrc/scheme/Keys> ; skos:prefLabel "C#"@en  ; skos:altLabel "Db"@en ; rdfs:label "C#"@en  .
+<http://purl.org/ontology/mrc/Key/D>       a mrc:Key , skos:Concept ; skos:inScheme <http://purl.org/ontology/mrc/scheme/Keys> ; skos:prefLabel "D"@en   ; rdfs:label "D"@en   .
+<http://purl.org/ontology/mrc/Key/D_sharp> a mrc:Key , skos:Concept ; skos:inScheme <http://purl.org/ontology/mrc/scheme/Keys> ; skos:prefLabel "D#"@en  ; skos:altLabel "Eb"@en ; rdfs:label "D#"@en  .
+<http://purl.org/ontology/mrc/Key/E>       a mrc:Key , skos:Concept ; skos:inScheme <http://purl.org/ontology/mrc/scheme/Keys> ; skos:prefLabel "E"@en   ; rdfs:label "E"@en   .
+<http://purl.org/ontology/mrc/Key/F>       a mrc:Key , skos:Concept ; skos:inScheme <http://purl.org/ontology/mrc/scheme/Keys> ; skos:prefLabel "F"@en   ; rdfs:label "F"@en   .
+<http://purl.org/ontology/mrc/Key/F_sharp> a mrc:Key , skos:Concept ; skos:inScheme <http://purl.org/ontology/mrc/scheme/Keys> ; skos:prefLabel "F#"@en  ; skos:altLabel "Gb"@en ; rdfs:label "F#"@en  .
+<http://purl.org/ontology/mrc/Key/G>       a mrc:Key , skos:Concept ; skos:inScheme <http://purl.org/ontology/mrc/scheme/Keys> ; skos:prefLabel "G"@en   ; rdfs:label "G"@en   .
+<http://purl.org/ontology/mrc/Key/G_sharp> a mrc:Key , skos:Concept ; skos:inScheme <http://purl.org/ontology/mrc/scheme/Keys> ; skos:prefLabel "G#"@en  ; skos:altLabel "Ab"@en ; rdfs:label "G#"@en  .
+<http://purl.org/ontology/mrc/Key/A>       a mrc:Key , skos:Concept ; skos:inScheme <http://purl.org/ontology/mrc/scheme/Keys> ; skos:prefLabel "A"@en   ; rdfs:label "A"@en   .
+<http://purl.org/ontology/mrc/Key/A_sharp> a mrc:Key , skos:Concept ; skos:inScheme <http://purl.org/ontology/mrc/scheme/Keys> ; skos:prefLabel "A#"@en  ; skos:altLabel "Bb"@en ; rdfs:label "A#"@en  .
+<http://purl.org/ontology/mrc/Key/B>       a mrc:Key , skos:Concept ; skos:inScheme <http://purl.org/ontology/mrc/scheme/Keys> ; skos:prefLabel "B"@en   ; rdfs:label "B"@en   .
+
+#################################################################
+#    Mode
+#################################################################
+
+###  http://purl.org/ontology/mrc/Mode
+mrc:Mode rdf:type owl:Class , skos:Concept ;
+    rdfs:subClassOf  mrc:ElementOfMusic ;
+    skos:inScheme    <http://purl.org/ontology/mrc/scheme/Modes> ;
+    skos:broader     mrc:ElementOfMusic ;
+    skos:prefLabel   "musical mode"@en ;
+    rdfs:label       "Musical Mode"@en ;
+    rdfs:comment     "Abstract class for musical modes (major / minor / …)."@en ;
+    rdfs:isDefinedBy <http://purl.org/ontology/mrc/> .
+
+###  http://purl.org/ontology/mrc/MajorMode
+mrc:MajorMode rdf:type owl:Class , skos:Concept ;
+    rdfs:subClassOf  mrc:Mode ;
+    skos:inScheme    <http://purl.org/ontology/mrc/scheme/Modes> ;
+    skos:broader     mrc:Mode ;
+    skos:exactMatch  wd:Q58795659 ;
+    wdt:P13044       mrc:Key ;            # major mode is characteristic of key
+    wdt:P461         mrc:MinorMode ;      # opposite of minor mode
+    skos:related     mrc:MinorMode ;
+    skos:prefLabel   "major mode"@en ;
+    rdfs:label       "Major Mode"@en ;
+    rdfs:isDefinedBy <http://purl.org/ontology/mrc/> .
+
+###  http://purl.org/ontology/mrc/MinorMode
+mrc:MinorMode rdf:type owl:Class , skos:Concept ;
+    rdfs:subClassOf  mrc:Mode ;
+    skos:inScheme    <http://purl.org/ontology/mrc/scheme/Modes> ;
+    skos:broader     mrc:Mode ;
+    skos:exactMatch  wd:Q12827391 ;
+    wdt:P13044       mrc:Key ;            # minor mode is characteristic of key
+    wdt:P461         mrc:MajorMode ;      # opposite of major mode
+    skos:related     mrc:MajorMode ;
+    skos:prefLabel   "minor mode"@en ;
+    rdfs:label       "Minor Mode"@en ;
+    rdfs:isDefinedBy <http://purl.org/ontology/mrc/> .
+
+#################################################################
+#    Tempo
+#    Existing mrc:TempoClass is enriched in-place: it stays an owl:Class
+#    (already declared earlier in this file by the populator) and now also
+#    becomes a skos:Concept narrower than ElementOfMusic, exact-matched to
+#    wd:Q189214 (tempo). Its individuals (Allegro, Presto, …) are declared
+#    by KGBuilder.add_tempo_class_individuals(); below we just attach
+#    skos:exactMatch to their Wikidata QIDs so wbgetentities can backfill
+#    the English label / description / aliases.
+#################################################################
+
+mrc:TempoClass rdf:type        skos:Concept ;
+    rdfs:subClassOf            mrc:ElementOfMusic ;
+    skos:inScheme              <http://purl.org/ontology/mrc/scheme/Tempos> ;
+    skos:broader               mrc:ElementOfMusic ;
+    skos:exactMatch            wd:Q189214 .
+
+<http://purl.org/ontology/mrc/TempoClass/Allegro>     skos:inScheme <http://purl.org/ontology/mrc/scheme/Tempos> ; skos:exactMatch wd:Q2081524 .
+<http://purl.org/ontology/mrc/TempoClass/Presto>      skos:inScheme <http://purl.org/ontology/mrc/scheme/Tempos> ; skos:exactMatch wd:Q2096748 .
+<http://purl.org/ontology/mrc/TempoClass/Prestissimo> skos:inScheme <http://purl.org/ontology/mrc/scheme/Tempos> ; skos:exactMatch wd:Q6522688 .
+<http://purl.org/ontology/mrc/TempoClass/Moderato>    skos:inScheme <http://purl.org/ontology/mrc/scheme/Tempos> ; skos:exactMatch wd:Q3736203 .
+<http://purl.org/ontology/mrc/TempoClass/Andante>     skos:inScheme <http://purl.org/ontology/mrc/scheme/Tempos> ; skos:exactMatch wd:Q2499193 .
+<http://purl.org/ontology/mrc/TempoClass/Adagio>      skos:inScheme <http://purl.org/ontology/mrc/scheme/Tempos> ; skos:exactMatch wd:Q482153  .
+<http://purl.org/ontology/mrc/TempoClass/Largo>       skos:inScheme <http://purl.org/ontology/mrc/scheme/Tempos> ; skos:exactMatch wd:Q1805930 .
+<http://purl.org/ontology/mrc/TempoClass/Grave>       skos:inScheme <http://purl.org/ontology/mrc/scheme/Tempos> ; skos:exactMatch wd:Q3730835 .
+
+#################################################################
+#    Wikidata anchor nodes (typed minimally so the populator can
+#    attach skos:prefLabel / skos:definition / skos:altLabel via
+#    fetch_qid_metadata).
+#################################################################
+
+wd:Q11696608 rdf:type skos:Concept .   # elements of music
+wd:Q534932   rdf:type skos:Concept .   # key
+wd:Q58795659 rdf:type skos:Concept .   # major mode
+wd:Q12827391 rdf:type skos:Concept .   # minor mode
+wd:Q189214   rdf:type skos:Concept .   # tempo
+
+wd:Q2081524  rdf:type skos:Concept ; wdt:P31 wd:Q189214 .  # allegro
+wd:Q2096748  rdf:type skos:Concept ; wdt:P31 wd:Q189214 .  # presto
+wd:Q6522688  rdf:type skos:Concept ; wdt:P31 wd:Q189214 .  # prestissimo
+wd:Q3736203  rdf:type skos:Concept ; wdt:P31 wd:Q189214 .  # moderato
+wd:Q2499193  rdf:type skos:Concept ; wdt:P31 wd:Q189214 .  # andante
+wd:Q482153   rdf:type skos:Concept ; wdt:P31 wd:Q189214 .  # adagio
+wd:Q1805930  rdf:type skos:Concept ; wdt:P31 wd:Q189214 .  # largo
+wd:Q3730835  rdf:type skos:Concept ; wdt:P31 wd:Q189214 .  # grave
+
+
+#################################################################
 #    Annotations
 #################################################################
 
 dcterms:title rdfs:comment "A name given to the resource."@en ;
                rdfs:label "Title"@en .
-
-
-mo:interview dc:description """
-        Recording of the questioning of a person.
-        This is a type of MusicalManifestation defined by the musical industry.
-    """ ;
-             dc:title "interview" ;
-             mo:level "1" ;
-             rdfs:isDefinedBy mo: .
-
-
-###  Generated by the OWL API (version 4.5.29.2024-05-13T12:11:03Z) https://github.com/owlcs/owlapi

@@ -1,23 +1,10 @@
 """
 src/data/kg
 ===========
-Helpers for populating the MusicRecSys knowledge graph from the
-processed dataset (`lakh_msd_dataset.parquet`) and the jSymbolic
-feature dump (`data/interim/interim.csv`).
+KG construction + Wikidata enrichment for the MusicRecSys project.
 
-Public API
-----------
-    from data.kg import (
-        # tempo classes (Music Theory Academy categorical tempo markings)
-        TEMPO_CLASSES, classify_tempo, add_tempo_class_column,
-
-        # variable selection + interim merge
-        DEFAULT_KG_COLUMNS, select_kg_columns,
-        load_interim_features, merge_parquet_with_interim,
-
-        # KG construction
-        MRC, MO, FOAF, KGBuilder,
-    )
+The public surface stays compact - everything else (HTTP plumbing,
+SPARQL builders, threading) is private to its own module.
 """
 from .tempo_classes import (  # noqa: F401
     TEMPO_CLASSES,
@@ -33,9 +20,8 @@ from .variable_selection import (  # noqa: F401
     merge_parquet_with_interim,
 )
 from .kg_builder import (  # noqa: F401
-    MRC,
-    MO,
-    FOAF,
+    MRC, MO, FOAF, EVENT, DCT, EX,
+    INSTRUMENT_SCHEME_URI, GENRE_SCHEME_URI, DECADE_SCHEME_URI,
     KGBuilder,
 )
 from .user_data import (  # noqa: F401
@@ -43,10 +29,23 @@ from .user_data import (  # noqa: F401
     load_or_build_kg_taste_profile,
 )
 from .wikidata_mapping import (  # noqa: F401
-    WD,
-    INSTRUMENT_ROOT,
-    GENRE_ROOT,
-    resolve_labels,
-    fetch_subclass_chains,
+    WD, WDT,
+    INSTRUMENT_ROOT, GENRE_ROOT,
+    INSTRUMENT_SCHEME, GENRE_SCHEME, DECADE_SCHEME,
+    resolve_label, resolve_labels,
+    fetch_subclass_chain, fetch_subclass_chains,
+    fetch_qid_metadata,
     enrich_graph_with_wikidata,
+    audit_wikidata_enrichment,
+)
+from .decades import (  # noqa: F401
+    decade_for_year, decade_label, unique_decades_from_dataframe,
+    resolve_decades, add_decades_to_graph,
+    collect_decade_qids_for_metadata,
+    WD_DECADE_TYPE,
+)
+from .listening import (  # noqa: F401
+    user_uri,
+    add_listening_schema,
+    add_users_to_graph,
 )
