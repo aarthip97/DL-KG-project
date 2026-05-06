@@ -15,6 +15,10 @@ data/**
 !data/*/*/*/*/
 !data/**/.gitkeep
 
+# ── W&B local run cache ───────────────────────────────────────────────────────
+# wandb.init() writes local logs/metadata here; the real data lives on the cloud.
+wandb/
+
 # ── Trained model weights & checkpoints ───────────────────────────────────────
 # Weights are large binary blobs; track them via W&B artifacts instead.
 # The directory skeleton (README.md + .gitkeep files) IS committed so that
