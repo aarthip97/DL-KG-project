@@ -3,13 +3,32 @@ __pycache__/
 *.py[codz]
 *$py.class
 
-# Data files
-*.csv
-*.json
-*.parquet
-*.hdf5
-*.zip
-data/*
+# ── Data files ────────────────────────────────────────────────────────────────
+# Ignore everything inside data/ at all depths, but un-ignore directory
+# skeleton markers (.gitkeep) so contributors get the right folder structure.
+# NOTE: Git requires each *intermediate* directory to be explicitly un-ignored
+# before a file inside it can be un-ignored (git can't recurse past an ignored dir).
+data/**
+!data/*/
+!data/*/*/
+!data/*/*/*/
+!data/*/*/*/*/
+!data/**/.gitkeep
+
+# ── Trained model weights & checkpoints ───────────────────────────────────────
+# Weights are large binary blobs; track them via W&B artifacts instead.
+# The directory skeleton (README.md + .gitkeep files) IS committed so that
+# new contributors have the right folder structure immediately after cloning.
+models/*
+!models/README.md
+!models/**/.gitkeep
+
+# Common weight / checkpoint extensions (belt-and-suspenders)
+*.pt
+*.pth
+*.ckpt
+*.pkl
+*.npz
 
 # C extensions
 *.so

@@ -1,0 +1,64 @@
+_wandb:
+    value:
+        cli_version: 0.26.1
+        e:
+            c2c2n5yvalotsqhj922a04wlmnw95363:
+                codePath: /home/pfanyka/Desktop/MASTERS/sem_2/KG_DL_PROJECT/DL-KG-project/notebooks/04_DL_pipeline copy.ipynb
+                codePathLocal: 04_DL_pipeline copy.ipynb
+                cpu_count: 10
+                cpu_count_logical: 12
+                disk:
+                    /:
+                        total: "492557725696"
+                        used: "418284154880"
+                email: pedro.fanica@gmail.com
+                executable: /home/pfanyka/Desktop/MASTERS/sem_2/KG_DL_PROJECT/SONATAM/.venv/bin/python
+                git:
+                    commit: b5dc514fb54c16826b968b4a8c7c5d38a9800b23
+                    remote: https://github.com/aarthip97/DL-KG-project.git
+                host: pikachu
+                memory:
+                    total: "16417808384"
+                os: Linux-7.0.3-arch1-2-x86_64-with-glibc2.43
+                program: /home/pfanyka/Desktop/MASTERS/sem_2/KG_DL_PROJECT/DL-KG-project/notebooks/04_DL_pipeline copy.ipynb
+                python: CPython 3.14.4
+                root: /home/pfanyka/Desktop/MASTERS/sem_2/KG_DL_PROJECT/DL-KG-project/notebooks
+                startedAt: "2026-05-06T12:30:14.478340Z"
+                writerId: c2c2n5yvalotsqhj922a04wlmnw95363
+        m: []
+        python_version: 3.14.4
+        t:
+            "1":
+                - 1
+                - 5
+                - 53
+                - 77
+            "2":
+                - 1
+                - 5
+                - 53
+                - 77
+            "3":
+                - 2
+                - 13
+                - 15
+                - 16
+                - 62
+            "4": 3.14.4
+            "5": 0.26.1
+            "8":
+                - 1
+            "10":
+                - 20
+            "12": 0.26.1
+            "13": linux-x86_64
+model_name:
+    value: MostPopular
+model_type:
+    value: baseline
+n_songs:
+    value: 6054
+n_users:
+    value: 284864
+top_n:
+    value: 10

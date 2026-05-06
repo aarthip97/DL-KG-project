@@ -1,0 +1,1 @@
+{"test/Overall_Score":0.12518427678549116,"_step":0,"_wandb":{"runtime":0},"test/PopularityBias":0.6109635582024457,"_runtime":0,"test/Recall@K":0.1285108162446998,"_timestamp":1.778070616370926e+09,"test/Coverage":0.006442021803766105,"test/HitRate@K":0.20020079757357898,"model_name":"MostPopular","test/NDCG@K":0.11432412159810741,"test/MRR":0.08948707464525539}
