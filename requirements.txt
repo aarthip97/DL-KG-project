@@ -3,6 +3,7 @@ numpy>=1.26
 pandas>=2.2
 pyarrow>=14.0          # Parquet I/O
 tqdm>=4.66
+umap-learn>=0.5.3     
 
 # ── MSD / MIDI reading ────────────────────────────────────────────────────────
 h5py>=3.10             # MSD HDF5 reader (no pytables needed)
@@ -26,6 +27,7 @@ matplotlib>=3.8
 seaborn>=0.13
 ipykernel>=6.29
 jupyterlab>=4.0
+plotly>=5.15
 
 # ── Dev utilities ─────────────────────────────────────────────────────────────
 scikit-learn>=1.4       # PCA, cosine similarity helpers
