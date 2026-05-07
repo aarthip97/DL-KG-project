@@ -17,7 +17,7 @@ from torch_geometric.data import HeteroData
 import torch_geometric.transforms as T
 
 from .bpr import bpr_loss, evaluate_top_k, sample_negative_items
-from .hgt import RecommenderHGT
+from .gnn import RecommenderHGT
 
 try:                                  # optional dependency
     import wandb

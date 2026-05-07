@@ -142,6 +142,15 @@ def read_msd_metadata(
             return np.array(data[start:end])
         except Exception:
             return None
+        
+    # ── normalise: empty lists → None so isnull() / isna() detect them ──────
+    def _none_if_empty(v):
+        """Return None for empty lists/pd.NA; pass everything else through."""
+        if v is pd.NA:
+            return None
+        if isinstance(v, list) and len(v) == 0:
+            return None
+        return v
 
     # ── open file and grab the three 'songs' compound datasets ──────────────
     with h5py.File(h5_path, 'r') as f:
@@ -167,6 +176,7 @@ def read_msd_metadata(
         artist_familiarity = _scalar(meta_songs, 'artist_familiarity', row, float)
         artist_hotttnesss  = _scalar(meta_songs, 'artist_hotttnesss',  row, float)
         song_hotttnesss    = _scalar(meta_songs, 'song_hotttnesss',    row, float)
+        
         artist_latitude    = _scalar(meta_songs, 'artist_latitude',    row, float)
         artist_longitude   = _scalar(meta_songs, 'artist_longitude',   row, float)
         artist_location    = _scalar(meta_songs, 'artist_location',    row, str)
@@ -214,12 +224,14 @@ def read_msd_metadata(
             artist_terms_freq   = [f for f, _, _ in paired]
             artist_terms_weight = [w for _, w, _ in paired]
         else:
-            artist_terms, artist_terms_freq, artist_terms_weight = [], [], []
+            artist_terms, artist_terms_freq, artist_terms_weight = None, None, None
 
         # ── variable-length: similar_artists (capped) ───────────────────────
         sim_arr = _arr_slice(f, 'metadata/similar_artists',
                              meta_songs, 'idx_similar_artists', row, meta_nrows)
-        similar_artists = _arr_str(sim_arr)[:MAX_LIST_ITEMS]
+        # sim_arr is a numpy array — never use bare `if sim_arr` (ambiguous for len > 1)
+        _sim_list = _arr_str(sim_arr)[:MAX_LIST_ITEMS] if (sim_arr is not None and len(sim_arr) > 0) else []
+        similar_artists = _sim_list if _sim_list else None
 
         # ── variable-length: artist_mbtags + counts (sorted by count, capped) ─
         mbtags_arr  = _arr_slice(f, 'musicbrainz/artist_mbtags',
@@ -227,7 +239,7 @@ def read_msd_metadata(
         mbcount_arr = _arr_slice(f, 'musicbrainz/artist_mbtags_count',
                                  mb_songs, 'idx_artist_mbtags', row, mb_nrows)
         mbtags_all  = _arr_str(mbtags_arr)
-        mb_counts   = [int(v) for v in (mbcount_arr if mbcount_arr is not None else [])]
+        mb_counts = [int(v) for v in (mbcount_arr if (mbcount_arr is not None and len(mbcount_arr) > 0) else [])]
         m = min(len(mbtags_all), len(mb_counts))
         if m > 0:
             mb_paired = sorted(zip(mb_counts[:m], mbtags_all[:m]),
@@ -235,90 +247,59 @@ def read_msd_metadata(
             artist_mbtags       = [t for _, t in mb_paired]
             artist_mbtags_count = [c for c, _ in mb_paired]
         else:
-            artist_mbtags, artist_mbtags_count = [], []
+            artist_mbtags, artist_mbtags_count = None, None
 
-        # ── optional acoustic features (mean over segments + structural counts) ─
-        acoustic: dict = {}
-        if include_acoustic:
-            pitches = _arr_slice(f, 'analysis/segments_pitches',
-                                 anal_songs, 'idx_segments_pitches',
-                                 row, anal_nrows)
-            acoustic['mean_segments_pitches'] = (
-                pitches.mean(axis=0).tolist()
-                if pitches is not None and pitches.ndim == 2 and len(pitches) > 0
-                else None
-            )
-
-            timbre = _arr_slice(f, 'analysis/segments_timbre',
-                                anal_songs, 'idx_segments_timbre',
-                                row, anal_nrows)
-            acoustic['mean_segments_timbre'] = (
-                timbre.mean(axis=0).tolist()
-                if timbre is not None and timbre.ndim == 2 and len(timbre) > 0
-                else None
-            )
-
-            def _count(data_path, idx_field):
-                arr = _arr_slice(f, data_path, anal_songs, idx_field, row, anal_nrows)
-                return int(len(arr)) if arr is not None else None
-
-            acoustic['n_beats']    = _count('analysis/beats_start',    'idx_beats_start')
-            acoustic['n_bars']     = _count('analysis/bars_start',     'idx_bars_start')
-            acoustic['n_sections'] = _count('analysis/sections_start', 'idx_sections_start')
-            acoustic['n_tatums']   = _count('analysis/tatums_start',   'idx_tatums_start')
-
+    
     # ── derived: primary genre + top-3 genres from (already capped) terms ──
     primary_genre = artist_terms[0] if artist_terms else None
-    top3_genres   = artist_terms[:3]
+    top3_genres   = artist_terms[:3] if artist_terms else None
 
     return {
-        # identifiers
-        'track_id':    track_id,
-        'song_id':     song_id,    # Echo Nest ID — links to user listening data
-        'artist_id':   artist_id,
-        'artist_mbid': artist_mbid,
-        'audio_md5':   audio_md5,
-        # textual / location
-        'artist_name':      artist_name,
-        'title':            title,
-        'release':          release,
-        'artist_location':  artist_location,
-        'artist_latitude':  artist_latitude,
-        'artist_longitude': artist_longitude,
-        # popularity
-        'artist_familiarity': artist_familiarity,
-        'artist_hotttnesss':  artist_hotttnesss,
-        'song_hotttnesss':    song_hotttnesss,
-        # tonal
-        'key':             key,
-        'key_name':        key_name,         # derived
-        'key_confidence':  key_confidence,
-        'mode':            mode,
-        'mode_name':       mode_name,        # derived
-        'mode_confidence': mode_confidence,
-        # rhythm / time
-        'tempo':                     tempo,
-        'time_signature':            time_signature,
-        'time_signature_confidence': time_signature_confidence,
-        'duration':                  duration,
-        # audio characteristics
-        'loudness':     loudness,
-        'danceability': danceability,
-        'energy':       energy,
-        # temporal
-        'year': year,
-        # tags / genre  (all capped at MAX_LIST_ITEMS)
-        'artist_terms':        artist_terms,
-        'artist_terms_freq':   artist_terms_freq,
-        'artist_terms_weight': artist_terms_weight,
-        'primary_genre':       primary_genre,
-        'top3_genres':         top3_genres,
-        'similar_artists':     similar_artists,
-        'artist_mbtags':       artist_mbtags,
-        'artist_mbtags_count': artist_mbtags_count,
-        # optional acoustic block
-        **acoustic,
-    }
+            # identifiers
+            'track_id':    track_id,
+            'song_id':     song_id,
+            'artist_id':   artist_id,
+            'artist_mbid': artist_mbid,
+            'audio_md5':   audio_md5,
+            # textual / location
+            'artist_name':      artist_name,
+            'title':            title,
+            'release':          release,
+            'artist_location':  artist_location,
+            'artist_latitude':  artist_latitude,
+            'artist_longitude': artist_longitude,
+            # popularity
+            'artist_familiarity': artist_familiarity,
+            'artist_hotttnesss':  artist_hotttnesss,
+            'song_hotttnesss':    song_hotttnesss,
+            # tonal
+            'key':             key,
+            'key_name':        key_name,
+            'key_confidence':  key_confidence,
+            'mode':            mode,
+            'mode_name':       mode_name,
+            'mode_confidence': mode_confidence,
+            # rhythm / time
+            'tempo':                     tempo,
+            'time_signature':            time_signature,
+            'time_signature_confidence': time_signature_confidence,
+            'duration':                  duration,
+            # audio characteristics
+            'loudness':     loudness,
+            'danceability': danceability,
+            'energy':       energy,
+            # temporal
+            'year': year,
+            # tags / genre — empty list → None so isnull() counts them correctly
+            'artist_terms':        _none_if_empty(artist_terms),
+            'artist_terms_freq':   _none_if_empty(artist_terms_freq),
+            'artist_terms_weight': _none_if_empty(artist_terms_weight),
+            'primary_genre':       primary_genre,           # already None or str
+            'top3_genres':         _none_if_empty(top3_genres),
+            'similar_artists':     _none_if_empty(similar_artists),
+            'artist_mbtags':       _none_if_empty(artist_mbtags),
+            'artist_mbtags_count': _none_if_empty(artist_mbtags_count),
+        }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1b.  MIDI instrumentation reader (pretty_midi)  —  minimal version
@@ -392,7 +373,7 @@ def read_midi_instrumentation(
 
         return {
             'midi_n_instruments':    len(pm.instruments),
-            'midi_instrument_names': names[:max_items],
+            'midi_instrument_names': names[:max_items] if names else None,
         }
     except Exception:
         return {}

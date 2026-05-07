@@ -15,7 +15,7 @@ from .pruning import prune_rdf_graph
 from .kg_to_hetero import load_kg_as_hetero, KGEncoding
 from .autoencoder import jSymbolicAutoencoder, train_autoencoder
 from .bpr import bpr_loss, evaluate_top_k
-from .hgt import RecommenderHGT
+from .gnn import RecommenderHGT
 from .train import train_hgt
 
 __all__ = [

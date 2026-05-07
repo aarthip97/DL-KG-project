@@ -273,8 +273,11 @@ class KGBuilder:
         self.g.bind("wd",  Namespace("http://www.wikidata.org/entity/"))
         self.g.bind("wdt", Namespace("http://www.wikidata.org/prop/direct/"))
 
-        # Cache to avoid re-asserting rdf:type triples.
+         # Cache to avoid re-asserting rdf:type triples.
         self._known_uris: set[URIRef] = set()
+        # Cache to avoid duplicate genre-association blank nodes per (artist, genre).
+        self._known_assocs: set[tuple[URIRef, URIRef]] = set()
+
 
     # ── URI minting ─────────────────────────────────────────────────────────
     @staticmethod
@@ -382,7 +385,7 @@ class KGBuilder:
         for i, (_, row) in enumerate(progress):
             try:
                 self._add_row(row, counts)
-            except Exception as e:                            # noqa: BLE001
+            except Exception as e:            
                 counts["rows_skipped"] += 1
                 if verbose:
                     tqdm.write(f"[WARN] row {i} ({row.get('track_id')}): {e}")
@@ -410,10 +413,9 @@ class KGBuilder:
         track  = self.track_uri(track_id)
         perf   = self.performance_uri(track_id)
 
-        # ── Artist (mo:MusicArtist + foaf:name) ─────────────────────────────
+        # ── Artist (mo:Performer + foaf:name) ─────────────────────────────
         if artist not in self._known_uris:
-            self.g.add((artist, RDF.type, MO["MusicArtist"]))
-            self.g.add((artist, RDF.type, FOAF.Agent))
+            self.g.add((artist, RDF.type, MO["Performer"]))
             self.g.add((artist, FOAF.name, Literal(artist_name)))
             mbid = row.get("artist_mbid")
             if not _is_missing(mbid):
@@ -422,17 +424,12 @@ class KGBuilder:
             self._known_uris.add(artist)
             counts["artists"] += 1
 
-        # Genres (one tag per artist; primary_genre is canonical, top3 add color).
-        # In the *rich* variant we materialise a per-edge weight via a blank
-        # node so a single artist→genre edge can carry MSD's term-weight; in
-        # the *simple* variant we just emit the direct ``mrc:hasGenre`` triple.
+        # ── Artist genres ────────────────────────────────────────────────────
+        # Guard with a per-artist-genre set so we don't mint a new BNode
+        # for every track that shares the same artist.
         for genre_label, weight in self._collect_genres(row):
             g_uri = self.genre_uri(genre_label)
             if g_uri not in self._known_uris:
-                # Dual-typed: stays a mrc:Genre (so the existing
-                # mrc:hasGenre range is satisfied) AND a skos:Concept in
-                # the GenreScheme so the Wikidata enrichment can attach
-                # skos:broader / skos:exactMatch on top.
                 self.g.add((g_uri, RDF.type, MRC["Genre"]))
                 self.g.add((g_uri, RDF.type, SKOS.Concept))
                 self.g.add((g_uri, SKOS.inScheme, URIRef(GENRE_SCHEME_URI)))
@@ -440,20 +437,22 @@ class KGBuilder:
                 self.g.add((g_uri, RDFS.label, Literal(genre_label, lang="en")))
                 self._known_uris.add(g_uri)
                 counts["genres"] += 1
-            if self.simple or weight is None:
-                # Direct, unweighted edge — sufficient for the simple variant
-                # and a sensible fallback when no weight was published.
-                self.g.add((artist, MRC["hasGenre"], g_uri))
-            else:
-                # Rich variant: blank-node association carrying the weight.
-                assoc = BNode()
-                self.g.add((artist, MRC["hasGenreAssoc"], assoc))
-                self.g.add((assoc, RDF.type, MRC["GenreAssociation"]))
-                self.g.add((assoc, MRC["genre"], g_uri))
-                self.g.add((assoc, MRC["weight"],
-                            Literal(float(weight), datatype=XSD.double)))
-                # Keep the direct edge too so simple SPARQL still works.
-                self.g.add((artist, MRC["hasGenre"], g_uri))
+
+            # ──  deduplicate per (artist, genre) pair ──────────
+            assoc_key = (artist, g_uri)
+            if assoc_key not in self._known_assocs:
+                self._known_assocs.add(assoc_key)
+                if self.simple or weight is None:
+                    self.g.add((artist, MRC["hasGenre"], g_uri))
+                else:
+                    assoc = BNode()
+                    self.g.add((artist, MRC["hasGenreAssoc"], assoc))
+                    self.g.add((assoc, RDF.type, MRC["GenreAssociation"]))
+                    self.g.add((assoc, MRC["genre"], g_uri))
+                    self.g.add((assoc, MRC["weight"],
+                                Literal(float(weight), datatype=XSD.double)))
+                    self.g.add((artist, MRC["hasGenre"], g_uri))
+
 
         # ── Track (mrc:MSDTrack) ────────────────────────────────────────────
         if track not in self._known_uris:
