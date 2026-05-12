@@ -46,11 +46,13 @@ from .tempo_classes import TEMPO_CLASSES, classify_tempo
 # ConceptScheme URIs — flat names inside mrc: so they serialise as CURIEs
 # (e.g. mrc:InstrumentScheme) rather than angle-bracket full URIs.
 # IMPORTANT: must stay in sync with the constants in wikidata_mapping.py.
-INSTRUMENT_SCHEME_URI = "http://purl.org/ontology/mrc/InstrumentScheme"
-GENRE_SCHEME_URI      = "http://purl.org/ontology/mrc/GenreScheme"
-DECADE_SCHEME_URI     = "http://purl.org/ontology/mrc/DecadeScheme"
-KEY_SCHEME_URI        = "http://purl.org/ontology/mrc/KeyScheme"
-TEMPO_SCHEME_URI      = "http://purl.org/ontology/mrc/TempoScheme"
+INSTRUMENT_SCHEME_URI    = "http://purl.org/ontology/mrc/InstrumentScheme"
+GENRE_SCHEME_URI         = "http://purl.org/ontology/mrc/GenreScheme"
+DECADE_SCHEME_URI        = "http://purl.org/ontology/mrc/DecadeScheme"
+KEY_SCHEME_URI           = "http://purl.org/ontology/mrc/KeyScheme"
+TEMPO_SCHEME_URI         = "http://purl.org/ontology/mrc/TempoScheme"
+MODE_SCHEME_URI          = "http://purl.org/ontology/mrc/ModeScheme"
+ELEMENTS_SCHEME_URI      = "http://purl.org/ontology/mrc/ElementsOfMusicScheme"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Legacy sub-path URIs present in the *base* ontology TTL that must be
@@ -66,9 +68,17 @@ _LEGACY_TEMPO_FRAGS = (
     "TempoClass/Adagio", "TempoClass/Andante", "TempoClass/Moderato",
     "TempoClass/Allegro", "TempoClass/Presto", "TempoClass/Prestissimo",
 )
-_LEGACY_SCHEME_URIS = (
-    "http://purl.org/ontology/mrc/scheme/Keys",
-    "http://purl.org/ontology/mrc/scheme/Tempos",
+# Every mrc:scheme/<X> URI that has ever existed in the base ontology TTL.
+# Any of these that survive in the graph must be purged and, where they
+# appear as skos:inScheme objects, replaced with the flat canonical URI.
+_LEGACY_SCHEME_URIS: tuple[tuple[str, str], ...] = (
+    # (old sub-path URI,                               new flat URI)
+    ("http://purl.org/ontology/mrc/scheme/Keys",       KEY_SCHEME_URI),
+    ("http://purl.org/ontology/mrc/scheme/Tempos",     TEMPO_SCHEME_URI),
+    ("http://purl.org/ontology/mrc/scheme/Modes",      MODE_SCHEME_URI),
+    ("http://purl.org/ontology/mrc/scheme/Genres",     GENRE_SCHEME_URI),
+    ("http://purl.org/ontology/mrc/scheme/ElementsOfMusic", ELEMENTS_SCHEME_URI),
+    ("http://purl.org/ontology/mrc/scheme/Instruments", INSTRUMENT_SCHEME_URI),
 )
 
 
@@ -359,27 +369,31 @@ class KGBuilder:
     # ── Legacy-individual purge ──────────────────────────────────────────────
     def _purge_legacy_individuals(self) -> None:
         """Remove all triples whose subject is one of the old sub-path URIs
-        defined in the base ontology TTL.  Also strips any ``skos:inScheme``
-        pointer from ``mrc:Key`` that still points at the legacy scheme URI.
+        defined in the base ontology TTL.  Any ``skos:inScheme`` pointer that
+        still references a legacy scheme URI is *rewritten* to the canonical
+        flat replacement so concepts keep their scheme membership.
         """
         # Old Key and TempoClass named individuals
         old_nodes: list[URIRef] = [
             MRC[frag] for frag in _LEGACY_KEY_FRAGS + _LEGACY_TEMPO_FRAGS
         ]
-        # Old ConceptScheme nodes
-        old_nodes += [URIRef(u) for u in _LEGACY_SCHEME_URIS]
+        # Old ConceptScheme nodes — remove every triple that mentions them
+        for old_uri, _new_uri in _LEGACY_SCHEME_URIS:
+            old_ref = URIRef(old_uri)
+            old_nodes.append(old_ref)
 
         for node in old_nodes:
-            # Remove all triples where node appears as subject or object
             self.g.remove((node, None, None))
             self.g.remove((None, None, node))
 
-        # Also strip the mrc:Key class-level skos:inScheme that pointed at
-        # the old <mrc:scheme/Keys> node (object was already removed above,
-        # but the subject-side triple may still linger as a dangling pointer).
-        for old_scheme in _LEGACY_SCHEME_URIS:
-            self.g.remove((MRC["Key"], SKOS.inScheme, URIRef(old_scheme)))
-            self.g.remove((MRC["TempoClass"], SKOS.inScheme, URIRef(old_scheme)))
+        # Rewrite any surviving skos:inScheme triples that point at a legacy
+        # URI so they point at the canonical flat scheme instead.
+        for old_uri, new_uri in _LEGACY_SCHEME_URIS:
+            old_ref = URIRef(old_uri)
+            new_ref = URIRef(new_uri)
+            for subj in list(self.g.subjects(SKOS.inScheme, old_ref)):
+                self.g.remove((subj, SKOS.inScheme, old_ref))
+                self.g.add((subj, SKOS.inScheme, new_ref))
 
 
     # ── URI minting ─────────────────────────────────────────────────────────
@@ -520,12 +534,19 @@ class KGBuilder:
         self.g.add((MODE_CLASS, RDFS.comment,  Literal(
             "The modality of a musical key: Major or Minor.", lang="en")))
 
+        # Declare the flat ModeScheme (replaces the legacy mrc:scheme/Modes)
+        MODE_SCH = MRC["ModeScheme"]
+        self.g.add((MODE_SCH, RDF.type, SKOS.ConceptScheme))
+        self.g.add((MODE_SCH, RDFS.label,    Literal("Musical Mode Scheme", lang="en")))
+        self.g.add((MODE_SCH, SKOS.prefLabel, Literal("Musical Mode Scheme", lang="en")))
+
         for label, uri in (("Major", MRC["MajorMode"]), ("Minor", MRC["MinorMode"])):
             self.g.add((uri, RDF.type, MODE_CLASS))
             self.g.add((uri, RDF.type, OWL.NamedIndividual))
             self.g.add((uri, RDFS.label,     Literal(label, lang="en")))
             self.g.add((uri, SKOS.prefLabel, Literal(label, lang="en")))
             self.g.add((uri, SKOS.broader,   MODE_CLASS))
+            self.g.add((uri, SKOS.inScheme,  MODE_SCH))
 
     # ── Schema additions: Wikidata upper-concept hierarchy ───────────────────
     def add_music_concept_hierarchy(self) -> None:
@@ -593,6 +614,14 @@ class KGBuilder:
         # mrc:Mode — broader to musical concept
         self.g.add((MRC["Mode"],       SKOS.broader,    WD_MUSICAL_CONCEPT))
         self.g.add((MRC["Mode"],       RDFS.subClassOf, WD_MUSICAL_CONCEPT))
+
+        # Declare the flat ElementsOfMusicScheme (replaces mrc:scheme/ElementsOfMusic)
+        ELEM_SCH = URIRef(ELEMENTS_SCHEME_URI)
+        self.g.add((ELEM_SCH, RDF.type, SKOS.ConceptScheme))
+        self.g.add((ELEM_SCH, RDFS.label,    Literal("Elements of Music Scheme", lang="en")))
+        self.g.add((ELEM_SCH, SKOS.prefLabel, Literal("Elements of Music Scheme", lang="en")))
+        # Link the top concept
+        self.g.add((ELEM_SCH, SKOS.hasTopConcept, MRC["ElementOfMusic"]))
 
     # ── Populating from a DataFrame ─────────────────────────────────────────
     def populate_from_dataframe(
@@ -898,7 +927,7 @@ class KGBuilder:
 __all__ = (
     "MRC", "MO", "FOAF", "EVENT", "DCT", "EX",
     "INSTRUMENT_SCHEME_URI", "GENRE_SCHEME_URI", "DECADE_SCHEME_URI",
-    "KEY_SCHEME_URI", "TEMPO_SCHEME_URI",
+    "KEY_SCHEME_URI", "TEMPO_SCHEME_URI", "MODE_SCHEME_URI", "ELEMENTS_SCHEME_URI",
     "KEY_NAMES", "KEY_URI_MAP", "_KEY_LABELS", "MODE_URI_MAP",
     "WD_MUSICAL_CONCEPT", "WD_ELEMENTS_OF_MUSIC",
     "WD_MUSIC_GENRE", "WD_MUSICAL_INSTRUMENT", "WD_KEY_MUSIC",
