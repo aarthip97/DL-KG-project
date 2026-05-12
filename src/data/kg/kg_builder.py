@@ -592,6 +592,13 @@ class KGBuilder:
 
         # ── Link our OWL classes to Wikidata via skos:exactMatch / skos:broader ─
         # mrc:Genre — exact match to wd:Q188451 (music genre)
+        # The base ontology TTL labels this class "MRC Genre"; overwrite with
+        # the canonical Wikidata-aligned lowercase label so hierarchy queries
+        # return a consistent single value ("music genre") at every hop.
+        self.g.remove((MRC["Genre"], RDFS.label, None))
+        self.g.remove((MRC["Genre"], SKOS.prefLabel, None))
+        self.g.add((MRC["Genre"], RDFS.label,    Literal("music genre", lang="en")))
+        self.g.add((MRC["Genre"], SKOS.prefLabel, Literal("music genre", lang="en")))
         self.g.add((MRC["Genre"],      SKOS.exactMatch, WD_MUSIC_GENRE))
         self.g.add((MRC["Genre"],      SKOS.broader,    WD_ELEMENTS_OF_MUSIC))
         self.g.add((MRC["Genre"],      RDFS.subClassOf, WD_ELEMENTS_OF_MUSIC))
@@ -621,7 +628,21 @@ class KGBuilder:
         self.g.add((ELEM_SCH, RDFS.label,    Literal("Elements of Music Scheme", lang="en")))
         self.g.add((ELEM_SCH, SKOS.prefLabel, Literal("Elements of Music Scheme", lang="en")))
         # Link the top concept
-        self.g.add((ELEM_SCH, SKOS.hasTopConcept, MRC["ElementOfMusic"]))
+        self.g.add((ELEM_SCH, SKOS.hasTopConcept, MRC["ElementsOfMusic"]))
+
+        # Normalise mrc:ElementsOfMusic (ontology class, singular) so it carries
+        # the same canonical lowercase label as its Wikidata counterpart
+        # wd:Q11696608.  This prevents SPARQL results from showing both
+        # "Element of Music" and "elements of music" as distinct values.
+        ELEM_OF_MUSIC = MRC["ElementsOfMusic"]
+        # Remove any existing labels written by the base ontology TTL
+        self.g.remove((ELEM_OF_MUSIC, RDFS.label, None))
+        self.g.remove((ELEM_OF_MUSIC, SKOS.prefLabel, None))
+        # Set the canonical Wikidata-aligned labels
+        self.g.add((ELEM_OF_MUSIC, RDFS.label,    Literal("elements of music", lang="en")))
+        self.g.add((ELEM_OF_MUSIC, SKOS.prefLabel, Literal("elements of music", lang="en")))
+        # Declare equivalence with the WD node so they are semantically unified
+        self.g.add((ELEM_OF_MUSIC, SKOS.exactMatch, WD_ELEMENTS_OF_MUSIC))
 
     # ── Populating from a DataFrame ─────────────────────────────────────────
     def populate_from_dataframe(
