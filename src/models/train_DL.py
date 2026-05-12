@@ -1,17 +1,23 @@
 """End-to-end training orchestration for the HGT recommender.
 
-Features
---------
-* **RandomLinkSplit** — clean train / val / test split of user→track edges.
-* **BPR loss** with **popularity-weighted negative sampling** — hard negatives
-  from high-popularity items improve ranking quality at negligible extra cost.
-* **AMP (FP16/BF16)** — ~1.5–2× speedup on CUDA with near-zero accuracy loss.
-* **Cosine LR schedule with warm restarts** — fast convergence, avoids
-  getting stuck in a sharp minimum.
-* **Gradient clipping** — stabilises training with deep HGT stacks.
-* **Embedding cache** — full-graph forward pass is computed *once per eval
-  epoch*, not once per mini-batch.
-* **Weights & Biases** — optional; guarded import, full metric logging.
+Training strategy: Full-Graph Forward with Mini-Batch Listwise Loss.
+
+The HGT graph is forwarded in full once per epoch. Every node therefore
+receives an embedding that reflects its complete neighbourhood context, with
+no sampling noise from subgraph methods. The listwise loss is then accumulated
+in small user chunks (user_batch_size users at a time) so that the full
+(num_users x num_tracks) logit matrix is never materialised in GPU memory.
+A single backward pass over the accumulated scalar closes the epoch.
+
+Loss: Intensity-Weighted Listwise cross-entropy with Logit Adjustment
+(see bpr.debiased_listwise_loss). Raw listen counts serve as graded relevance
+and a log-popularity penalty discourages the model from concentrating
+recommendations on already-popular tracks.
+
+Evaluation: full-ranking Recall@K and NDCG@K on held-out edges produced by
+RandomLinkSplit, computed once every eval_every epochs and at the final epoch.
+
+Extras: cosine LR warm restarts, gradient clipping, optional W&B logging.
 """
 from __future__ import annotations
 
@@ -20,12 +26,12 @@ from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
 import torch
-import torch.cuda.amp as amp
+from torch.utils.data import DataLoader
 from torch_geometric.data import HeteroData
 import torch_geometric.transforms as T
 
 from .hgt import RecommenderHGT
-from .bpr import bpr_loss, evaluate_top_k, sample_negative_items
+from .bpr import compute_log_pop_prior, debiased_listwise_loss, evaluate_top_k
 
 try:
     import wandb
@@ -34,8 +40,6 @@ except ImportError:
     _WANDB = False
 
 
-# ── Result container ──────────────────────────────────────────────────────────
-
 @dataclass
 class TrainResult:
     model: RecommenderHGT
@@ -43,54 +47,10 @@ class TrainResult:
     best_val: dict = field(default_factory=dict)
     test_metrics: dict = field(default_factory=dict)
 
-
-# ── Negative sampling helpers ─────────────────────────────────────────────────
-
-def _popularity_neg_items(
-    pos_item_idx: torch.Tensor,
-    num_items: int,
-    item_counts: torch.Tensor | None,
-    *,
-    mix: float = 0.5,
-) -> torch.Tensor:
-    """Mixed uniform + popularity-proportional negative sampling.
-
-    ``mix=0.5`` draws half of the negatives proportional to item popularity
-    (harder negatives) and half uniformly at random.  Set ``mix=0.0`` to
-    revert to pure uniform sampling.
-
-    Parameters
-    ----------
-    item_counts : 1-D float tensor of interaction counts per item, length
-        ``num_items``.  If ``None``, falls back to uniform sampling.
-    mix : float in [0, 1]
-        Fraction of negatives drawn from the popularity distribution.
-    """
-    if item_counts is None or mix == 0.0:
-        return sample_negative_items(pos_item_idx, num_items)
-
-    n = pos_item_idx.size(0)
-    device = pos_item_idx.device
-    n_pop = int(n * mix)
-    n_uni = n - n_pop
-
-    # Uniform part
-    uni_neg = torch.randint(0, num_items, (n_uni,), device=device)
-
-    # Popularity-proportional part (multinomial sample from item frequencies)
-    counts_cpu = item_counts.cpu().float()
-    probs = counts_cpu / counts_cpu.sum()
-    pop_neg = torch.multinomial(probs, n_pop, replacement=True).to(device)
-
-    neg = torch.cat([uni_neg, pop_neg])
-    # Shuffle so the two halves don't form a systematic pattern
-    return neg[torch.randperm(n, device=device)]
-
-
-# ── Training loop ─────────────────────────────────────────────────────────────
-
 def train_hgt(
     data: HeteroData,
+    user_interaction_matrix: torch.Tensor,
+    track_listen_counts: torch.Tensor,
     *,
     edge_type: tuple[str, str, str] = ("user", "listened_to", "track"),
     rev_edge_type: tuple[str, str, str] = ("track", "rev_listened_to", "user"),
@@ -102,22 +62,17 @@ def train_hgt(
     epochs: int = 100,
     lr: float = 1e-3,
     weight_decay: float = 1e-4,
-    batch_size: int = 8192,
+    user_batch_size: int = 1024,
     eval_every: int = 10,
     k_list: Iterable[int] = (10, 20),
     val_ratio: float = 0.1,
     test_ratio: float = 0.1,
     disjoint_train_ratio: float = 0.3,
-    # Negative sampling
-    neg_mix: float = 0.5,
-    # LR schedule
-    lr_t0: int = 20,            # epochs per cosine half-cycle
+    lambda_reg: float = 0.2,
+    temperature: float = 0.1,
+    lr_t0: int = 20,
     lr_eta_min: float = 1e-5,
-    # Gradient clipping
     clip_grad_norm: float = 1.0,
-    # AMP
-    use_amp: bool = True,
-    # W&B
     device: Optional[str] = None,
     use_wandb: bool = False,
     wandb_project: str = "music-recommender-hgt",
@@ -125,34 +80,55 @@ def train_hgt(
     seed: int = 42,
     verbose: bool = True,
 ) -> TrainResult:
-    """Train an HGT recommender on ``data`` and return the fitted model + metrics.
+    """Train an HGT recommender with full-graph forward and mini-batch listwise loss.
 
-    Parameters
-    ----------
-    data : HeteroData
-        Populated heterogeneous graph (output of ``build_rich_hetero_graph``).
-    hidden_channels : int
-        Width of HGTConv layers.  128 is a good default.
-    out_channels : int
-        Embedding dimension used for BPR dot-product scoring.  32–64 works well.
-    dropout : float
-        Dropout between HGT layers and inside the projection head.
-    neg_mix : float
-        Fraction of negatives drawn from the popularity distribution (0 = pure
-        uniform, 1 = pure popularity-weighted).  0.5 is a sensible default.
-    lr_t0 : int
-        Epoch period of the cosine warm restart cycle.
-    clip_grad_norm : float
-        Max L2 norm for gradient clipping.
-    use_amp : bool
-        Enable automatic mixed precision (FP16/BF16) on CUDA — typically 1.5–2×
-        faster with negligible accuracy loss.
+    The full heterogeneous graph is forwarded through the HGT stack once per epoch
+    to obtain globally-consistent node embeddings. The listwise loss is then
+    accumulated in user_batch_size chunks so the full (U x I) logit matrix is never
+    held in memory at once. A single backward pass closes the epoch, preserving the
+    global gradient signal of the listwise objective.
+
+    Parameters are:
+      data                    -- populated HeteroData graph from build_rich_hetero_graph.
+      user_interaction_matrix -- (U, I) tensor of raw listen counts per user per track.
+                                 May live on CPU; rows are indexed by HGT user node ids.
+      track_listen_counts     -- (I,) tensor of total listen counts per track, used to
+                                 compute the log-popularity prior for logit adjustment.
+      edge_type               -- relation triple for user-to-track supervision edges.
+      rev_edge_type           -- reverse relation triple; added automatically if missing.
+      hidden_channels         -- width of HGT message-passing layers.
+      out_channels            -- dimension of final L2-normalised embeddings.
+      num_heads               -- attention heads per HGTConv layer.
+      num_layers              -- number of message-passing hops.
+      dropout                 -- dropout probability in GNN layers and projection head.
+      epochs                  -- total training epochs.
+      lr                      -- initial AdamW learning rate.
+      weight_decay            -- L2 regularisation coefficient.
+      user_batch_size         -- users per mini-batch during loss accumulation.
+      eval_every              -- evaluate validation metrics every this many epochs.
+      k_list                  -- Recall@K and NDCG@K cut-offs.
+      val_ratio               -- fraction of edges held out for validation.
+      test_ratio              -- fraction of edges held out for testing.
+      disjoint_train_ratio    -- fraction of training edges used as supervision labels.
+      lambda_reg              -- popularity penalty scale in the listwise loss.
+      temperature             -- softmax temperature (lower = sharper distribution).
+      lr_t0                   -- epoch period for cosine warm restart cycle.
+      lr_eta_min              -- minimum learning rate at the cosine trough.
+      clip_grad_norm          -- maximum L2 norm for gradient clipping.
+      device                  -- target device; defaults to cuda when available.
+      use_wandb               -- enable Weights and Biases logging.
+      wandb_project           -- W&B project name.
+      wandb_config            -- extra key-value pairs merged into the W&B run config.
+      seed                    -- random seed for reproducibility.
+      verbose                 -- print one-line summary after each evaluation epoch.
+
+    Returns a TrainResult with the best-val-checkpoint model, full epoch history,
+    best validation metrics, and final test metrics.
     """
     torch.manual_seed(seed)
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    use_amp = use_amp and (dev == "cuda" or str(dev).startswith("cuda"))
 
-    # ── Split edges ───────────────────────────────────────────────────────────
+    # Edge splits for held-out evaluation
     if rev_edge_type not in data.edge_types:
         data = T.ToUndirected(merge=False)(data)
 
@@ -170,18 +146,18 @@ def train_hgt(
     val_data   = val_data.to(dev)
     test_data  = test_data.to(dev)
 
-    # ── Build item popularity weights for hard-negative sampling ──────────────
     src_t, _, dst_t = edge_type
-    n_items = data[dst_t].num_nodes
-    item_counts: torch.Tensor | None = None
-    if neg_mix > 0.0:
-        counts = torch.zeros(n_items, dtype=torch.float32)
-        train_pos_all = train_data[edge_type].edge_label_index
-        for item_idx in train_pos_all[1].cpu().tolist():
-            counts[item_idx] += 1
-        item_counts = counts.to(dev)
+    n_users = data[src_t].num_nodes
 
-    # ── Model ─────────────────────────────────────────────────────────────────
+    # Pre-compute log-popularity prior once; reused every epoch
+    log_track_pop = compute_log_pop_prior(track_listen_counts, device=dev)
+
+    # DataLoader over user indices for mini-batch loss accumulation
+    user_loader = DataLoader(
+        range(n_users), batch_size=user_batch_size, shuffle=True
+    )
+
+    # Model
     model = RecommenderHGT(
         metadata=data.metadata(),
         hidden_channels=hidden_channels,
@@ -191,46 +167,39 @@ def train_hgt(
         dropout=dropout,
     ).to(dev)
 
-    # Materialise lazy Linear(-1, h) weights with a dry forward pass.
+    # Materialise lazy Linear(-1, h) weights with a dry forward pass
     with torch.no_grad():
         model(train_data.x_dict, train_data.edge_index_dict)
 
-    # ── Optimiser + scheduler + AMP scaler ───────────────────────────────────
-    opt = torch.optim.AdamW(
-        model.parameters(), lr=lr, weight_decay=weight_decay
-    )
+    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
         opt, T_0=lr_t0, eta_min=lr_eta_min
     )
-    scaler: amp.GradScaler | None = amp.GradScaler() if use_amp else None
 
-    # ── W&B initialisation ────────────────────────────────────────────────────
     if use_wandb and _WANDB:
         wandb.init(
             project=wandb_project,
             config={
                 "hidden_channels": hidden_channels,
-                "out_channels": out_channels,
-                "num_heads": num_heads,
-                "num_layers": num_layers,
-                "dropout": dropout,
-                "epochs": epochs,
-                "lr": lr,
-                "weight_decay": weight_decay,
-                "batch_size": batch_size,
-                "neg_mix": neg_mix,
-                "lr_t0": lr_t0,
-                "use_amp": use_amp,
-                "val_ratio": val_ratio,
-                "test_ratio": test_ratio,
+                "out_channels":    out_channels,
+                "num_heads":       num_heads,
+                "num_layers":      num_layers,
+                "dropout":         dropout,
+                "epochs":          epochs,
+                "lr":              lr,
+                "weight_decay":    weight_decay,
+                "user_batch_size": user_batch_size,
+                "lambda_reg":      lambda_reg,
+                "temperature":     temperature,
+                "lr_t0":           lr_t0,
+                "val_ratio":       val_ratio,
+                "test_ratio":      test_ratio,
                 **(wandb_config or {}),
             },
         )
-        if _WANDB:
-            wandb.watch(model, log="gradients", log_freq=100)
+        wandb.watch(model, log="gradients", log_freq=100)
 
-    # ── Training state ────────────────────────────────────────────────────────
-    train_pos = train_data[edge_type].edge_label_index   # supervision edges
+    train_pos = train_data[edge_type].edge_label_index
     history: list[dict] = []
     best_val_recall = -1.0
     best_state: dict | None = None
@@ -239,63 +208,58 @@ def train_hgt(
     k_list = sorted(set(int(k) for k in k_list))
     primary_k = k_list[0]
 
-    # ── Epoch loop ────────────────────────────────────────────────────────────
     for ep in range(1, epochs + 1):
         model.train()
-        perm = torch.randperm(train_pos.size(1), device=dev)
-        epoch_loss = 0.0
-        n_seen = 0
+        opt.zero_grad(set_to_none=True)
 
-        for s in range(0, perm.numel(), batch_size):
-            batch_idx = perm[s: s + batch_size]
-            u      = train_pos[0, batch_idx]
-            i_pos  = train_pos[1, batch_idx]
-            i_neg  = _popularity_neg_items(
-                i_pos, n_items, item_counts, mix=neg_mix
+        # Full-graph forward pass — once per epoch
+        out = model(train_data.x_dict, train_data.edge_index_dict)
+        all_track_embs = out[dst_t]  # (I, D)
+
+        # Accumulate listwise loss across user mini-batches, then back-prop once
+        total_loss: torch.Tensor | None = None
+        for user_batch_indices in user_loader:
+            user_batch_indices = user_batch_indices.to(dev)
+            batch_u_embs = out[src_t][user_batch_indices]
+            batch_loss = debiased_listwise_loss(
+                batch_u_embs,
+                all_track_embs,
+                user_batch_indices,
+                user_interaction_matrix,
+                log_track_pop,
+                lambda_reg=lambda_reg,
+                temperature=temperature,
             )
+            # Scale so accumulated loss equals the full-batch mean
+            scaled = batch_loss * (user_batch_indices.numel() / n_users)
+            total_loss = scaled if total_loss is None else total_loss + scaled
 
-            opt.zero_grad(set_to_none=True)
+        if total_loss is not None:
+            epoch_loss_scalar = total_loss.item()
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
+        else:
+            epoch_loss_scalar = 0.0
 
-            # Forward + loss under optional AMP context
-            with amp.autocast(enabled=(scaler is not None)):
-                out = model(train_data.x_dict, train_data.edge_index_dict)
-                loss = bpr_loss(out[src_t][u], out[dst_t][i_pos], out[dst_t][i_neg])
-
-            if scaler is not None:
-                scaler.scale(loss).backward()
-                scaler.unscale_(opt)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
-                scaler.step(opt)
-                scaler.update()
-            else:
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
-                opt.step()
-
-            epoch_loss += loss.item() * u.numel()
-            n_seen += u.numel()
-
+        opt.step()
         scheduler.step()
-        epoch_loss /= max(n_seen, 1)
-        current_lr = scheduler.get_last_lr()[0]
 
-        log = {
-            "epoch":          ep,
-            "train/bpr_loss": epoch_loss,
-            "train/lr":       current_lr,
+        current_lr = scheduler.get_last_lr()[0]
+        log: dict = {
+            "epoch":               ep,
+            "train/listwise_loss": epoch_loss_scalar,
+            "train/lr":            current_lr,
         }
 
-        # ── Evaluation ────────────────────────────────────────────────────────
         if ep % eval_every == 0 or ep == epochs:
             model.eval()
-            # Compute embeddings ONCE and reuse for both masking and scoring.
             with torch.no_grad():
-                out = model(train_data.x_dict, train_data.edge_index_dict)
+                out_eval = model(train_data.x_dict, train_data.edge_index_dict)
 
             val_eli = val_data[edge_type].edge_label_index
             val_metrics = evaluate_top_k(
-                user_emb=out[src_t],
-                item_emb=out[dst_t],
+                user_emb=out_eval[src_t],
+                item_emb=out_eval[dst_t],
                 eval_user_idx=val_eli[0],
                 eval_item_idx=val_eli[1],
                 train_edge_index=train_pos,
@@ -321,19 +285,17 @@ def train_hgt(
         if use_wandb and _WANDB:
             wandb.log(log, step=ep)
 
-    # ── Restore best checkpoint ───────────────────────────────────────────────
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    # ── Final test evaluation ─────────────────────────────────────────────────
     model.eval()
     with torch.no_grad():
-        out = model(test_data.x_dict, test_data.edge_index_dict)
+        out_test = model(test_data.x_dict, test_data.edge_index_dict)
 
     test_eli = test_data[edge_type].edge_label_index
     test_metrics = evaluate_top_k(
-        user_emb=out[src_t],
-        item_emb=out[dst_t],
+        user_emb=out_test[src_t],
+        item_emb=out_test[dst_t],
         eval_user_idx=test_eli[0],
         eval_item_idx=test_eli[1],
         train_edge_index=train_pos,
