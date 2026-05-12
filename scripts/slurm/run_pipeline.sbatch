@@ -55,6 +55,9 @@ srun python scripts/run_pipeline.py "$STAGE" \
     --wandb-project    music-recommender-system \
     --epochs-ae        30 \
     --epochs-kge       500 \
-    --epochs-hgt       100
+    --epochs-hgt       100 \
+    --user-batch-hgt   1024 \
+    --lambda-reg       0.2 \
+    --temperature      0.1
 
 echo "[$(date)] finished"

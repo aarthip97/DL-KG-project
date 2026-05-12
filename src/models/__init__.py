@@ -12,7 +12,7 @@ Public API:
 """
 from .kg_to_hetero import load_kg_as_hetero, KGEncoding
 from .autoencoder import jSymbolicAutoencoder, train_autoencoder
-from .bpr import bpr_loss, evaluate_top_k
+from .loss import bpr_loss, evaluate_top_k
 from .hgt import RecommenderHGT
 from .train_DL import train_hgt, TrainResult
 

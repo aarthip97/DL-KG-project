@@ -172,58 +172,98 @@ def stage_kge(args: argparse.Namespace) -> Path:
 
 
 def stage_hgt(args: argparse.Namespace) -> Path:
-    """Build HeteroData, train HGT recommender, save model + results."""
+    """Build HeteroData, train HGT recommender with listwise loss, save model + results.
+
+    Requires three pre-built artefacts from earlier stages:
+      - data/interim/ae_embeddings.parquet   (autoencoder stage)
+      - models/kge/kge_checkpoint.pt         (kge stage)
+      - data/processed/taste_profile_filtered.parquet  (user data stage)
+
+    Builds user_interaction_matrix (U x I raw listen counts) and
+    track_listen_counts (I total listens) from the taste profile so the
+    listwise loss can compute graded relevance targets and the log-popularity
+    prior for logit adjustment.
+    """
     from models.kg_embeddings import load_kge_checkpoint
-    from models.kg_to_hetero import build_rich_hetero_graph
+    from models.kg_to_hetero import load_kg_as_hetero
     from models.train_DL import train_hgt
 
+    processed = Path(args.data_root) / "processed"
     interim   = Path(args.data_root) / "interim"
+    final     = Path(args.data_root) / "final"
     weights   = Path(args.data_root).parent / "models" / "hgt"
     weights.mkdir(parents=True, exist_ok=True)
     model_path  = weights / "hgt_model.pt"
     result_path = weights / "hgt_results.pkl"
 
-    edge_dict_path = interim / "edge_dict.json"
-    kge_cp_path    = Path(args.data_root).parent / "models" / "kge" / "kge_checkpoint.pt"
-    ae_emb_path    = interim / "ae_embeddings.parquet"
+    kge_cp_path  = Path(args.data_root).parent / "models" / "kge" / "kge_checkpoint.pt"
+    ae_emb_path  = interim / "ae_embeddings.parquet"
+    taste_path   = processed / "taste_profile_filtered.parquet"
+    ttl_path     = final / "MusicRecSyst_populated_simple.ttl"
+    nt_path      = final / "MusicRecSyst_listening_simple.nt"
 
-    for p in (edge_dict_path, kge_cp_path, ae_emb_path):
+    for p in (kge_cp_path, ae_emb_path, taste_path, ttl_path):
         if not p.exists():
             raise FileNotFoundError(f"Required artefact missing: {p}")
 
-    log.info("Loading edge_dict from %s", edge_dict_path)
-    with edge_dict_path.open() as f:
-        edge_dict = json.load(f)
-
-    log.info("Loading KGE embeddings from %s", kge_cp_path)
-    rotate_emb = load_kge_checkpoint(kge_cp_path)
-
     log.info("Loading audio embeddings from %s", ae_emb_path)
     ae_df = pd.read_parquet(ae_emb_path)
-    audio_feats = {str(idx): row.to_numpy(dtype=np.float32) for idx, row in ae_df.iterrows()}
 
-    log.info("Building HeteroData graph")
-    data = build_rich_hetero_graph(
-        edge_dict=edge_dict,
-        rotate_embeddings=rotate_emb,
-        track_audio_features=audio_feats,
+    log.info("Building HeteroData from TTL + N-Triples")
+    data, enc = load_kg_as_hetero(
+        ttl_path=str(ttl_path),
+        nt_path=str(nt_path) if nt_path.exists() else None,
+        track_features=ae_df,
+        track_id_col="song_id",
+        track_uri_template="http://purl.org/ontology/mrc/resource/track/{track_id}",
     )
     log.info("HeteroData: %s", data)
+
+    # Build user x track interaction matrix from the taste profile.
+    # Rows are KG user node indices; columns are KG track node indices.
+    log.info("Building interaction matrix from %s", taste_path)
+    taste = pd.read_parquet(taste_path)
+    n_users_kg  = data["user"].num_nodes
+    n_tracks_kg = data["track"].num_nodes
+    user_matrix  = torch.zeros(n_users_kg, n_tracks_kg, dtype=torch.float32)
+    track_totals = torch.zeros(n_tracks_kg, dtype=torch.float32)
+    user_uri_tmpl  = "http://purl.org/ontology/mrc/resource/user/{uid}"
+    track_uri_tmpl = "http://purl.org/ontology/mrc/resource/track/{tid}"
+    for row in taste.itertuples(index=False):
+        u_uri = user_uri_tmpl.format(uid=row.user_id)
+        t_uri = track_uri_tmpl.format(tid=row.song_id)
+        u_kg  = enc.uri_to_id["user"].get(u_uri)
+        t_kg  = enc.uri_to_id["track"].get(t_uri)
+        if u_kg is not None and t_kg is not None:
+            plays = float(getattr(row, "play_count", 1))
+            user_matrix[int(u_kg), int(t_kg)] += plays
+            track_totals[int(t_kg)] += plays
+    log.info(
+        "Interaction matrix: %d x %d  (%.4f%% non-zero)",
+        n_users_kg, n_tracks_kg,
+        100.0 * (user_matrix > 0).sum().item() / (n_users_kg * n_tracks_kg),
+    )
 
     log.info("Training HGT for %d epochs on %s", args.epochs_hgt, args.device)
     result = train_hgt(
         data,
+        user_interaction_matrix=user_matrix,
+        track_listen_counts=track_totals,
         epochs=args.epochs_hgt,
-        batch_size=args.batch_hgt,
+        user_batch_size=args.user_batch_hgt,
         lr=args.lr_hgt,
+        lambda_reg=args.lambda_reg,
+        temperature=args.temperature,
         device=args.device,
-        wandb_project=args.wandb_project,
-        wandb_run_name=f"hgt_h{args.hgt_hidden}_ep{args.epochs_hgt}",
+        use_wandb=bool(args.wandb_project),
+        wandb_project=args.wandb_project or "music-recommender-hgt",
     )
 
     torch.save(result.model.state_dict(), model_path)
     with result_path.open("wb") as f:
-        pickle.dump({"history": result.history, "metrics": result.metrics}, f)
+        pickle.dump({"history": result.history,
+                     "best_val": result.best_val,
+                     "test_metrics": result.test_metrics}, f)
     log.info("Saved HGT model -> %s", model_path)
     log.info("Saved HGT results -> %s", result_path)
     return model_path
@@ -272,10 +312,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lr-kge",     type=float, default=1e-3)
 
     # HGT hyper-params
-    p.add_argument("--epochs-hgt", type=int, default=100)
-    p.add_argument("--batch-hgt",  type=int, default=4096)
-    p.add_argument("--lr-hgt",     type=float, default=1e-3)
-    p.add_argument("--hgt-hidden", type=int, default=128)
+    p.add_argument("--epochs-hgt",      type=int,   default=100)
+    p.add_argument("--user-batch-hgt",  type=int,   default=1024,
+                   help="Number of users per mini-batch for loss accumulation.")
+    p.add_argument("--lr-hgt",          type=float, default=1e-3)
+    p.add_argument("--hgt-hidden",      type=int,   default=128)
+    p.add_argument("--lambda-reg",      type=float, default=0.2,
+                   help="Popularity debiasing strength for listwise loss (0 = no debiasing).")
+    p.add_argument("--temperature",     type=float, default=0.1,
+                   help="Softmax temperature for logit scaling.")
 
     return p
 

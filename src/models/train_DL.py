@@ -31,7 +31,7 @@ from torch_geometric.data import HeteroData
 import torch_geometric.transforms as T
 
 from .hgt import RecommenderHGT
-from .bpr import compute_log_pop_prior, debiased_listwise_loss, evaluate_top_k
+from .loss import compute_log_pop_prior, debiased_listwise_loss, evaluate_top_k
 
 try:
     import wandb

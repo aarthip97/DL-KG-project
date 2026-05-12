@@ -9,7 +9,10 @@ multi_k_evaluation.
 
 Embedding-based GNN models can use recs_from_embeddings to convert their
 (user_emb, item_emb) tensors to a recs_dict, or call evaluate_from_embeddings
-as a single-step convenience wrapper.
+as a single-step convenience wrapper.  For large-scale K-sweeps that need to
+stay fully on-device, evaluate_gnn_k_sweep performs a single top-max_K sort
+and evaluates all requested cut-offs in one vectorised pass — substantially
+faster than calling evaluate_from_embeddings once per K.
 
 Score-matrix models (e.g. ALS that exposes a full U x I matrix) can use
 recs_from_score_matrix instead.
@@ -200,22 +203,22 @@ def evaluate_recs(
       k            -- evaluation cut-off.
 
     Returns a dict with keys Recall@K, Precision@K, NDCG@K, HitRate@K,
-    MRR, Coverage, and PopularityBias.
+    MRR, Coverage, and PopularityBias@K.
     """
     df = evaluate_recs_per_user(recs_dict, ground_truth, pop_norm, k)
     if df.empty:
-        return {m: 0.0 for m in
-                ("Recall@K", "Precision@K", "NDCG@K", "HitRate@K",
-                 "MRR", "Coverage", "PopularityBias")}
+        return dict.fromkeys(
+                (f"Mean_Recall@{k}", f"Mean_Precision@{k}", f"Mean_NDCG@{k}",
+                 f"Mean_HitRate@{k}", "MRR", "Coverage", f"Mean_PopularityBias@{k}"), 0.0)
     rec_set = {s for rec in recs_dict.values() for s in rec[:k]}
     return {
-        "Recall@K":       float(df["Recall@K"].mean()),
-        "Precision@K":    float(df["Precision@K"].mean()),
-        "NDCG@K":         float(df["NDCG@K"].mean()),
-        "HitRate@K":      float(df["HitRate@K"].mean()),
-        "MRR":            float(df["MRR"].mean()),
-        "Coverage":       len(rec_set) / n_songs,
-        "PopularityBias": float(df["PopularityBias"].mean()),
+        f"Mean_Recall@{k}":         float(df["Recall@K"].mean()),
+        f"Mean_Precision@{k}":      float(df["Precision@K"].mean()),
+        f"Mean_NDCG@{k}":           float(df["NDCG@K"].mean()),
+        f"Mean_HitRate@{k}":        float(df["HitRate@K"].mean()),
+        "MRR":                      float(df["MRR"].mean()),
+        "Coverage":                 len(rec_set) / n_songs,
+        f"Mean_PopularityBias@{k}": float(df["PopularityBias"].mean()),
     }
 
 
@@ -257,25 +260,144 @@ def evaluate_from_embeddings(
     return evaluate_recs(recs, ground_truth, seen_dict, n_songs, pop_norm, k)
 
 
+# Vectorised GNN-specific multi-K sweep
+
+def evaluate_gnn_k_sweep(
+    user_emb: torch.Tensor,
+    item_emb: torch.Tensor,
+    eval_user_idx: torch.Tensor,
+    eval_item_idx: torch.Tensor,
+    train_edge_index: torch.Tensor,
+    k_list: List[int],
+) -> Dict[str, float]:
+    """Evaluate GNN embeddings at multiple cut-offs K using a single top-K sort.
+
+    This is the recommended function when you need Recall and NDCG at many
+    different K values simultaneously (e.g. a full K-sweep from 5 to 100).
+    It performs only one torch.topk call per user rather than re-sorting for
+    every K, and keeps all tensors on-device throughout with no Python user loop.
+
+    The approach is:
+      1. Compute the full dot-product score matrix for the unique eval users.
+      2. Mask training interactions to negative infinity so they cannot appear
+         in the top-K, using a vectorised scatter via a global-to-local index map.
+      3. Sort once up to max(k_list).
+      4. Build the relevance matrix (U_eval, max_K) in a single vectorised pass
+         using torch.isin on encoded (user, item) pairs — no Python loop over users.
+      5. Compute cumulative DCG and recall with torch.cumsum batched over all users
+         simultaneously, then slice at each K.
+
+    This function does not compute Coverage or PopularityBias because those
+    require catalogue-level information not needed here. Use evaluate_from_embeddings
+    for single-K evaluation that includes those metrics.
+
+    Parameters are:
+      user_emb         -- (U, D) float tensor of user node embeddings.
+      item_emb         -- (I, D) float tensor of item node embeddings.
+      eval_user_idx    -- 1-D tensor of user node indices in the validation/test set.
+                          May contain duplicates (one entry per positive interaction).
+      eval_item_idx    -- 1-D tensor of the corresponding positive item indices.
+                          Paired elementwise with eval_user_idx.
+      train_edge_index -- (2, E) tensor with train_edge_index[0] = user indices and
+                          train_edge_index[1] = item indices for all training edges.
+                          These items are masked to -inf before scoring.
+      k_list           -- list of integer cut-off values, e.g. [5, 10, 20, 50].
+
+    Returns a flat dict with keys Recall@K and NDCG@K for each K in k_list,
+    averaged over all users that have at least one positive in eval_item_idx.
+    """
+    device  = user_emb.device
+    max_k   = max(k_list)
+    I       = item_emb.size(0)
+
+    # Unique eval users and a vectorised global→local index map
+    eval_users_unique = torch.unique(eval_user_idx)
+    U_eval = eval_users_unique.size(0)
+
+    max_uid = int(max(eval_users_unique.max(), train_edge_index[0].max()).item()) + 1
+    g2l = torch.full((max_uid,), -1, dtype=torch.long, device=device)
+    g2l[eval_users_unique] = torch.arange(U_eval, device=device)
+
+    # Score matrix (U_eval, I) — full dot-product
+    scores = torch.matmul(user_emb[eval_users_unique], item_emb.t())
+
+    # Mask training interactions: vectorised scatter using g2l map
+    train_u, train_i = train_edge_index
+    local_train_u = g2l[train_u]
+    valid = local_train_u >= 0
+    if valid.any():
+        scores[local_train_u[valid], train_i[valid]] = float("-inf")
+
+    # Single top-max_k sort (U_eval, max_k)
+    _, topk_indices = torch.topk(scores, min(max_k, I), dim=-1)
+    del scores  # free score matrix ASAP
+
+    # ── Vectorised relevance matrix ───────────────────────────────────────────
+    # Encode each (local_user, item) pair as a single int64 so we can use
+    # torch.isin for membership testing — no Python loop over users.
+    local_gt_u = g2l[eval_user_idx]                                   # (n_pos,)
+    gt_enc     = local_gt_u.long() * I + eval_item_idx.long()         # (n_pos,)
+
+    row_exp   = torch.arange(U_eval, device=device).unsqueeze(1).expand_as(topk_indices)
+    pred_enc  = row_exp.reshape(-1).long() * I + topk_indices.reshape(-1).long()  # (U*max_k,)
+
+    rel = torch.isin(pred_enc, gt_enc).float().view(U_eval, max_k)    # (U_eval, max_k)
+
+    # n_pos per local user (vectorised scatter_add)
+    n_pos = torch.zeros(U_eval, dtype=torch.float32, device=device)
+    n_pos.scatter_add_(0, local_gt_u.long(),
+                       torch.ones(local_gt_u.size(0), dtype=torch.float32, device=device))
+    valid_users  = n_pos > 0                                           # (U_eval,)
+    n_pos_safe   = n_pos.clamp(min=1.0).unsqueeze(1)                   # (U_eval, 1)
+
+    # Discount factors: log2(rank+1), rank 1-indexed
+    discounts = torch.log2(
+        torch.arange(2, max_k + 2, device=device, dtype=torch.float32)
+    )  # (max_k,)
+
+    # Cumulative recall: hits / n_pos  (U_eval, max_k)
+    recalls = rel.cumsum(dim=1) / n_pos_safe
+
+    # DCG: (2^rel - 1) / log2(rank+1), cumulative
+    gains = (2.0 ** rel) - 1.0
+    dcgs  = (gains / discounts).cumsum(dim=1)                          # (U_eval, max_k)
+
+    # Ideal DCG: n_pos ones at the top, zeros elsewhere
+    ideal_rel   = (torch.arange(max_k, device=device).unsqueeze(0)
+                   < n_pos.long().unsqueeze(1)).float()                # (U_eval, max_k)
+    idcgs       = ((2.0 ** ideal_rel - 1.0) / discounts).cumsum(dim=1)
+
+    ndcgs = torch.where(idcgs > 0, dcgs / idcgs, torch.zeros_like(dcgs))
+
+    # Extract metric value at each requested K, averaged only over valid users
+    out: Dict[str, float] = {}
+    for k in k_list:
+        ki = k - 1
+        r  = recalls[valid_users, ki]
+        n  = ndcgs[valid_users, ki]
+        out[f"Recall@{k}"] = float(r.mean()) if r.numel() > 0 else 0.0
+        out[f"NDCG@{k}"]   = float(n.mean()) if n.numel() > 0 else 0.0
+    return out
+
+
 def overall_score(
     metrics: Mapping[str, float],
     *,
-    w_recall:   float = 0.35,
-    w_ndcg:     float = 0.35,
+    w_ndcg:     float = 0.60,
     w_cov:      float = 0.20,
-    w_anti_pop: float = 0.10,
+    w_anti_pop: float = 0.20,
+    k: int,
 ) -> float:
-    """Weighted composite score combining accuracy, ranking, coverage, and diversity.
+    """Weighted composite score combining ranking, coverage, and diversity.
 
-    Default weights produce 0.35 * Recall@K + 0.35 * NDCG@K + 0.20 * Coverage
-    + 0.10 * (1 - PopularityBias). The anti-popularity term rewards models that
-    avoid concentrating all recommendations on already-popular tracks.
+    Default weights produce 0.60 * NDCG@K + 0.20 * Coverage + 0.20 * (1 - PopularityBias). 
+    The anti-popularity term rewards models that avoid concentrating all recommendations
+    on already-popular tracks.
     """
     return (
-        w_recall   * metrics["Recall@K"]
-        + w_ndcg     * metrics["NDCG@K"]
+        + w_ndcg     * metrics[f"NDCG@{k}"]
         + w_cov      * metrics["Coverage"]
-        + w_anti_pop * (1.0 - metrics["PopularityBias"])
+        + w_anti_pop * (1.0 - metrics[f"PopularityBias@{k}"])
     )
 
 
@@ -286,8 +408,9 @@ def multi_k_evaluation(
     n_songs: int,
     pop_norm: np.ndarray,
     *,
-    ks: Iterable[int] = (5, 10, 20, 50),
-    model_name: str = "model",
+    # Linear from 5 to 100 (steps of 5), then 'exponential' jumps up to 5000
+    ks: Sequence[int] = list(range(5, 105, 5)) + [200, 500, 1000, 2000, 5000],
+    model_name: str,
 ) -> pd.DataFrame:
     """Evaluate the same recommendation lists at multiple cut-offs K.
 
@@ -308,11 +431,11 @@ def multi_k_evaluation(
 
     Returns a long-format DataFrame with columns [model, K, metric, value].
     """
-    ks_sorted = sorted(set(int(k) for k in ks))
+    ks_sorted = sorted({int(k) for k in ks})
     rows = []
     for k in ks_sorted:
         m = evaluate_recs(recs_dict_max_k, ground_truth, seen_dict, n_songs, pop_norm, k=k)
-        m["Overall_Score"] = overall_score(m)
+        m["Overall_Score"] = overall_score(m, k=k)
         for metric_name, value in m.items():
             rows.append({"model": model_name, "K": k,
                          "metric": metric_name, "value": float(value)})
