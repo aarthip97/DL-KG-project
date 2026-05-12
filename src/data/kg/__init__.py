@@ -33,7 +33,8 @@ from .wikidata_mapping import (  # noqa: F401
     INSTRUMENT_ROOT, GENRE_ROOT,
     INSTRUMENT_SCHEME, GENRE_SCHEME, DECADE_SCHEME,
     resolve_label, resolve_labels,
-    fetch_subclass_chain, fetch_subclass_chains,
+    fetch_direct_parents, build_parent_graph,
+    fetch_subclass_chain, fetch_subclass_chains,  # deprecated wrappers
     fetch_qid_metadata,
     enrich_graph_with_wikidata,
     audit_wikidata_enrichment,

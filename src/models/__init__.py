@@ -10,16 +10,13 @@ Public API:
 * :func:`bpr_loss` / :func:`evaluate_top_k` — BPR objective + ranking metrics.
 * :func:`train_hgt`                 — HGT training loop with optional W&B.
 """
-
-from .pruning import prune_rdf_graph
 from .kg_to_hetero import load_kg_as_hetero, KGEncoding
 from .autoencoder import jSymbolicAutoencoder, train_autoencoder
 from .bpr import bpr_loss, evaluate_top_k
-from .gnn import RecommenderHGT
-from .train import train_hgt
+from .hgt import RecommenderHGT
+from .train_DL import train_hgt, TrainResult
 
 __all__ = [
-    "prune_rdf_graph",
     "load_kg_as_hetero",
     "KGEncoding",
     "jSymbolicAutoencoder",
@@ -28,4 +25,5 @@ __all__ = [
     "bpr_loss",
     "evaluate_top_k",
     "train_hgt",
+    "TrainResult",
 ]

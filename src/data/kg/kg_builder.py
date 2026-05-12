@@ -20,7 +20,9 @@ Usage
         base_ttl="notebooks/MusicRecSyst.ttl",          # read-only template
         out_ttl="notebooks/MusicRecSyst_populated.ttl", # working copy
     )
-    builder.add_tempo_class_individuals()
+    builder.add_music_concept_hierarchy()   # upper WD hierarchy + domain class links
+    builder.add_tempo_class_individuals()   # mrc:Allegro a mrc:TempoClass etc.
+    builder.add_key_mode_individuals()      # mrc:KeyC a mrc:Key, mrc:MajorMode a mrc:Mode
     builder.populate_from_dataframe(merged_df)
     builder.save()
 """
@@ -41,11 +43,33 @@ from rdflib.namespace import OWL, RDF, RDFS, SKOS, XSD, FOAF as _FOAF
 from .tempo_classes import TEMPO_CLASSES, classify_tempo
 
 
-# ConceptScheme URIs (kept here so kg_builder doesn't need to import the
-# wikidata module just to type a node as a SKOS concept).
-INSTRUMENT_SCHEME_URI = "http://purl.org/ontology/mrc/scheme/Instruments"
-GENRE_SCHEME_URI      = "http://purl.org/ontology/mrc/scheme/Genres"
-DECADE_SCHEME_URI     = "http://purl.org/ontology/mrc/scheme/Decades"
+# ConceptScheme URIs — flat names inside mrc: so they serialise as CURIEs
+# (e.g. mrc:InstrumentScheme) rather than angle-bracket full URIs.
+# IMPORTANT: must stay in sync with the constants in wikidata_mapping.py.
+INSTRUMENT_SCHEME_URI = "http://purl.org/ontology/mrc/InstrumentScheme"
+GENRE_SCHEME_URI      = "http://purl.org/ontology/mrc/GenreScheme"
+DECADE_SCHEME_URI     = "http://purl.org/ontology/mrc/DecadeScheme"
+KEY_SCHEME_URI        = "http://purl.org/ontology/mrc/KeyScheme"
+TEMPO_SCHEME_URI      = "http://purl.org/ontology/mrc/TempoScheme"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Legacy sub-path URIs present in the *base* ontology TTL that must be
+# removed from the graph at load time so only our flat replacements remain.
+# ─────────────────────────────────────────────────────────────────────────────
+_LEGACY_KEY_FRAGS = (
+    "Key/C", "Key/C_sharp", "Key/D", "Key/D_sharp", "Key/E",
+    "Key/F", "Key/F_sharp", "Key/G", "Key/G_sharp",
+    "Key/A", "Key/A_sharp", "Key/B",
+)
+_LEGACY_TEMPO_FRAGS = (
+    "TempoClass/Larghissimo", "TempoClass/Grave", "TempoClass/Largo",
+    "TempoClass/Adagio", "TempoClass/Andante", "TempoClass/Moderato",
+    "TempoClass/Allegro", "TempoClass/Presto", "TempoClass/Prestissimo",
+)
+_LEGACY_SCHEME_URIS = (
+    "http://purl.org/ontology/mrc/scheme/Keys",
+    "http://purl.org/ontology/mrc/scheme/Tempos",
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -142,19 +166,68 @@ def _iter_strings(v) -> list[str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Key / mode → URI maps (mirrors individuals declared in MusicRecSyst.ttl
-# under <http://purl.org/ontology/mrc/Key/...> and mrc:MajorMode / mrc:MinorMode)
+# Wikidata upper-concept hierarchy
+#
+# These nodes are minted explicitly by add_music_concept_hierarchy() so that
+# all music-domain classes and individuals are connected upward:
+#
+#   wd:Q115211517  musical concept
+#   └── wd:Q11696608  elements of music
+#         ├── wd:Q534932   key (music theory)    ← mrc:Key   skos:exactMatch
+#         ├── wd:Q34379    musical instrument     ← mo:Instrument skos:exactMatch
+#         └── wd:Q188451   music genre            ← mrc:Genre skos:exactMatch
+#   wd:Q115211517  musical concept
+#         ├── mrc:TempoClass  skos:broader
+#         └── mrc:Mode        skos:broader
+# ─────────────────────────────────────────────────────────────────────────────
+_WD_NS                  = Namespace("http://www.wikidata.org/entity/")
+WD_MUSICAL_CONCEPT      = _WD_NS["Q115211517"]   # musical concept
+WD_ELEMENTS_OF_MUSIC    = _WD_NS["Q11696608"]    # elements of music
+WD_MUSIC_GENRE          = _WD_NS["Q188451"]      # music genre
+WD_MUSICAL_INSTRUMENT   = _WD_NS["Q34379"]       # musical instrument
+WD_KEY_MUSIC            = _WD_NS["Q534932"]      # key (music theory)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Key / mode → URI maps
+#
+# Flat named-individual URIs — no sub-path, mirrors the pattern preferred
+# for all music-domain controlled vocabulary:
+#   mrc:Key        — owl:Class declared at runtime by add_key_mode_individuals()
+#   mrc:KeyC       — owl:NamedIndividual a mrc:Key  (sharps → "_sharp" suffix)
+#   mrc:Mode       — owl:Class declared at runtime by add_key_mode_individuals()
+#   mrc:MajorMode  — owl:NamedIndividual a mrc:Mode
+#   mrc:MinorMode  — owl:NamedIndividual a mrc:Mode
 # ─────────────────────────────────────────────────────────────────────────────
 KEY_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 
+# Chromatic note labels (enharmonic equivalents for SPARQL / display)
+_KEY_LABELS: dict[str, tuple[str, ...]] = {
+    "C":  ("C",),
+    "C#": ("C♯", "D♭"),
+    "D":  ("D",),
+    "D#": ("D♯", "E♭"),
+    "E":  ("E",),
+    "F":  ("F",),
+    "F#": ("F♯", "G♭"),
+    "G":  ("G",),
+    "G#": ("G♯", "A♭"),
+    "A":  ("A",),
+    "A#": ("A♯", "B♭"),
+    "B":  ("B",),
+}
+
 
 def _key_iri_frag(name: str) -> str:
-    """Sharps are escaped as `_sharp` to match the TTL anchors."""
+    """Sharps are escaped as ``_sharp`` so the URI is valid without %-encoding.
+
+    e.g. ``"C#"`` → ``"KeyC_sharp"`` → ``mrc:KeyC_sharp``
+    """
     return name.replace("#", "_sharp")
 
 
 KEY_URI_MAP: dict[str, URIRef] = {
-    name: URIRef(f"http://purl.org/ontology/mrc/Key/{_key_iri_frag(name)}")
+    name: MRC[f"Key{_key_iri_frag(name)}"]   # mrc:KeyC, mrc:KeyC_sharp …
     for name in KEY_NAMES
 }
 
@@ -169,7 +242,7 @@ MODE_URI_MAP: dict[object, URIRef] = {
 
 
 def _resolve_key_uri(value) -> Optional[URIRef]:
-    """Map an MSD key value (``'C'`` … ``'B'`` or 0–11) to a `mrc:Key/<x>` URI."""
+    """Map an MSD key value (``'C'`` … ``'B'`` or 0–11) to a flat ``mrc:KeyX`` named-individual URI."""
     if _is_missing(value):
         return None
     # numeric (incl. floats that round to ints, e.g. parquet)
@@ -278,62 +351,248 @@ class KGBuilder:
         # Cache to avoid duplicate genre-association blank nodes per (artist, genre).
         self._known_assocs: set[tuple[URIRef, URIRef]] = set()
 
+        # Remove old sub-path Key/TempoClass/scheme nodes inherited from the
+        # base TTL so they do not coexist with the flat replacements we add.
+        self._purge_legacy_individuals()
+
+
+    # ── Legacy-individual purge ──────────────────────────────────────────────
+    def _purge_legacy_individuals(self) -> None:
+        """Remove all triples whose subject is one of the old sub-path URIs
+        defined in the base ontology TTL.  Also strips any ``skos:inScheme``
+        pointer from ``mrc:Key`` that still points at the legacy scheme URI.
+        """
+        # Old Key and TempoClass named individuals
+        old_nodes: list[URIRef] = [
+            MRC[frag] for frag in _LEGACY_KEY_FRAGS + _LEGACY_TEMPO_FRAGS
+        ]
+        # Old ConceptScheme nodes
+        old_nodes += [URIRef(u) for u in _LEGACY_SCHEME_URIS]
+
+        for node in old_nodes:
+            # Remove all triples where node appears as subject or object
+            self.g.remove((node, None, None))
+            self.g.remove((None, None, node))
+
+        # Also strip the mrc:Key class-level skos:inScheme that pointed at
+        # the old <mrc:scheme/Keys> node (object was already removed above,
+        # but the subject-side triple may still linger as a dangling pointer).
+        for old_scheme in _LEGACY_SCHEME_URIS:
+            self.g.remove((MRC["Key"], SKOS.inScheme, URIRef(old_scheme)))
+            self.g.remove((MRC["TempoClass"], SKOS.inScheme, URIRef(old_scheme)))
+
 
     # ── URI minting ─────────────────────────────────────────────────────────
     @staticmethod
     def artist_uri(artist_id: str) -> URIRef:
-        return EX[f"artist/{_slug(artist_id)}"]
+        """Flat CURIE-safe URI, e.g. ``ex:artist_ARXXXXX``."""
+        return EX[f"artist_{_slug(artist_id)}"]
 
     @staticmethod
     def track_uri(track_id: str) -> URIRef:
-        return EX[f"track/{_slug(track_id)}"]
+        """Flat CURIE-safe URI, e.g. ``ex:track_TRXXXXX``."""
+        return EX[f"track_{_slug(track_id)}"]
 
     @staticmethod
     def performance_uri(track_id: str) -> URIRef:
-        return EX[f"performance/{_slug(track_id)}"]
+        """Flat CURIE-safe URI, e.g. ``ex:performance_TRXXXXX``."""
+        return EX[f"performance_{_slug(track_id)}"]
 
     @staticmethod
     def genre_uri(label: str) -> URIRef:
-        return EX[f"genre/{_slug(label)}"]
+        """Flat named-individual URI, e.g. ``mrc:pop_music`` (no sub-path)."""
+        return MRC[_slug(label)]
 
     @staticmethod
     def instrument_uri(label: str) -> URIRef:
-        return EX[f"instrument/{_slug(label)}"]
+        """Flat named-individual URI, e.g. ``mrc:Distortion_Guitar``."""
+        return MRC[_slug(label)]
 
     @staticmethod
     def tempo_class_uri(name: str) -> URIRef:
-        return MRC[f"TempoClass/{name}"]
+        """Flat named-individual URI, e.g. ``mrc:Allegro`` (no sub-path)."""
+        return MRC[name]
 
     @staticmethod
     def decade_uri(start_year: int) -> URIRef:
-        """Local URI for a decade, e.g. 2010 -> ex:decade/2010s."""
-        return EX[f"decade/{int(start_year)}s"]
+        """Flat CURIE-safe URI, e.g. ``ex:decade_2010s``."""
+        return EX[f"decade_{int(start_year)}s"]
 
     # ── Schema additions: tempo-class controlled vocabulary ─────────────────
     def add_tempo_class_individuals(self) -> None:
         """
-        Declare one ``mrc:TempoClass`` (an owl:Class) plus one
-        ``skos:Concept``-flavoured individual per Music Theory Academy
-        marking, with rdfs:label, rdfs:comment, and BPM bounds.
+        Declare ``mrc:TempoClass`` as an ``owl:Class`` and populate one flat
+        ``owl:NamedIndividual`` per Music Theory Academy marking.
+
+        URI pattern: ``mrc:Allegro``, ``mrc:Largo``, … (no sub-path).
+
+        Each individual is typed both as ``mrc:TempoClass`` and
+        ``owl:NamedIndividual``, carries ``rdfs:label`` (Protégé / standard)
+        and ``skos:prefLabel`` (SKOS interop), and links back to its class
+        via ``skos:broader mrc:TempoClass`` so SPARQL can walk the concept
+        hierarchy.
+
+        Call ``add_music_concept_hierarchy()`` first to ensure
+        ``mrc:TempoClass`` itself is connected to the Wikidata upper layer.
         """
         TC = MRC["TempoClass"]
         self.g.add((TC, RDF.type, OWL.Class))
-        self.g.add((TC, RDFS.label, Literal("Tempo Class", lang="en")))
+        self.g.add((TC, RDFS.label,   Literal("Tempo Class", lang="en")))
+        self.g.add((TC, SKOS.prefLabel, Literal("Tempo Class", lang="en")))
         self.g.add((TC, RDFS.comment, Literal(
             "Categorical tempo marking (Larghissimo … Prestissimo) "
             "derived from BPM ranges as published by Music Theory Academy.",
             lang="en")))
 
+        # Declare the flat TempoScheme (replaces the legacy mrc:scheme/Tempos)
+        TEMPO_SCH = MRC["TempoScheme"]
+        self.g.add((TEMPO_SCH, RDF.type, SKOS.ConceptScheme))
+        self.g.add((TEMPO_SCH, RDFS.label,    Literal("Tempo Class Scheme", lang="en")))
+        self.g.add((TEMPO_SCH, SKOS.prefLabel, Literal("Tempo Class Scheme", lang="en")))
+
         for tc in TEMPO_CLASSES:
             uri = self.tempo_class_uri(tc.name)
             self.g.add((uri, RDF.type, TC))
             self.g.add((uri, RDF.type, OWL.NamedIndividual))
-            self.g.add((uri, RDFS.label, Literal(tc.name, lang="en")))
-            self.g.add((uri, RDFS.comment, Literal(tc.description, lang="en")))
-            self.g.add((uri, MRC["minBPM"], Literal(tc.lo, datatype=XSD.double)))
+            self.g.add((uri, RDFS.label,     Literal(tc.name,        lang="en")))
+            self.g.add((uri, SKOS.prefLabel, Literal(tc.name,        lang="en")))
+            self.g.add((uri, RDFS.comment,   Literal(tc.description, lang="en")))
+            self.g.add((uri, MRC["minBPM"],  Literal(tc.lo, datatype=XSD.double)))
             if tc.hi != float("inf"):
-                self.g.add((uri, MRC["maxBPM"],
-                            Literal(tc.hi, datatype=XSD.double)))
+                self.g.add((uri, MRC["maxBPM"], Literal(tc.hi, datatype=XSD.double)))
+            # SKOS hierarchy
+            self.g.add((uri, SKOS.broader,  TC))
+            self.g.add((uri, SKOS.inScheme, TEMPO_SCH))
+
+    # ── Schema additions: key / mode controlled vocabularies ────────────────
+    def add_key_mode_individuals(self) -> None:
+        """
+        Declare ``mrc:Key`` and ``mrc:Mode`` as ``owl:Class`` nodes and
+        populate one flat ``owl:NamedIndividual`` per chromatic pitch class /
+        mode.
+
+        URI pattern:
+            mrc:KeyC, mrc:KeyC_sharp … mrc:KeyB
+            mrc:MajorMode, mrc:MinorMode
+
+        Each individual carries both ``rdfs:label`` (Protégé / community
+        standard) and ``skos:prefLabel`` (SKOS interop), plus ``skos:altLabel``
+        for enharmonic equivalents (C♯ / D♭).  A ``skos:broader`` edge links
+        each individual back to its class-concept so the hierarchy is
+        traversable in SPARQL.
+
+        Call ``add_music_concept_hierarchy()`` first to ensure ``mrc:Key``
+        and ``mrc:Mode`` are connected to the Wikidata upper layer.
+        """
+        # ── mrc:Key class + 12 chromatic individuals ────────────────────────
+        KEY_CLASS = MRC["Key"]
+        self.g.add((KEY_CLASS, RDF.type, OWL.Class))
+        self.g.add((KEY_CLASS, RDFS.label,    Literal("Musical Key", lang="en")))
+        self.g.add((KEY_CLASS, SKOS.prefLabel, Literal("Musical Key", lang="en")))
+        self.g.add((KEY_CLASS, RDFS.comment,  Literal(
+            "One of the twelve chromatic pitch classes used as the tonal "
+            "centre of a musical piece (C, C♯/D♭, D, … B).", lang="en")))
+
+        # Declare the flat KeyScheme (replaces the legacy mrc:scheme/Keys)
+        KEY_SCH = MRC["KeyScheme"]
+        self.g.add((KEY_SCH, RDF.type, SKOS.ConceptScheme))
+        self.g.add((KEY_SCH, RDFS.label,    Literal("Musical Key Scheme", lang="en")))
+        self.g.add((KEY_SCH, SKOS.prefLabel, Literal("Musical Key Scheme", lang="en")))
+
+        for name, uri in KEY_URI_MAP.items():
+            self.g.add((uri, RDF.type, KEY_CLASS))
+            self.g.add((uri, RDF.type, OWL.NamedIndividual))
+            self.g.add((uri, RDFS.label,     Literal(name, lang="en")))
+            self.g.add((uri, SKOS.prefLabel, Literal(name, lang="en")))
+            # Enharmonic / Unicode alt-labels (e.g. "C♯", "D♭")
+            for alt in _KEY_LABELS.get(name, ()):
+                if alt != name:
+                    self.g.add((uri, SKOS.altLabel, Literal(alt, lang="en")))
+            # SKOS hierarchy
+            self.g.add((uri, SKOS.broader,  KEY_CLASS))
+            self.g.add((uri, SKOS.inScheme, KEY_SCH))
+
+        # ── mrc:Mode class + Major / Minor individuals ───────────────────────
+        MODE_CLASS = MRC["Mode"]
+        self.g.add((MODE_CLASS, RDF.type, OWL.Class))
+        self.g.add((MODE_CLASS, RDFS.label,    Literal("Musical Mode", lang="en")))
+        self.g.add((MODE_CLASS, SKOS.prefLabel, Literal("Musical Mode", lang="en")))
+        self.g.add((MODE_CLASS, RDFS.comment,  Literal(
+            "The modality of a musical key: Major or Minor.", lang="en")))
+
+        for label, uri in (("Major", MRC["MajorMode"]), ("Minor", MRC["MinorMode"])):
+            self.g.add((uri, RDF.type, MODE_CLASS))
+            self.g.add((uri, RDF.type, OWL.NamedIndividual))
+            self.g.add((uri, RDFS.label,     Literal(label, lang="en")))
+            self.g.add((uri, SKOS.prefLabel, Literal(label, lang="en")))
+            self.g.add((uri, SKOS.broader,   MODE_CLASS))
+
+    # ── Schema additions: Wikidata upper-concept hierarchy ───────────────────
+    def add_music_concept_hierarchy(self) -> None:
+        """
+        Mint a minimal set of Wikidata upper-concept nodes and link all
+        music-domain classes to them.  Call this **once**, before the
+        other ``add_*_individuals`` methods.
+
+        Hierarchy added to the graph::
+
+            wd:Q115211517  (musical concept)
+            └─ wd:Q11696608  (elements of music)
+                  ├─ wd:Q534932   (key)           ← mrc:Key   skos:exactMatch
+                  ├─ wd:Q34379    (musical instr.) ← mo:Instrument skos:exactMatch
+                  └─ wd:Q188451   (music genre)   ← mrc:Genre skos:exactMatch
+            wd:Q115211517  (musical concept)
+                  ├─ mrc:TempoClass  skos:broader
+                  └─ mrc:Mode        skos:broader
+
+        Object-property choices:
+        * ``skos:broader`` — SKOS concept-to-concept hierarchy (traversable
+          in SPARQL via property paths);
+        * ``skos:exactMatch`` — semantic equivalence between our local class
+          and the canonical Wikidata entity;
+        * ``owl:subClassOf`` — OWL subsumption, allows Protégé's class
+          hierarchy panel to render the domain structure.
+        """
+        # ── Wikidata upper concept nodes ─────────────────────────────────────
+        _wd_nodes = [
+            (WD_MUSICAL_CONCEPT,    "musical concept",    None),
+            (WD_ELEMENTS_OF_MUSIC,  "elements of music",  WD_MUSICAL_CONCEPT),
+            (WD_MUSIC_GENRE,        "music genre",         WD_ELEMENTS_OF_MUSIC),
+            (WD_MUSICAL_INSTRUMENT, "musical instrument",  WD_ELEMENTS_OF_MUSIC),
+            (WD_KEY_MUSIC,          "key",                 WD_ELEMENTS_OF_MUSIC),
+        ]
+        for node, label, broader in _wd_nodes:
+            self.g.add((node, RDF.type,      SKOS.Concept))
+            self.g.add((node, RDFS.label,    Literal(label, lang="en")))
+            self.g.add((node, SKOS.prefLabel, Literal(label, lang="en")))
+            if broader is not None:
+                self.g.add((node, SKOS.broader,    broader))
+                self.g.add((node, RDFS.subClassOf, broader))   # Protégé view
+
+        # ── Link our OWL classes to Wikidata via skos:exactMatch / skos:broader ─
+        # mrc:Genre — exact match to wd:Q188451 (music genre)
+        self.g.add((MRC["Genre"],      SKOS.exactMatch, WD_MUSIC_GENRE))
+        self.g.add((MRC["Genre"],      SKOS.broader,    WD_ELEMENTS_OF_MUSIC))
+        self.g.add((MRC["Genre"],      RDFS.subClassOf, WD_ELEMENTS_OF_MUSIC))
+
+        # mo:Instrument — exact match to wd:Q34379 (musical instrument)
+        self.g.add((MO["Instrument"],  SKOS.exactMatch, WD_MUSICAL_INSTRUMENT))
+        self.g.add((MO["Instrument"],  SKOS.broader,    WD_ELEMENTS_OF_MUSIC))
+        self.g.add((MO["Instrument"],  RDFS.subClassOf, WD_ELEMENTS_OF_MUSIC))
+
+        # mrc:Key — exact match to wd:Q534932 (key in music theory)
+        self.g.add((MRC["Key"],        SKOS.exactMatch, WD_KEY_MUSIC))
+        self.g.add((MRC["Key"],        SKOS.broader,    WD_ELEMENTS_OF_MUSIC))
+        self.g.add((MRC["Key"],        RDFS.subClassOf, WD_ELEMENTS_OF_MUSIC))
+
+        # mrc:TempoClass — broader to musical concept (no single WD exact match
+        # for the class; individual markings like Allegro are Q2081524 etc.)
+        self.g.add((MRC["TempoClass"], SKOS.broader,    WD_MUSICAL_CONCEPT))
+        self.g.add((MRC["TempoClass"], RDFS.subClassOf, WD_MUSICAL_CONCEPT))
+
+        # mrc:Mode — broader to musical concept
+        self.g.add((MRC["Mode"],       SKOS.broader,    WD_MUSICAL_CONCEPT))
+        self.g.add((MRC["Mode"],       RDFS.subClassOf, WD_MUSICAL_CONCEPT))
 
     # ── Populating from a DataFrame ─────────────────────────────────────────
     def populate_from_dataframe(
@@ -431,8 +690,9 @@ class KGBuilder:
             g_uri = self.genre_uri(genre_label)
             if g_uri not in self._known_uris:
                 self.g.add((g_uri, RDF.type, MRC["Genre"]))
+                self.g.add((g_uri, RDF.type, OWL.NamedIndividual))
                 self.g.add((g_uri, RDF.type, SKOS.Concept))
-                self.g.add((g_uri, SKOS.inScheme, URIRef(GENRE_SCHEME_URI)))
+                self.g.add((g_uri, SKOS.inScheme, MRC["GenreScheme"]))
                 self.g.add((g_uri, SKOS.prefLabel, Literal(genre_label, lang="en")))
                 self.g.add((g_uri, RDFS.label, Literal(genre_label, lang="en")))
                 self._known_uris.add(g_uri)
@@ -494,8 +754,9 @@ class KGBuilder:
             if tc is not None:
                 self.g.add((perf, MRC["hasTempoClass"], self.tempo_class_uri(tc)))
 
-        # ── Key / mode → URI references to mrc:Key/<x> and mrc:MajorMode /
-        #    mrc:MinorMode (declared in the SKOS upper layer of the TTL).
+        # ── Key / mode → URI references to mrc:Key/<x> and mrc:Mode/Major /
+        #    mrc:Mode/Minor (owl:NamedIndividuals declared by
+        #    add_key_mode_individuals()).
         #    * rich variant: attach to the *Performance* and carry the MSD
         #      key/mode confidence values as datatype properties on the
         #      Performance (so two Performances of the same Track may
@@ -533,11 +794,10 @@ class KGBuilder:
             inst = self.instrument_uri(inst_label)
             if inst not in self._known_uris:
                 self.g.add((inst, RDF.type, MO["Instrument"]))
+                self.g.add((inst, RDF.type, OWL.NamedIndividual))
                 self.g.add((inst, RDF.type, SKOS.Concept))
-                self.g.add((inst, SKOS.inScheme,
-                            URIRef(INSTRUMENT_SCHEME_URI)))
-                self.g.add((inst, SKOS.prefLabel,
-                            Literal(inst_label, lang="en")))
+                self.g.add((inst, SKOS.inScheme, MRC["InstrumentScheme"]))
+                self.g.add((inst, SKOS.prefLabel, Literal(inst_label, lang="en")))
                 self.g.add((inst, RDFS.label, Literal(inst_label, lang="en")))
                 self._known_uris.add(inst)
                 counts["instruments"] += 1
@@ -638,6 +898,9 @@ class KGBuilder:
 __all__ = (
     "MRC", "MO", "FOAF", "EVENT", "DCT", "EX",
     "INSTRUMENT_SCHEME_URI", "GENRE_SCHEME_URI", "DECADE_SCHEME_URI",
-    "KEY_NAMES", "KEY_URI_MAP", "MODE_URI_MAP",
+    "KEY_SCHEME_URI", "TEMPO_SCHEME_URI",
+    "KEY_NAMES", "KEY_URI_MAP", "_KEY_LABELS", "MODE_URI_MAP",
+    "WD_MUSICAL_CONCEPT", "WD_ELEMENTS_OF_MUSIC",
+    "WD_MUSIC_GENRE", "WD_MUSICAL_INSTRUMENT", "WD_KEY_MUSIC",
     "KGBuilder",
 )

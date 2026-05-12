@@ -44,7 +44,11 @@ from tqdm.auto import tqdm
 from rdflib import Literal, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, SKOS
 
-from .kg_builder import KGBuilder, MRC, MO
+from .kg_builder import (
+    KGBuilder, MRC, MO,
+    WD_MUSICAL_CONCEPT, WD_ELEMENTS_OF_MUSIC,
+    WD_MUSIC_GENRE, WD_MUSICAL_INSTRUMENT, WD_KEY_MUSIC,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -59,17 +63,30 @@ WIKIDATA_SPARQL = "https://query.wikidata.org/sparql"
 INSTRUMENT_ROOT = "Q110295396"   # "type of musical instrument"
 GENRE_ROOT      = "Q188451"      # "music genre"
 
-# Domain bounds for the P279* ancestor walk - without them, an unbounded
-# walk eventually leaks into upper-ontology meta-classes.
-DOMAIN_BOUNDS: dict[str, str] = {
-    INSTRUMENT_ROOT: "?node wdt:P279* wd:Q34379 .",   # subset of musical instrument
-    GENRE_ROOT:      "?node wdt:P31  wd:Q188451 .",   # is a music genre
+# Domain filter for the **direct-parent** SPARQL query (``fetch_direct_parents``).
+# Each value is a WHERE clause fragment that constrains ``?parent`` to stay
+# within the music domain so we never walk into upper-ontology meta-classes.
+_PARENT_DOMAIN_FILTER: dict[str, str] = {
+    # parent must itself be a subclass-of musical instrument (Q34379)
+    INSTRUMENT_ROOT: "?parent wdt:P279* wd:Q34379 .",
+    # parent must be an instance-of music genre OR a subclass-of music genre
+    GENRE_ROOT: """{ ?parent wdt:P31 wd:Q188451 . }
+      UNION
+      { ?parent wdt:P279+ wd:Q188451 . }""",
 }
 
-# ConceptScheme URIs (minted under the mrc namespace).
-INSTRUMENT_SCHEME = MRC["scheme/Instruments"]
-GENRE_SCHEME      = MRC["scheme/Genres"]
-DECADE_SCHEME     = MRC["scheme/Decades"]
+# Kept for backward compatibility with old call sites that pass DOMAIN_BOUNDS
+# to fetch_subclass_chain (deprecated).
+DOMAIN_BOUNDS: dict[str, str] = {
+    INSTRUMENT_ROOT: "?node wdt:P279* wd:Q34379 .",
+    GENRE_ROOT:      "?node wdt:P31  wd:Q188451 .",
+}
+
+# ConceptScheme URIs — flat names so they serialise as mrc: CURIEs.
+# Must stay in sync with the *_SCHEME_URI constants in kg_builder.py.
+INSTRUMENT_SCHEME = MRC["InstrumentScheme"]
+GENRE_SCHEME      = MRC["GenreScheme"]
+DECADE_SCHEME     = MRC["DecadeScheme"]
 
 DEFAULT_HEADERS = {
     "User-Agent": (
@@ -294,11 +311,158 @@ def resolve_labels(
 
 
 # ---------------------------------------------------------------------------
-# Subclass-of (P279*) chain expansion
+# Direct-parent expansion  (replaces the flat P279* ancestor dump)
+# ---------------------------------------------------------------------------
+def fetch_direct_parents(qid: str, type_root: str) -> list[tuple[str, str]]:
+    """Fetch the *direct* ``wdt:P279`` parents of ``qid`` within the domain.
+
+    Only one hop up — no transitive closure.  The caller (``build_parent_graph``)
+    is responsible for recursing until the domain root is reached.
+
+    Returns
+    -------
+    list of ``(parent_qid, parent_english_label)`` — empty on failure or
+    when ``qid`` has no in-domain parents.
+    """
+    domain_clause = _PARENT_DOMAIN_FILTER.get(type_root, "")
+    q = f"""
+    SELECT DISTINCT ?parent ?parentLabel WHERE {{
+      wd:{qid} wdt:P279 ?parent .
+      {domain_clause}
+      SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en". }}
+    }}
+    LIMIT 25
+    """
+    try:
+        rows = _sparql_select(q)
+    except requests.RequestException:
+        return []
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for r in rows:
+        p_qid = r["parent"]["value"].rsplit("/", 1)[-1]
+        if p_qid in seen or p_qid == qid:
+            continue
+        seen.add(p_qid)
+        label = r.get("parentLabel", {}).get("value", p_qid)
+        out.append((p_qid, label))
+    return out
+
+
+def build_parent_graph(
+    leaf_qids: Iterable[str],
+    type_root: str,
+    cache_path: Optional[pathlib.Path] = None,
+    force_refresh: bool = False,
+    parallel: int = 6,
+    verbose: bool = True,
+) -> dict[str, list[tuple[str, str]]]:
+    """Build a shared parent-graph via BFS from ``leaf_qids``.
+
+    Starting from the leaf QIDs (direct Wikidata matches for our labels),
+    fetches each item's **direct** ``wdt:P279`` parents that are still within
+    the music domain, then fetches *their* parents, and so on until every
+    reachable ancestor is in the graph.
+
+    Cache format
+    ------------
+    A flat JSON dict: ``{qid: [[parent_qid, parent_label], …], …}``
+
+    Each key maps to its **direct parents only** (no transitive ancestors).
+    All intermediate nodes get their own top-level entry.  This is much more
+    space-efficient than the old flat-ancestor dump *and* correctly represents
+    multi-parent DAGs (e.g. EDM is broader than both trance and dance music).
+
+    .. note::
+        If the cache file was written by the old ``fetch_subclass_chains``
+        function it will contain flat ancestor lists.  Pass
+        ``force_refresh=True`` to regenerate in the new format.
+    """
+    graph: dict[str, list[tuple[str, str]]] = {}
+
+    if cache_path and cache_path.exists() and not force_refresh:
+        raw = json.loads(cache_path.read_text())
+        graph = {k: [tuple(p) for p in v] for k, v in raw.items()}
+        # Detect old flat-ancestor format: a non-empty entry that contains
+        # the key QID itself as one of its "parents".
+        _old_fmt = any(
+            any(p[0] == k for p in v)
+            for k, v in graph.items() if v
+        )
+        if _old_fmt:
+            if verbose:
+                print(
+                    f"[wikidata] ⚠  {cache_path.name} uses the OLD flat-ancestor "
+                    f"format — run with force_refresh=True to regenerate in the "
+                    f"new direct-parent format."
+                )
+        else:
+            if verbose:
+                print(f"[wikidata] loaded {len(graph):,} parent-graph entries "
+                      f"from {cache_path.name}")
+            todo = [q for q in dict.fromkeys(leaf_qids) if q and q not in graph]
+            if not todo:
+                return graph
+            # Fall through to fetch only the missing leaf entries
+
+    queue: set[str] = {q for q in dict.fromkeys(leaf_qids) if q and q not in graph}
+    round_n = 0
+    while queue:
+        round_n += 1
+        if verbose:
+            print(f"[wikidata] parent-graph BFS round {round_n}: "
+                  f"fetching direct parents for {len(queue):,} QIDs ...")
+
+        batch: dict[str, list[tuple[str, str]]] = {}
+        _parallel_dict_fill(
+            list(queue),
+            lambda qid: fetch_direct_parents(qid, type_root),
+            parallel, batch, None, verbose,
+            f"direct-parents (r{round_n})",
+            checkpoint_every=100,
+        )
+        graph.update(batch)
+
+        # Checkpoint after each BFS round
+        if cache_path:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(json.dumps(graph, indent=2, sort_keys=True))
+
+        # Next queue: parent QIDs discovered this round that have no entry yet
+        queue = {
+            p_qid
+            for parents in batch.values()
+            for p_qid, _ in parents
+            if p_qid not in graph
+        }
+
+    if cache_path:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(graph, indent=2, sort_keys=True))
+        if verbose:
+            print(f"[wikidata] parent graph → {cache_path} "
+                  f"({len(graph):,} nodes, {round_n} BFS rounds)")
+    return graph
+
+
+# ---------------------------------------------------------------------------
+# Deprecated: flat P279* ancestor dumps  (kept for backward compatibility)
 # ---------------------------------------------------------------------------
 def fetch_subclass_chain(qid: str, type_root: Optional[str] = None
                          ) -> list[tuple[str, str]]:
-    """Walk wdt:P279* upward from ``qid``, bounded to the music domain."""
+    """**Deprecated** — use :func:`fetch_direct_parents` instead.
+
+    The old implementation dumps *all* P279* ancestors in a flat list,
+    which (a) wastes space because shared ancestors are repeated per leaf,
+    and (b) causes incorrect ``skos:broader`` edges (every ancestor is
+    asserted as a direct broader concept of the leaf).
+    """
+    import warnings
+    warnings.warn(
+        "fetch_subclass_chain is deprecated; use fetch_direct_parents / "
+        "build_parent_graph instead.",
+        DeprecationWarning, stacklevel=2,
+    )
     bound_clause = DOMAIN_BOUNDS.get(type_root or "", "")
     q = f"""
     SELECT ?node ?nodeLabel WHERE {{
@@ -331,31 +495,15 @@ def fetch_subclass_chains(
     parallel: int = 6,
     verbose: bool = True,
 ) -> dict[str, list[tuple[str, str]]]:
-    """Parallel cached batch wrapper around fetch_subclass_chain."""
-    cache: dict[str, list[tuple[str, str]]] = {}
-    if cache_path and cache_path.exists() and not force_refresh:
-        raw = json.loads(cache_path.read_text())
-        cache = {k: [tuple(p) for p in v] for k, v in raw.items()}
-        if verbose:
-            print(f"[wikidata] loaded {len(cache):,} cached subclass chains "
-                  f"from {cache_path.name}")
-
-    todo = [q for q in dict.fromkeys(qids) if q and q not in cache]
-    if verbose:
-        print(f"[wikidata] expanding {len(todo):,} new QIDs "
-              f"(root={type_root}, workers={parallel}) ...")
-
-    _parallel_dict_fill(
-        todo, lambda qid: fetch_subclass_chain(qid, type_root),
-        parallel, cache, cache_path, verbose, "chains", checkpoint_every=50,
+    """**Deprecated** — use :func:`build_parent_graph` instead."""
+    import warnings
+    warnings.warn(
+        "fetch_subclass_chains is deprecated; use build_parent_graph instead.",
+        DeprecationWarning, stacklevel=2,
     )
-
-    if cache_path:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(json.dumps(cache, indent=2, sort_keys=True))
-        if verbose:
-            print(f"[wikidata] cache -> {cache_path}")
-    return cache
+    return build_parent_graph(
+        qids, type_root, cache_path, force_refresh, parallel, verbose,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -456,23 +604,22 @@ def _attach_qid_metadata(g, node: URIRef, scheme: URIRef, qid: str,
                         protege_friendly: bool = True) -> None:
     """Stamp a QID node with SKOS label/definition/altLabels.
 
-    When ``protege_friendly`` is True the node is *also* typed as
-    ``owl:Class`` (in addition to ``skos:Concept``) and given an
-    ``rdfs:label`` mirroring ``skos:prefLabel`` — that makes Protégé
-    render the node in the Class hierarchy tab (which only shows
-    ``owl:Class`` + ``rdfs:subClassOf``, not SKOS).
+    ``rdfs:label`` is always emitted (community standard; Protégé shows it).
+    ``skos:prefLabel`` is emitted for SKOS interop.
+    When ``protege_friendly`` is True the node is *also* typed ``owl:Class``
+    so Protégé renders it in the Class hierarchy panel.
     """
     label = meta.get("label") or fallback_label or qid
     g.add((node, RDF.type, SKOS.Concept))
     g.add((node, SKOS.inScheme, scheme))
+    # rdfs:label — standard; visible in Protégé, SPARQL, every RDF tool
+    g.add((node, RDFS.label,     Literal(label, lang="en")))
     g.add((node, SKOS.prefLabel, Literal(label, lang="en")))
     if protege_friendly:
         g.add((node, RDF.type, OWL.Class))
-        g.add((node, RDFS.label, Literal(label, lang="en")))
     if meta.get("description"):
         g.add((node, SKOS.definition, Literal(meta["description"], lang="en")))
-        if protege_friendly:
-            g.add((node, RDFS.comment, Literal(meta["description"], lang="en")))
+        g.add((node, RDFS.comment,   Literal(meta["description"], lang="en")))
     for alias in meta.get("aliases", []) or []:
         g.add((node, SKOS.altLabel, Literal(alias, lang="en")))
 
@@ -489,38 +636,25 @@ def enrich_graph_with_wikidata(
     protege_friendly:  bool = True,
     verbose:           bool = True,
 ) -> dict[str, int]:
-    """
-    Fold Wikidata results into ``builder.g`` using the SKOS data model.
+    """Fold Wikidata results into ``builder.g`` using the SKOS data model.
 
-    Local nodes get ``a skos:Concept ; skos:inScheme <scheme> ;
-    skos:prefLabel "<local>"@en ; skos:exactMatch wd:Q...``.
+    Expects ``instrument_chains`` / ``genre_chains`` in the **direct-parent**
+    format produced by :func:`build_parent_graph`:
+    ``{qid: [(parent_qid, parent_label), …], …}``
 
-    Wikidata QIDs are minted (idempotently) as ``skos:Concept`` in the
-    same scheme, carrying ``skos:prefLabel`` (canonical English label),
-    ``skos:definition`` (English description), and one ``skos:altLabel``
-    per English alias.
+    For each local concept (e.g. ``ex:genre/pop_music``) the function:
 
-    Hierarchy edges are added as ``leaf skos:broader ancestor`` for each
-    ancestor returned by fetch_subclass_chain (no inter-ancestor edges
-    are invented - the chain query does not preserve the DAG topology).
+    1. Mints a ``skos:Concept`` with ``rdfs:label`` + ``skos:prefLabel``;
+    2. Links it to its Wikidata anchor via ``skos:exactMatch`` + ``skos:broader``;
+    3. Recursively walks the parent graph upward, asserting
+       ``wd:child skos:broader wd:parent`` for each **direct** parent edge
+       — never jumping multiple hops in one triple;
+    4. Caps the walk at the domain roots (Q34379 / Q188451), which are
+       themselves connected to the upper Wikidata hierarchy
+       (``add_music_concept_hierarchy()`` handles that layer).
 
-    When ``protege_friendly=True`` (default) we *additionally* dual-emit
-    OWL hierarchy triples so Protégé's *Class* hierarchy panel renders
-    the structure (Protégé does not visualise ``skos:broader`` between
-    SKOS individuals — only ``rdfs:subClassOf`` between ``owl:Class``
-    nodes). Specifically:
-
-      * each Wikidata anchor node is *also* typed ``owl:Class`` and
-        given an ``rdfs:label`` mirroring its ``skos:prefLabel``;
-      * each ``leaf skos:broader ancestor`` triple is mirrored as
-        ``leaf rdfs:subClassOf ancestor``;
-      * each local genre / instrument node is *also* typed ``owl:Class``
-        and given ``rdfs:subClassOf <Wikidata-anchor>`` (in addition to
-        the existing ``skos:exactMatch`` link), and rooted under
-        ``mrc:Genre`` / ``mo:Instrument`` so it shows up under the
-        domain class in Protégé.
-
-    The SKOS triples are *not* removed — both views co-exist.
+    When ``protege_friendly=True`` every ``skos:broader`` edge is mirrored
+    as ``rdfs:subClassOf`` so Protégé's Class panel renders the hierarchy.
     """
     g = builder.g
     counts = {
@@ -533,6 +667,9 @@ def enrich_graph_with_wikidata(
     _ensure_scheme(g, GENRE_SCHEME,      "Music genres")
 
     qid_seen: set[URIRef] = set()
+    # Tracks which QIDs have already had their hierarchy walked upward,
+    # preventing redundant work when multiple leaves share ancestors.
+    _hierarchy_visited: set[str] = set()
     metadata = qid_metadata or {}
 
     def _ensure_concept(qid: str, scheme: URIRef,
@@ -547,57 +684,88 @@ def enrich_graph_with_wikidata(
         counts["qid_concepts"] += 1
         return node
 
+    def _walk_hierarchy(cur_qid: str, chains: dict, scheme: URIRef) -> None:
+        """Recursively assert skos:broader / rdfs:subClassOf edges upward.
+
+        Only **direct** parents (one hop) are added per call.  The
+        recursion follows the parent graph until a QID with no in-cache
+        parents is reached (= domain root, or unresolved WD item).
+        """
+        if cur_qid in _hierarchy_visited:
+            return
+        _hierarchy_visited.add(cur_qid)
+
+        cur_node = WD[cur_qid]
+        for p_qid, p_lab in chains.get(cur_qid) or []:
+            p_node = _ensure_concept(p_qid, scheme, fallback_label=p_lab)
+            g.add((cur_node, SKOS.broader, p_node))
+            counts["broader_edges"] += 1
+            if protege_friendly:
+                g.add((cur_node, RDFS.subClassOf, p_node))
+                counts["subclass_edges"] += 1
+            _walk_hierarchy(p_qid, chains, scheme)
+
     def _link(local_uri_fn, label_to_qid, chains, scheme, count_key,
-              domain_class: URIRef):
+              domain_class: URIRef) -> None:
         if not label_to_qid:
             return
         for label, qid in label_to_qid.items():
             local = local_uri_fn(label)
-            g.add((local, RDF.type, SKOS.Concept))
+            g.add((local, RDF.type,      SKOS.Concept))
             g.add((local, SKOS.inScheme, scheme))
+            g.add((local, RDFS.label,     Literal(label, lang="en")))
             g.add((local, SKOS.prefLabel, Literal(label, lang="en")))
             if protege_friendly:
-                # Dual-type so Protégé renders the local node as a class.
-                # Note: this is OWL Full (the same IRI is both an
-                # individual of mrc:Genre / mo:Instrument *and* an
-                # owl:Class) but Protégé tolerates it, and we keep the
-                # original instance typing so SHACL / range constraints
-                # on mrc:hasGenre still hold.
-                g.add((local, RDF.type, OWL.Class))
+                g.add((local, RDF.type,        OWL.Class))
                 g.add((local, RDFS.subClassOf, domain_class))
             if not qid:
+                # No Wikidata match — link directly to the domain class
+                g.add((local, SKOS.broader, domain_class))
                 continue
 
-            chain_label = None
-            if chains and qid in chains:
-                for c_qid, c_lab in chains[qid]:
-                    if c_qid == qid:
-                        chain_label = c_lab
-                        break
+            # Label for the WD anchor: prefer qid_metadata, fall back to
+            # the label stored as a parent of some child in the chain.
+            chain_label = metadata.get(qid, {}).get("label") or label
+
             wd_node = _ensure_concept(qid, scheme, fallback_label=chain_label)
             g.add((local, SKOS.exactMatch, wd_node))
+            # skos:broader makes the hierarchy traversable via SPARQL paths
+            g.add((local, SKOS.broader, wd_node))
             if protege_friendly:
-                # The leaf is a (Wikidata-grounded) sub-kind of its anchor.
                 g.add((local, RDFS.subClassOf, wd_node))
                 counts["subclass_edges"] += 1
             counts[count_key] += 1
 
-            if add_hierarchy and chains and qid in chains:
-                for p_qid, p_lab in chains[qid]:
-                    if p_qid == qid:
-                        continue
-                    p_node = _ensure_concept(p_qid, scheme,
-                                             fallback_label=p_lab)
-                    g.add((wd_node, SKOS.broader, p_node))
-                    counts["broader_edges"] += 1
-                    if protege_friendly:
-                        g.add((wd_node, RDFS.subClassOf, p_node))
-                        counts["subclass_edges"] += 1
+            # Walk the parent graph upward from the WD anchor
+            if add_hierarchy and chains:
+                _walk_hierarchy(qid, chains, scheme)
 
     _link(builder.instrument_uri, instrument_map, instrument_chains,
           INSTRUMENT_SCHEME, "instrument_links", MO["Instrument"])
     _link(builder.genre_uri,      genre_map,      genre_chains,
           GENRE_SCHEME,      "genre_links",      MRC["Genre"])
+
+    # ── Bridge domain roots to the upper Wikidata concept hierarchy ──────────
+    # The BFS walk (build_parent_graph) stops at the domain roots
+    # (Q34379 musical instrument, Q188451 music genre).  Two additional hops
+    # are needed to reach wd:Q115211517 (musical concept).
+    _upper = [
+        (WD_MUSIC_GENRE,        WD_ELEMENTS_OF_MUSIC,  "music genre"),
+        (WD_MUSICAL_INSTRUMENT, WD_ELEMENTS_OF_MUSIC,  "musical instrument"),
+        (WD_ELEMENTS_OF_MUSIC,  WD_MUSICAL_CONCEPT,    "elements of music"),
+        (WD_MUSICAL_CONCEPT,    None,                  "musical concept"),
+    ]
+    for node, broader, label in _upper:
+        if (node, RDF.type, SKOS.Concept) not in g:
+            g.add((node, RDF.type,       SKOS.Concept))
+            g.add((node, RDFS.label,     Literal(label, lang="en")))
+            g.add((node, SKOS.prefLabel, Literal(label, lang="en")))
+            if protege_friendly:
+                g.add((node, RDF.type, OWL.Class))
+        if broader is not None:
+            g.add((node, SKOS.broader, broader))
+            if protege_friendly:
+                g.add((node, RDFS.subClassOf, broader))
 
     if verbose:
         print(f"[wikidata] enrichment summary: {counts}")
@@ -708,8 +876,10 @@ __all__ = (
     "WD", "WDT",
     "INSTRUMENT_ROOT", "GENRE_ROOT",
     "INSTRUMENT_SCHEME", "GENRE_SCHEME", "DECADE_SCHEME",
+    "DOMAIN_BOUNDS", "_PARENT_DOMAIN_FILTER",
     "resolve_label", "resolve_labels",
-    "fetch_subclass_chain", "fetch_subclass_chains",
+    "fetch_direct_parents", "build_parent_graph",
+    "fetch_subclass_chain", "fetch_subclass_chains",  # deprecated
     "fetch_qid_metadata",
     "_attach_qid_metadata",
     "enrich_graph_with_wikidata",
