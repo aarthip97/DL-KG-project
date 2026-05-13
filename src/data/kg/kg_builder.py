@@ -1029,14 +1029,16 @@ class KGBuilder:
 
         return {
             "triples":       len(self.g),
-            "artists":       count_instances(MO["MusicArtist"]),
+            "artists":       count_instances(MO["Performer"]),      # _add_row uses mo:Performer
             "tracks":        count_instances(MRC["MSDTrack"]),
             "performances":  count_instances(MO["Performance"]),
             "genres":        count_instances(MRC["Genre"]),
             "instruments":   count_instances(MO["Instrument"]),
             "tempo_classes": count_instances(MRC["TempoClass"]),
             "decades":       count_instances(MRC["Decade"]),
+            "users":         count_instances(MRC["User"]),          # populated by listening.py
             "skos_concepts": count_instances(SKOS.Concept),
+            "skos_schemes":  count_instances(SKOS.ConceptScheme),
         }
 
 
