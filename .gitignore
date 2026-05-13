@@ -175,6 +175,9 @@ ENV/
 env.bak/
 venv.bak/
 
+#other secret files
+graphdb.license
+
 # Spyder project settings
 .spyderproject
 .spyproject
