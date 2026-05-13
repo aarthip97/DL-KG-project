@@ -215,7 +215,7 @@ def stage_hgt(args: argparse.Namespace) -> Path:
         nt_path=str(nt_path) if nt_path.exists() else None,
         track_features=ae_df,
         track_id_col="song_id",
-        track_uri_template="http://purl.org/ontology/mrc/resource/track_{track_id}",
+        track_uri_template="http://purl.org/ontology/mrc/resource/track/{track_id}",
     )
     log.info("HeteroData: %s", data)
 
@@ -227,8 +227,10 @@ def stage_hgt(args: argparse.Namespace) -> Path:
     n_tracks_kg = data["track"].num_nodes
     user_matrix  = torch.zeros(n_users_kg, n_tracks_kg, dtype=torch.float32)
     track_totals = torch.zeros(n_tracks_kg, dtype=torch.float32)
-    user_uri_tmpl  = "http://purl.org/ontology/mrc/resource/user_{uid}"
-    track_uri_tmpl = "http://purl.org/ontology/mrc/resource/track_{tid}"
+    # URI templates mirror the per-entity-type resource namespaces minted by
+    # KGBuilder (``user:<slug>``, ``track:<slug>``).
+    user_uri_tmpl  = "http://purl.org/ontology/mrc/resource/user/{uid}"
+    track_uri_tmpl = "http://purl.org/ontology/mrc/resource/track/{tid}"
     for row in taste.itertuples(index=False):
         u_uri = user_uri_tmpl.format(uid=row.user_id)
         t_uri = track_uri_tmpl.format(tid=row.song_id)

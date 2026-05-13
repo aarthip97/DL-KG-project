@@ -43,16 +43,17 @@ from rdflib.namespace import OWL, RDF, RDFS, SKOS, XSD, FOAF as _FOAF
 from .tempo_classes import TEMPO_CLASSES, classify_tempo
 
 
-# ConceptScheme URIs — flat names inside mrc: so they serialise as CURIEs
-# (e.g. mrc:InstrumentScheme) rather than angle-bracket full URIs.
+# ConceptScheme URIs — live in their own ``scheme:`` namespace so the
+# ontology vocabulary (``mrc:``) cleanly separates from the SKOS schemes.
+# Pattern: ``scheme:KeyScheme`` → ``http://purl.org/ontology/mrc/scheme/KeyScheme``.
 # IMPORTANT: must stay in sync with the constants in wikidata_mapping.py.
-INSTRUMENT_SCHEME_URI    = "http://purl.org/ontology/mrc/InstrumentScheme"
-GENRE_SCHEME_URI         = "http://purl.org/ontology/mrc/GenreScheme"
-DECADE_SCHEME_URI        = "http://purl.org/ontology/mrc/DecadeScheme"
-KEY_SCHEME_URI           = "http://purl.org/ontology/mrc/KeyScheme"
-TEMPO_SCHEME_URI         = "http://purl.org/ontology/mrc/TempoScheme"
-MODE_SCHEME_URI          = "http://purl.org/ontology/mrc/ModeScheme"
-ELEMENTS_SCHEME_URI      = "http://purl.org/ontology/mrc/ElementsOfMusicScheme"
+INSTRUMENT_SCHEME_URI    = "http://purl.org/ontology/mrc/scheme/InstrumentScheme"
+GENRE_SCHEME_URI         = "http://purl.org/ontology/mrc/scheme/GenreScheme"
+DECADE_SCHEME_URI        = "http://purl.org/ontology/mrc/scheme/DecadeScheme"
+KEY_SCHEME_URI           = "http://purl.org/ontology/mrc/scheme/KeyScheme"
+TEMPO_SCHEME_URI         = "http://purl.org/ontology/mrc/scheme/TempoScheme"
+MODE_SCHEME_URI          = "http://purl.org/ontology/mrc/scheme/ModeScheme"
+ELEMENTS_SCHEME_URI      = "http://purl.org/ontology/mrc/scheme/ElementsOfMusicScheme"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Legacy sub-path URIs present in the *base* ontology TTL that must be
@@ -68,17 +69,43 @@ _LEGACY_TEMPO_FRAGS = (
     "TempoClass/Adagio", "TempoClass/Andante", "TempoClass/Moderato",
     "TempoClass/Allegro", "TempoClass/Presto", "TempoClass/Prestissimo",
 )
-# Every mrc:scheme/<X> URI that has ever existed in the base ontology TTL.
-# Any of these that survive in the graph must be purged and, where they
-# appear as skos:inScheme objects, replaced with the flat canonical URI.
+# Older (now-superseded) named individual URIs that lived inside ``mrc:``
+# itself (e.g. ``mrc:KeyC_sharp``, ``mrc:MajorMode``, ``mrc:Allegro``) before
+# the per-entity-type resource namespaces were introduced. They must be
+# purged at load time so the KG only contains the new ``key:C_sharp``,
+# ``mode:Major``, ``tempo:Allegro`` … forms.
+_LEGACY_FLAT_KEY_FRAGS = (
+    "KeyC", "KeyC_sharp", "KeyD", "KeyD_sharp", "KeyE",
+    "KeyF", "KeyF_sharp", "KeyG", "KeyG_sharp",
+    "KeyA", "KeyA_sharp", "KeyB",
+)
+_LEGACY_FLAT_MODE_FRAGS  = ("MajorMode", "MinorMode")
+_LEGACY_FLAT_TEMPO_FRAGS = (
+    "Larghissimo", "Grave", "Largo", "Lento", "Adagio", "Adagietto",
+    "Andante", "Andantino", "Moderato", "Allegretto", "Allegro",
+    "Vivace", "Presto", "Prestissimo",
+)
+# Every old ConceptScheme URI that has ever existed (sub-path *or* flat
+# inside ``mrc:``). Any of these that survive in the graph must be purged
+# and, where they appear as ``skos:inScheme`` objects, replaced with the
+# canonical ``scheme:<X>`` URI.
 _LEGACY_SCHEME_URIS: tuple[tuple[str, str], ...] = (
-    # (old sub-path URI,                               new flat URI)
-    ("http://purl.org/ontology/mrc/scheme/Keys",       KEY_SCHEME_URI),
-    ("http://purl.org/ontology/mrc/scheme/Tempos",     TEMPO_SCHEME_URI),
-    ("http://purl.org/ontology/mrc/scheme/Modes",      MODE_SCHEME_URI),
-    ("http://purl.org/ontology/mrc/scheme/Genres",     GENRE_SCHEME_URI),
+    # (old URI,                                                                  new flat URI)
+    # Original sub-path scheme names from the base ontology TTL
+    ("http://purl.org/ontology/mrc/scheme/Keys",         KEY_SCHEME_URI),
+    ("http://purl.org/ontology/mrc/scheme/Tempos",       TEMPO_SCHEME_URI),
+    ("http://purl.org/ontology/mrc/scheme/Modes",        MODE_SCHEME_URI),
+    ("http://purl.org/ontology/mrc/scheme/Genres",       GENRE_SCHEME_URI),
     ("http://purl.org/ontology/mrc/scheme/ElementsOfMusic", ELEMENTS_SCHEME_URI),
-    ("http://purl.org/ontology/mrc/scheme/Instruments", INSTRUMENT_SCHEME_URI),
+    ("http://purl.org/ontology/mrc/scheme/Instruments",  INSTRUMENT_SCHEME_URI),
+    # Previous "flat-inside-mrc:" generation
+    ("http://purl.org/ontology/mrc/InstrumentScheme",       INSTRUMENT_SCHEME_URI),
+    ("http://purl.org/ontology/mrc/GenreScheme",            GENRE_SCHEME_URI),
+    ("http://purl.org/ontology/mrc/DecadeScheme",           DECADE_SCHEME_URI),
+    ("http://purl.org/ontology/mrc/KeyScheme",              KEY_SCHEME_URI),
+    ("http://purl.org/ontology/mrc/TempoScheme",            TEMPO_SCHEME_URI),
+    ("http://purl.org/ontology/mrc/ModeScheme",             MODE_SCHEME_URI),
+    ("http://purl.org/ontology/mrc/ElementsOfMusicScheme",  ELEMENTS_SCHEME_URI),
 )
 
 
@@ -91,9 +118,42 @@ FOAF  = _FOAF
 EVENT = Namespace("http://purl.org/NET/c4dm/event.owl#")
 DCT   = Namespace("http://purl.org/dc/terms/")
 
-# Local namespace for *individuals* we mint (kept distinct from the
-# ontology's own URIs so resources can be told apart at a glance).
-EX = Namespace("http://purl.org/ontology/mrc/resource/")
+# SKOS ConceptScheme namespace — keeps schemes (``scheme:KeyScheme``) out
+# of the ``mrc:`` ontology vocabulary so the two stay cleanly separated.
+SCHEME = Namespace("http://purl.org/ontology/mrc/scheme/")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-entity-type *resource* namespaces
+# ─────────────────────────────────────────────────────────────────────────────
+# Every individual we mint lives in a namespace dedicated to its type, so
+# the URI itself self-documents what the node is — invaluable for
+# downstream extraction (just check the prefix, no substring parsing):
+#
+#   track:TRXXXXX            http://purl.org/ontology/mrc/resource/track/TRXXXXX
+#   artist:ARXXXXX           http://purl.org/ontology/mrc/resource/artist/ARXXXXX
+#   user:<slug>              http://purl.org/ontology/mrc/resource/user/<slug>
+#   genre:rock               http://purl.org/ontology/mrc/resource/genre/rock
+#   inst:Violin              http://purl.org/ontology/mrc/resource/instrument/Violin
+#   decade:1970s             http://purl.org/ontology/mrc/resource/decade/1970s
+#   tempo:Allegro            http://purl.org/ontology/mrc/resource/tempo/Allegro
+#   key:C_sharp              http://purl.org/ontology/mrc/resource/key/C_sharp
+#   mode:Major               http://purl.org/ontology/mrc/resource/mode/Major
+#   perf:TRXXXXX             http://purl.org/ontology/mrc/resource/performance/TRXXXXX
+#
+# The bare resource namespace is kept (as ``EX``) because external tools
+# and downstream code historically import it; new code should prefer the
+# typed namespaces.
+EX             = Namespace("http://purl.org/ontology/mrc/resource/")
+TRACK_NS       = Namespace("http://purl.org/ontology/mrc/resource/track/")
+ARTIST_NS      = Namespace("http://purl.org/ontology/mrc/resource/artist/")
+USER_NS        = Namespace("http://purl.org/ontology/mrc/resource/user/")
+GENRE_NS       = Namespace("http://purl.org/ontology/mrc/resource/genre/")
+INSTRUMENT_NS  = Namespace("http://purl.org/ontology/mrc/resource/instrument/")
+DECADE_NS      = Namespace("http://purl.org/ontology/mrc/resource/decade/")
+TEMPO_NS       = Namespace("http://purl.org/ontology/mrc/resource/tempo/")
+KEY_NS         = Namespace("http://purl.org/ontology/mrc/resource/key/")
+MODE_NS        = Namespace("http://purl.org/ontology/mrc/resource/mode/")
+PERFORMANCE_NS = Namespace("http://purl.org/ontology/mrc/resource/performance/")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -201,13 +261,13 @@ WD_KEY_MUSIC            = _WD_NS["Q534932"]      # key (music theory)
 # ─────────────────────────────────────────────────────────────────────────────
 # Key / mode → URI maps
 #
-# Flat named-individual URIs — no sub-path, mirrors the pattern preferred
-# for all music-domain controlled vocabulary:
+# Per-entity-type named-individual URIs in the ``key:`` and ``mode:``
+# resource namespaces:
 #   mrc:Key        — owl:Class declared at runtime by add_key_mode_individuals()
-#   mrc:KeyC       — owl:NamedIndividual a mrc:Key  (sharps → "_sharp" suffix)
+#   key:C, key:C_sharp …  — owl:NamedIndividuals a mrc:Key
 #   mrc:Mode       — owl:Class declared at runtime by add_key_mode_individuals()
-#   mrc:MajorMode  — owl:NamedIndividual a mrc:Mode
-#   mrc:MinorMode  — owl:NamedIndividual a mrc:Mode
+#   mode:Major     — owl:NamedIndividual a mrc:Mode
+#   mode:Minor     — owl:NamedIndividual a mrc:Mode
 # ─────────────────────────────────────────────────────────────────────────────
 KEY_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 
@@ -231,28 +291,28 @@ _KEY_LABELS: dict[str, tuple[str, ...]] = {
 def _key_iri_frag(name: str) -> str:
     """Sharps are escaped as ``_sharp`` so the URI is valid without %-encoding.
 
-    e.g. ``"C#"`` → ``"KeyC_sharp"`` → ``mrc:KeyC_sharp``
+    e.g. ``"C#"`` → ``"C_sharp"`` → ``key:C_sharp``
     """
     return name.replace("#", "_sharp")
 
 
 KEY_URI_MAP: dict[str, URIRef] = {
-    name: MRC[f"Key{_key_iri_frag(name)}"]   # mrc:KeyC, mrc:KeyC_sharp …
+    name: KEY_NS[_key_iri_frag(name)]   # key:C, key:C_sharp …
     for name in KEY_NAMES
 }
 
 # Accept the canonical strings produced by ``dataset_extraction``
 # (`major`, `minor`) *and* the integer codes (1, 0) of raw MSD.
 MODE_URI_MAP: dict[object, URIRef] = {
-    "major": MRC["MajorMode"], "Major": MRC["MajorMode"], "MAJOR": MRC["MajorMode"],
-    "minor": MRC["MinorMode"], "Minor": MRC["MinorMode"], "MINOR": MRC["MinorMode"],
-    1: MRC["MajorMode"],
-    0: MRC["MinorMode"],
+    "major": MODE_NS["Major"], "Major": MODE_NS["Major"], "MAJOR": MODE_NS["Major"],
+    "minor": MODE_NS["Minor"], "Minor": MODE_NS["Minor"], "MINOR": MODE_NS["Minor"],
+    1: MODE_NS["Major"],
+    0: MODE_NS["Minor"],
 }
 
 
 def _resolve_key_uri(value) -> Optional[URIRef]:
-    """Map an MSD key value (``'C'`` … ``'B'`` or 0–11) to a flat ``mrc:KeyX`` named-individual URI."""
+    """Map an MSD key value (``'C'`` … ``'B'`` or 0–11) to a ``key:X`` named-individual URI."""
     if _is_missing(value):
         return None
     # numeric (incl. floats that round to ints, e.g. parquet)
@@ -264,7 +324,7 @@ def _resolve_key_uri(value) -> Optional[URIRef]:
 
 
 def _resolve_mode_uri(value) -> Optional[URIRef]:
-    """Map an MSD mode value (``'major'`` / ``'minor'`` or 1/0) to a Mode URI."""
+    """Map an MSD mode value (``'major'`` / ``'minor'`` or 1/0) to a ``mode:Major``/``mode:Minor`` URI."""
     if _is_missing(value):
         return None
     if isinstance(value, str):
@@ -351,10 +411,24 @@ class KGBuilder:
         self.g.bind("foaf", FOAF)
         self.g.bind("event", EVENT)
         self.g.bind("dcterms", DCT)
-        self.g.bind("ex",  EX)
         self.g.bind("skos", SKOS)
         self.g.bind("wd",  Namespace("http://www.wikidata.org/entity/"))
         self.g.bind("wdt", Namespace("http://www.wikidata.org/prop/direct/"))
+        # SKOS ConceptScheme namespace — keeps the schemes out of mrc:.
+        self.g.bind("scheme", SCHEME)
+        # Per-entity-type resource namespaces.  Each individual minted by
+        # KGBuilder lives in the namespace dedicated to its type, so the
+        # serialised TTL self-documents what every node is.
+        self.g.bind("track",  TRACK_NS)
+        self.g.bind("artist", ARTIST_NS)
+        self.g.bind("user",   USER_NS)
+        self.g.bind("genre",  GENRE_NS)
+        self.g.bind("inst",   INSTRUMENT_NS)
+        self.g.bind("decade", DECADE_NS)
+        self.g.bind("tempo",  TEMPO_NS)
+        self.g.bind("key",    KEY_NS)
+        self.g.bind("mode",   MODE_NS)
+        self.g.bind("perf",   PERFORMANCE_NS)
 
          # Cache to avoid re-asserting rdf:type triples.
         self._known_uris: set[URIRef] = set()
@@ -368,26 +442,38 @@ class KGBuilder:
 
     # ── Legacy-individual purge ──────────────────────────────────────────────
     def _purge_legacy_individuals(self) -> None:
-        """Remove all triples whose subject is one of the old sub-path URIs
-        defined in the base ontology TTL.  Any ``skos:inScheme`` pointer that
-        still references a legacy scheme URI is *rewritten* to the canonical
-        flat replacement so concepts keep their scheme membership.
+        """Remove every triple whose subject is one of the old URIs that
+        previous generations of this builder used (sub-path Key/TempoClass
+        nodes from the base ontology TTL, and the older ``mrc:KeyC`` /
+        ``mrc:MajorMode`` / ``mrc:Allegro`` flat individuals that lived
+        directly inside ``mrc:`` before the per-entity resource namespaces
+        were introduced).
+
+        Any ``skos:inScheme`` pointer that still references a legacy scheme
+        URI is *rewritten* to the canonical ``scheme:<X>`` replacement so
+        concepts keep their scheme membership.
         """
-        # Old Key and TempoClass named individuals
+        # Old Key and TempoClass named individuals (sub-path) ----------------
         old_nodes: list[URIRef] = [
             MRC[frag] for frag in _LEGACY_KEY_FRAGS + _LEGACY_TEMPO_FRAGS
         ]
-        # Old ConceptScheme nodes — remove every triple that mentions them
+        # Older "flat-inside-mrc:" generation of named individuals ----------
+        # These lived as ``mrc:KeyC_sharp``, ``mrc:MajorMode``, ``mrc:Allegro``
+        # before the move to the typed ``key:`` / ``mode:`` / ``tempo:``
+        # resource namespaces.
+        old_nodes.extend(MRC[frag] for frag in _LEGACY_FLAT_KEY_FRAGS)
+        old_nodes.extend(MRC[frag] for frag in _LEGACY_FLAT_MODE_FRAGS)
+        old_nodes.extend(MRC[frag] for frag in _LEGACY_FLAT_TEMPO_FRAGS)
+        # Old ConceptScheme nodes — every triple that mentions them
         for old_uri, _new_uri in _LEGACY_SCHEME_URIS:
-            old_ref = URIRef(old_uri)
-            old_nodes.append(old_ref)
+            old_nodes.append(URIRef(old_uri))
 
         for node in old_nodes:
             self.g.remove((node, None, None))
             self.g.remove((None, None, node))
 
-        # Rewrite any surviving skos:inScheme triples that point at a legacy
-        # URI so they point at the canonical flat scheme instead.
+        # Rewrite any surviving skos:inScheme triples that still point at a
+        # legacy scheme URI so they reference the canonical ``scheme:<X>``.
         for old_uri, new_uri in _LEGACY_SCHEME_URIS:
             old_ref = URIRef(old_uri)
             new_ref = URIRef(new_uri)
@@ -399,38 +485,45 @@ class KGBuilder:
     # ── URI minting ─────────────────────────────────────────────────────────
     @staticmethod
     def artist_uri(artist_id: str) -> URIRef:
-        """Flat CURIE-safe URI, e.g. ``ex:artist_ARXXXXX``."""
-        return EX[f"artist_{_slug(artist_id)}"]
+        """Per-type URI, e.g. ``artist:ARXXXXX`` →
+        ``http://purl.org/ontology/mrc/resource/artist/ARXXXXX``."""
+        return ARTIST_NS[_slug(artist_id)]
 
     @staticmethod
     def track_uri(track_id: str) -> URIRef:
-        """Flat CURIE-safe URI, e.g. ``ex:track_TRXXXXX``."""
-        return EX[f"track_{_slug(track_id)}"]
+        """Per-type URI, e.g. ``track:TRXXXXX`` →
+        ``http://purl.org/ontology/mrc/resource/track/TRXXXXX``."""
+        return TRACK_NS[_slug(track_id)]
 
     @staticmethod
     def performance_uri(track_id: str) -> URIRef:
-        """Flat CURIE-safe URI, e.g. ``ex:performance_TRXXXXX``."""
-        return EX[f"performance_{_slug(track_id)}"]
+        """Per-type URI, e.g. ``perf:TRXXXXX`` →
+        ``http://purl.org/ontology/mrc/resource/performance/TRXXXXX``."""
+        return PERFORMANCE_NS[_slug(track_id)]
 
     @staticmethod
     def genre_uri(label: str) -> URIRef:
-        """Flat named-individual URI, e.g. ``mrc:pop_music`` (no sub-path)."""
-        return MRC[_slug(label)]
+        """Per-type URI, e.g. ``genre:rock`` →
+        ``http://purl.org/ontology/mrc/resource/genre/rock``."""
+        return GENRE_NS[_slug(label)]
 
     @staticmethod
     def instrument_uri(label: str) -> URIRef:
-        """Flat named-individual URI, e.g. ``mrc:Distortion_Guitar``."""
-        return MRC[_slug(label)]
+        """Per-type URI, e.g. ``inst:Distortion_Guitar`` →
+        ``http://purl.org/ontology/mrc/resource/instrument/Distortion_Guitar``."""
+        return INSTRUMENT_NS[_slug(label)]
 
     @staticmethod
     def tempo_class_uri(name: str) -> URIRef:
-        """Flat named-individual URI, e.g. ``mrc:Allegro`` (no sub-path)."""
-        return MRC[name]
+        """Per-type URI, e.g. ``tempo:Allegro`` →
+        ``http://purl.org/ontology/mrc/resource/tempo/Allegro``."""
+        return TEMPO_NS[name]
 
     @staticmethod
     def decade_uri(start_year: int) -> URIRef:
-        """Flat CURIE-safe URI, e.g. ``ex:decade_2010s``."""
-        return EX[f"decade_{int(start_year)}s"]
+        """Per-type URI, e.g. ``decade:2010s`` →
+        ``http://purl.org/ontology/mrc/resource/decade/2010s``."""
+        return DECADE_NS[f"{int(start_year)}s"]
 
     # ── Schema additions: tempo-class controlled vocabulary ─────────────────
     def add_tempo_class_individuals(self) -> None:
@@ -458,8 +551,9 @@ class KGBuilder:
             "derived from BPM ranges as published by Music Theory Academy.",
             lang="en")))
 
-        # Declare the flat TempoScheme (replaces the legacy mrc:scheme/Tempos)
-        TEMPO_SCH = MRC["TempoScheme"]
+        # Declare the TempoScheme inside ``scheme:`` (replaces both the
+        # legacy ``mrc:scheme/Tempos`` *and* the older ``mrc:TempoScheme``).
+        TEMPO_SCH = URIRef(TEMPO_SCHEME_URI)
         self.g.add((TEMPO_SCH, RDF.type, SKOS.ConceptScheme))
         self.g.add((TEMPO_SCH, RDFS.label,    Literal("Tempo Class Scheme", lang="en")))
         self.g.add((TEMPO_SCH, SKOS.prefLabel, Literal("Tempo Class Scheme", lang="en")))
@@ -486,8 +580,8 @@ class KGBuilder:
         mode.
 
         URI pattern:
-            mrc:KeyC, mrc:KeyC_sharp … mrc:KeyB
-            mrc:MajorMode, mrc:MinorMode
+            key:C, key:C_sharp … key:B
+            mode:Major, mode:Minor
 
         Each individual carries both ``rdfs:label`` (Protégé / community
         standard) and ``skos:prefLabel`` (SKOS interop), plus ``skos:altLabel``
@@ -507,8 +601,8 @@ class KGBuilder:
             "One of the twelve chromatic pitch classes used as the tonal "
             "centre of a musical piece (C, C♯/D♭, D, … B).", lang="en")))
 
-        # Declare the flat KeyScheme (replaces the legacy mrc:scheme/Keys)
-        KEY_SCH = MRC["KeyScheme"]
+        # Declare the KeyScheme inside ``scheme:``
+        KEY_SCH = URIRef(KEY_SCHEME_URI)
         self.g.add((KEY_SCH, RDF.type, SKOS.ConceptScheme))
         self.g.add((KEY_SCH, RDFS.label,    Literal("Musical Key Scheme", lang="en")))
         self.g.add((KEY_SCH, SKOS.prefLabel, Literal("Musical Key Scheme", lang="en")))
@@ -534,13 +628,13 @@ class KGBuilder:
         self.g.add((MODE_CLASS, RDFS.comment,  Literal(
             "The modality of a musical key: Major or Minor.", lang="en")))
 
-        # Declare the flat ModeScheme (replaces the legacy mrc:scheme/Modes)
-        MODE_SCH = MRC["ModeScheme"]
+        # Declare the ModeScheme inside ``scheme:``
+        MODE_SCH = URIRef(MODE_SCHEME_URI)
         self.g.add((MODE_SCH, RDF.type, SKOS.ConceptScheme))
         self.g.add((MODE_SCH, RDFS.label,    Literal("Musical Mode Scheme", lang="en")))
         self.g.add((MODE_SCH, SKOS.prefLabel, Literal("Musical Mode Scheme", lang="en")))
 
-        for label, uri in (("Major", MRC["MajorMode"]), ("Minor", MRC["MinorMode"])):
+        for label, uri in (("Major", MODE_NS["Major"]), ("Minor", MODE_NS["Minor"])):
             self.g.add((uri, RDF.type, MODE_CLASS))
             self.g.add((uri, RDF.type, OWL.NamedIndividual))
             self.g.add((uri, RDFS.label,     Literal(label, lang="en")))
@@ -631,6 +725,7 @@ class KGBuilder:
         self.g.add((ELEM_SCH, SKOS.hasTopConcept, MRC["ElementsOfMusic"]))
 
         # Normalise mrc:ElementsOfMusic (ontology class, singular) so it carries
+        #TODO SOMETHING IS WRONG, STILL NOT WORKING
         # the same canonical lowercase label as its Wikidata counterpart
         # wd:Q11696608.  This prevents SPARQL results from showing both
         # "Element of Music" and "elements of music" as distinct values.
@@ -742,7 +837,7 @@ class KGBuilder:
                 self.g.add((g_uri, RDF.type, MRC["Genre"]))
                 self.g.add((g_uri, RDF.type, OWL.NamedIndividual))
                 self.g.add((g_uri, RDF.type, SKOS.Concept))
-                self.g.add((g_uri, SKOS.inScheme, MRC["GenreScheme"]))
+                self.g.add((g_uri, SKOS.inScheme, URIRef(GENRE_SCHEME_URI)))
                 self.g.add((g_uri, SKOS.prefLabel, Literal(genre_label, lang="en")))
                 self.g.add((g_uri, RDFS.label, Literal(genre_label, lang="en")))
                 self._known_uris.add(g_uri)
@@ -846,7 +941,7 @@ class KGBuilder:
                 self.g.add((inst, RDF.type, MO["Instrument"]))
                 self.g.add((inst, RDF.type, OWL.NamedIndividual))
                 self.g.add((inst, RDF.type, SKOS.Concept))
-                self.g.add((inst, SKOS.inScheme, MRC["InstrumentScheme"]))
+                self.g.add((inst, SKOS.inScheme, URIRef(INSTRUMENT_SCHEME_URI)))
                 self.g.add((inst, SKOS.prefLabel, Literal(inst_label, lang="en")))
                 self.g.add((inst, RDFS.label, Literal(inst_label, lang="en")))
                 self._known_uris.add(inst)
@@ -946,7 +1041,10 @@ class KGBuilder:
 
 
 __all__ = (
-    "MRC", "MO", "FOAF", "EVENT", "DCT", "EX",
+    "MRC", "MO", "FOAF", "EVENT", "DCT",
+    "EX", "SCHEME",
+    "TRACK_NS", "ARTIST_NS", "USER_NS", "GENRE_NS", "INSTRUMENT_NS",
+    "DECADE_NS", "TEMPO_NS", "KEY_NS", "MODE_NS", "PERFORMANCE_NS",
     "INSTRUMENT_SCHEME_URI", "GENRE_SCHEME_URI", "DECADE_SCHEME_URI",
     "KEY_SCHEME_URI", "TEMPO_SCHEME_URI", "MODE_SCHEME_URI", "ELEMENTS_SCHEME_URI",
     "KEY_NAMES", "KEY_URI_MAP", "_KEY_LABELS", "MODE_URI_MAP",

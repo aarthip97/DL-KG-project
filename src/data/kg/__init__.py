@@ -20,8 +20,12 @@ from .variable_selection import (  # noqa: F401
     merge_parquet_with_interim,
 )
 from .kg_builder import (  # noqa: F401
-    MRC, MO, FOAF, EVENT, DCT, EX,
+    MRC, MO, FOAF, EVENT, DCT,
+    EX, SCHEME,
+    TRACK_NS, ARTIST_NS, USER_NS, GENRE_NS, INSTRUMENT_NS,
+    DECADE_NS, TEMPO_NS, KEY_NS, MODE_NS, PERFORMANCE_NS,
     INSTRUMENT_SCHEME_URI, GENRE_SCHEME_URI, DECADE_SCHEME_URI,
+    KEY_SCHEME_URI, TEMPO_SCHEME_URI, MODE_SCHEME_URI, ELEMENTS_SCHEME_URI,
     KGBuilder,
 )
 from .user_data import (  # noqa: F401

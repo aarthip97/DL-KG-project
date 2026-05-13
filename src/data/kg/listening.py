@@ -49,19 +49,20 @@ from rdflib import BNode, Literal, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, XSD
 from tqdm.auto import tqdm
 
-from .kg_builder import DCT, EVENT, EX, FOAF, KGBuilder, MO, MRC, _slug
+from .kg_builder import DCT, EVENT, FOAF, KGBuilder, MO, MRC, USER_NS, _slug
 
 
 # ── URI helpers ────────────────────────────────────────────────────────────
 def user_uri(user_id: str) -> URIRef:
     """Stable URI for an Echo Nest taste-profile user.
 
-    Uses the same flat underscore pattern as all other entity URIs minted by
-    KGBuilder (``track_TRXXXXX``, ``artist_ARXXXXX``, ``decade_2010s``).
-    Result: ``ex:user_<slug>`` →
-    ``http://purl.org/ontology/mrc/resource/user_<slug>``.
+    Uses the per-entity-type ``user:`` resource namespace so the URI is
+    self-documenting and trivially distinguishable from tracks / artists
+    by the namespace alone (no string parsing required downstream).
+    Result: ``user:<slug>`` →
+    ``http://purl.org/ontology/mrc/resource/user/<slug>``.
     """
-    return EX[f"user_{_slug(str(user_id))}"]
+    return USER_NS[_slug(str(user_id))]
 
 
 # ── Schema additions ──────────────────────────────────────────────────────

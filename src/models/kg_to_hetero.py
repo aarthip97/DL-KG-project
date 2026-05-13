@@ -119,6 +119,23 @@ def extract_dl_artifacts(g: rdflib.Graph, tsv_out_path: str, dict_out_path: str)
     PRED_IN_DECADE              = MRC_BASE + "inDecade"             # track → decade
     PRED_SKOS_BROADER           = "http://www.w3.org/2004/02/skos/core#broader"
 
+    # ── Per-entity-type resource namespace prefixes ──────────────────────────
+    # Every individual minted by KGBuilder lives in a namespace dedicated to
+    # its type, so we can identify a node's type from its URI alone:
+    #   track/  artist/  user/  genre/  instrument/  decade/
+    #   tempo/  key/  mode/  performance/
+    # We only need the ones used for ambiguity resolution below.
+    RES_BASE       = "http://purl.org/ontology/mrc/resource/"
+    NS_GENRE       = RES_BASE + "genre/"
+    NS_INSTRUMENT  = RES_BASE + "instrument/"
+    NS_PERFORMANCE = RES_BASE + "performance/"
+
+    def _is_performance(uri_str: str) -> bool:
+        return uri_str.startswith(NS_PERFORMANCE)
+
+    def _is_genre(uri_str: str) -> bool:
+        return uri_str.startswith(NS_GENRE)
+
     # ── First pass: collect BNode roles ──────────────────────────────────────
     # A BNode can be a ListeningEvent (user→track) or a GenreAssociation
     # (artist→genre+weight).  We resolve them in a first scan so the second
@@ -161,12 +178,12 @@ def extract_dl_artifacts(g: rdflib.Graph, tsv_out_path: str, dict_out_path: str)
             perf_artist[s_str] = o_str
         elif p_str == PRED_HAS_KEY and o_str:
             # Could be on a performance (rich) or track (simple)
-            if "performance_" in s_str:
+            if _is_performance(s_str):
                 perf_key[s_str] = o_str
             else:
                 track_key_direct[s_str] = o_str
         elif p_str == PRED_HAS_MODE and o_str:
-            if "performance_" in s_str:
+            if _is_performance(s_str):
                 perf_mode[s_str] = o_str
             else:
                 track_mode_direct[s_str] = o_str
@@ -227,25 +244,28 @@ def extract_dl_artifacts(g: rdflib.Graph, tsv_out_path: str, dict_out_path: str)
 
         # 4. SKOS broader (genre/instrument hierarchies)
         elif p_str == PRED_SKOS_BROADER and o_str:
-            if "genre" in s_res.lower() or "Genre" in s_res:
+            # Identify the child node by its resource namespace prefix —
+            # cleaner and safer than substring matching on labels.
+            if _is_genre(s_res):
                 child_idx  = get_or_create_idx("genre", s_res)
                 parent_idx = get_or_create_idx("genre", o_res)
                 edge_dict["genre_parent"][0].append(child_idx)
                 edge_dict["genre_parent"][1].append(parent_idx)
-            else:
+            elif s_res.startswith(NS_INSTRUMENT):
                 child_idx  = get_or_create_idx("instrument", s_res)
                 parent_idx = get_or_create_idx("instrument", o_res)
                 edge_dict["instrument_parent"][0].append(child_idx)
                 edge_dict["instrument_parent"][1].append(parent_idx)
+            # else: skos:broader on schemes / WD upper concepts — skip
 
         # 5. Track key/mode (simple graph variant — attached directly to track)
-        elif p_str == PRED_HAS_KEY and "performance_" not in s_str and o_str:
+        elif p_str == PRED_HAS_KEY and not _is_performance(s_str) and o_str:
             t_idx = get_or_create_idx("track", s_res)
             k_idx = get_or_create_idx("key",   o_res)
             edge_dict["track_key"][0].append(t_idx)
             edge_dict["track_key"][1].append(k_idx)
 
-        elif p_str == PRED_HAS_MODE and "performance_" not in s_str and o_str:
+        elif p_str == PRED_HAS_MODE and not _is_performance(s_str) and o_str:
             t_idx = get_or_create_idx("track", s_res)
             m_idx = get_or_create_idx("mode",  o_res)
             edge_dict["track_mode"][0].append(t_idx)
@@ -460,3 +480,4 @@ def _set_optional_weight(
     weights = edge_dict.get(key)
     if weights is not None:
         data[edge_type].edge_weight = torch.as_tensor(weights, dtype=torch.float32)
+

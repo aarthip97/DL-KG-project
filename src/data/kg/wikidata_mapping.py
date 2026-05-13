@@ -45,7 +45,8 @@ from rdflib import Literal, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, SKOS
 
 from .kg_builder import (
-    KGBuilder, MRC, MO,
+    KGBuilder, MRC, MO, SCHEME,
+    INSTRUMENT_SCHEME_URI, GENRE_SCHEME_URI, DECADE_SCHEME_URI,
     WD_MUSICAL_CONCEPT, WD_ELEMENTS_OF_MUSIC,
     WD_MUSIC_GENRE, WD_MUSICAL_INSTRUMENT, WD_KEY_MUSIC,
 )
@@ -82,11 +83,12 @@ DOMAIN_BOUNDS: dict[str, str] = {
     GENRE_ROOT:      "?node wdt:P31  wd:Q188451 .",
 }
 
-# ConceptScheme URIs — flat names so they serialise as mrc: CURIEs.
+# ConceptScheme URIs — live in their own ``scheme:`` namespace so SKOS
+# schemes stay cleanly separated from the ontology vocabulary (``mrc:``).
 # Must stay in sync with the *_SCHEME_URI constants in kg_builder.py.
-INSTRUMENT_SCHEME = MRC["InstrumentScheme"]
-GENRE_SCHEME      = MRC["GenreScheme"]
-DECADE_SCHEME     = MRC["DecadeScheme"]
+INSTRUMENT_SCHEME = URIRef(INSTRUMENT_SCHEME_URI)
+GENRE_SCHEME      = URIRef(GENRE_SCHEME_URI)
+DECADE_SCHEME     = URIRef(DECADE_SCHEME_URI)
 
 DEFAULT_HEADERS = {
     "User-Agent": (

@@ -36,7 +36,7 @@ from tqdm.auto import tqdm
 from rdflib import Literal, URIRef
 from rdflib.namespace import OWL, RDF, SKOS, XSD
 
-from .kg_builder import KGBuilder, MRC, EX, DECADE_SCHEME_URI
+from .kg_builder import KGBuilder, MRC, DECADE_SCHEME_URI
 from .wikidata_mapping import (
     WD, WDT,
     DECADE_SCHEME,
