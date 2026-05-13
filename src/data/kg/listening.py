@@ -43,9 +43,9 @@ thousands).
 from __future__ import annotations
 
 from typing import Mapping, Optional
-
+from pathlib import Path
 import pandas as pd
-from rdflib import BNode, Literal, URIRef
+from rdflib import BNode, Literal, URIRef, Graph
 from rdflib.namespace import OWL, RDF, RDFS, XSD
 from tqdm.auto import tqdm
 
@@ -333,7 +333,6 @@ def stream_users_to_ntriples(
     flush_every : flush the write buffer to disk every N triples (defaults
         to 1 M; tune down on slow disks).
     """
-    from pathlib import Path
     sidecar_path = Path(sidecar_path)
 
     required = {user_col, song_col, count_col}
@@ -477,7 +476,7 @@ def ensure_listening_sidecar(
     batch_size: int = 100_000,
     flush_every: int = 1_000_000,
     verbose: bool = True,
-) -> pathlib.Path:
+) -> Path:
     """Create the sidecar N-Triples file if it does not yet exist (or
     ``force_rebuild=True``), then return its path.
 
@@ -498,9 +497,9 @@ def ensure_listening_sidecar(
 
     Returns
     -------
-    pathlib.Path — path to the (possibly newly written) sidecar file.
+    Path — path to the (possibly newly written) sidecar file.
     """
-    sidecar_path = pathlib.Path(sidecar_path)
+    sidecar_path = Path(sidecar_path)
     if sidecar_path.exists() and not force_rebuild:
         size_mb = sidecar_path.stat().st_size / 1024 / 1024
         if verbose:
@@ -508,7 +507,7 @@ def ensure_listening_sidecar(
                   f"({size_mb:,.1f} MiB)")
         return sidecar_path
 
-    counts = stream_users_to_ntriples(
+    stream_users_to_ntriples(
         builder,
         taste,
         sidecar_path=sidecar_path,
@@ -528,7 +527,7 @@ def ensure_listening_sidecar(
 
 
 def merge_sidecar_into_graph(
-    g: "rdflib.Graph",
+    g: Graph,
     sidecar_path,
     *,
     verbose: bool = True,
@@ -559,8 +558,7 @@ def merge_sidecar_into_graph(
     -------
     int — number of triples added (``len(g)`` delta).
     """
-    from rdflib import Graph as _Graph  # avoid circular at module level
-    sidecar_path = pathlib.Path(sidecar_path)
+    sidecar_path = Path(sidecar_path)
     if not sidecar_path.exists():
         if verbose:
             print(f"[WARN] sidecar not found, skipping merge: {sidecar_path}")

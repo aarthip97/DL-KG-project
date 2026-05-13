@@ -41,6 +41,7 @@ Example
         listen_counts=counts,
     )
 """
+import gc
 import torch
 import numpy as np
 import rdflib
@@ -48,6 +49,120 @@ from rdflib import BNode, Literal
 import json
 from collections import defaultdict
 from torch_geometric.data import HeteroData
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Memory-safe sidecar streaming
+# ─────────────────────────────────────────────────────────────────────────────
+# rdflib Graph carries ~250–400 B of object overhead per triple, so a 200 MiB
+# .nt sidecar with ~8 M listening triples balloons to >2 GiB in RAM and
+# easily OOMs an 8 GiB laptop.  We avoid this by streaming the sidecar with
+# a tiny line-based parser specialised for the *exact* triples our writer
+# produces (see ``stream_users_to_ntriples`` in ``listening.py``):
+#
+#   <user>   <hasListeningInteraction>  _:bN .
+#   _:bN     <onTrack>                  <track> .
+#   _:bN     <listenCount>              "N"^^<xsd:integer> .
+#   <user>   <listenedTo>               <track> .          (simple variant)
+#
+# RAM cost is ~80 B/event for the bnode→track/count dicts (≈300 MiB for
+# 4 M events) instead of multi-GiB.
+
+_MRC = "http://purl.org/ontology/mrc/"
+_PRED_HAS_LISTENING_FULL = f"<{_MRC}hasListeningInteraction>"
+_PRED_ON_TRACK_FULL      = f"<{_MRC}onTrack>"
+_PRED_LISTEN_COUNT_FULL  = f"<{_MRC}listenCount>"
+_PRED_LISTENED_TO_FULL   = f"<{_MRC}listenedTo>"
+
+
+def _iter_listening_sidecar(sidecar_path, *, verbose: bool = True):
+    """Yield ``(user_uri, track_uri, listen_count)`` tuples by streaming a
+    listening sidecar ``.nt`` file **without** loading it into rdflib.
+
+    Two passes over the file:
+
+    1. **First pass** — collect ``bnode → track`` and ``bnode → count``
+       dicts (and yield ``mrc:listenedTo`` simple-variant rows on the fly).
+    2. **Second pass** — for each ``<user> hasListeningInteraction _:bN``
+       triple, look up the cached bnode and yield a resolved row.
+
+    Parameters
+    ----------
+    sidecar_path : path to the ``.nt`` file.
+    verbose      : print one progress line after each pass.
+    """
+    import pathlib as _pl
+    p = _pl.Path(sidecar_path)
+    if not p.exists():
+        if verbose:
+            print(f"[WARN] sidecar not found, skipping stream: {p}")
+        return
+
+    bnode_track: dict[str, str] = {}
+    bnode_count: dict[str, int] = {}
+
+    # ── Pass 1 — bnode → track / count, plus simple variant pass-through ────
+    n_lines = 0
+    n_simple = 0
+    with open(p, "r", encoding="utf-8") as fh:
+        for line in fh:
+            n_lines += 1
+            # Cheap predicate filtering before splitting (most lines are skipped).
+            if _PRED_ON_TRACK_FULL in line:
+                # _:bN <onTrack> <track> .
+                parts = line.rstrip(" .\n\r").split(" ", 2)
+                if len(parts) == 3 and parts[2].startswith("<"):
+                    bnode_track[parts[0]] = parts[2][1:-1]
+            elif _PRED_LISTEN_COUNT_FULL in line:
+                # _:bN <listenCount> "N"^^<xsd:integer> .
+                first_q = line.find('"')
+                second_q = line.find('"', first_q + 1)
+                if first_q > 0 and second_q > first_q:
+                    bn = line.split(" ", 1)[0]
+                    try:
+                        bnode_count[bn] = int(line[first_q + 1:second_q])
+                    except ValueError:
+                        pass
+            elif _PRED_LISTENED_TO_FULL in line:
+                # <user> <listenedTo> <track> .   (simple variant — emit now)
+                parts = line.rstrip(" .\n\r").split(" ", 2)
+                if (len(parts) == 3 and parts[0].startswith("<")
+                        and parts[2].startswith("<")):
+                    yield parts[0][1:-1], parts[2][1:-1], 1
+                    n_simple += 1
+
+    if verbose:
+        print(f"  Sidecar pass 1: {n_lines:,} lines  |  "
+              f"{len(bnode_track):,} listening events  |  "
+              f"{n_simple:,} simple-variant edges yielded")
+
+    if not bnode_track:
+        # Simple variant only — nothing more to do.
+        return
+
+    # ── Pass 2 — resolve <user> hasListeningInteraction _:bN ────────────────
+    n_resolved = 0
+    with open(p, "r", encoding="utf-8") as fh:
+        for line in fh:
+            if _PRED_HAS_LISTENING_FULL not in line:
+                continue
+            parts = line.rstrip(" .\n\r").split(" ", 2)
+            if len(parts) < 3 or not parts[0].startswith("<"):
+                continue
+            user = parts[0][1:-1]
+            bn = parts[2]
+            track = bnode_track.get(bn)
+            if track is None:
+                continue
+            yield user, track, bnode_count.get(bn, 1)
+            n_resolved += 1
+
+    if verbose:
+        print(f"  Sidecar pass 2: {n_resolved:,} user→track edges resolved")
+
+    bnode_track.clear()
+    bnode_count.clear()
+
 
 def extract_dl_artifacts(
     g: rdflib.Graph,
@@ -63,23 +178,22 @@ def extract_dl_artifacts(
     tsv_out_path : path for the RotatE / PyKEEN TSV file.
     dict_out_path: path for the JSON edge_dict consumed by build_rich_hetero_graph.
     sidecar_nt   : optional path to the listening sidecar N-Triples file.
-                   When provided the sidecar is parsed into ``g`` **in-place**
-                   before extraction so user/track edges are captured.
-                   This avoids the caller having to do a separate
-                   ``g.parse(sidecar_nt)`` step.  The merge is skipped
-                   silently if the file does not exist.
+                   When provided the sidecar is **streamed** (line-based parser,
+                   no rdflib load) and user→track edges are emitted directly.
+                   ``g`` is *not* mutated, so the caller's graph stays small
+                   and the function is safe to run on machines that cannot
+                   afford to materialise the merged graph in RAM.
     """
-    if sidecar_nt is not None:
-        import pathlib as _pl
-        _p = _pl.Path(sidecar_nt)
-        if _p.exists():
-            _n_before = len(g)
-            _size_mb  = _p.stat().st_size / 1024 / 1024
-            print(f"Merging sidecar {_p.name}  ({_size_mb:,.1f} MiB) …", end=" ", flush=True)
-            g.parse(str(_p), format="nt")
-            print(f"+{len(g) - _n_before:,} triples  (total: {len(g):,})")
-        else:
-            print(f"[WARN] sidecar_nt not found, skipping merge: {sidecar_nt}")
+    # Stream TSV rows straight to disk to avoid keeping millions of
+    # f-string objects in memory.  We open the file early so all writers
+    # (graph traversal + sidecar streamer) share it.
+    tsv_fh = open(tsv_out_path, "w", encoding="utf-8")
+    tsv_count = 0
+
+    def _tsv_write(line: str) -> None:
+        nonlocal tsv_count
+        tsv_fh.write(line)
+        tsv_count += 1
 
     print("1. Identifying skos:exactMatch / owl:sameAs aliases...")
     alias_map = {}
@@ -95,7 +209,6 @@ def extract_dl_artifacts(
         return alias_map.get(uri_str, uri_str)
 
     print("2. Parsing graph for PyKEEN and PyG artifacts...")
-    tsv_triples = []
 
     # Dictionaries to build PyG integer indices
     node_to_idx  = defaultdict(dict)
@@ -249,7 +362,7 @@ def extract_dl_artifacts(
 
         # Add every non-BNode triple to PyKEEN TSV
         if not isinstance(s, BNode) and not isinstance(o, BNode):
-            tsv_triples.append(f"{s_res}\t{p_str}\t{o_res}\n")
+            _tsv_write(f"{s_res}\t{p_str}\t{o_res}\n")
 
         # ── PyG structural edges ──────────────────────────────────────────────
 
@@ -309,7 +422,10 @@ def extract_dl_artifacts(
             edge_dict["track_decade"][0].append(t_idx)
             edge_dict["track_decade"][1].append(d_idx)
 
-    # ── Resolve BNode listening events → user→track edges ────────────────────
+    # ── Resolve BNode listening events that landed in g (legacy / merged) ────
+    # In the new streaming-sidecar architecture g normally carries no user
+    # data, so this loop is a no-op.  We keep it for backwards compatibility
+    # with callers that still merge the sidecar into g manually.
     for bnode_str, user_str in user_listening_bnodes.items():
         track_str = bnode_track.get(bnode_str)
         if track_str is None:
@@ -320,8 +436,29 @@ def extract_dl_artifacts(
         edge_dict["user_track"][0].append(u_idx)
         edge_dict["user_track"][1].append(t_idx)
         edge_dict["user_track_counts"].append(count)
-        # Also add to TSV (user → track — compact form for KGE)
-        tsv_triples.append(f"{user_str}\t{PRED_LISTENED_TO}\t{track_str}\n")
+        _tsv_write(f"{user_str}\t{PRED_LISTENED_TO}\t{track_str}\n")
+
+    # Free the bnode dicts now that g-walk users have been resolved.
+    user_listening_bnodes.clear()
+    bnode_track.clear()
+    bnode_count.clear()
+    gc.collect()
+
+    # ── Stream the listening sidecar (memory-safe) ───────────────────────────
+    # _iter_listening_sidecar yields (user, track, count) triples with a
+    # tiny line-based parser — never loads the file into rdflib.
+    if sidecar_nt is not None:
+        print(f"3. Streaming listening sidecar → user→track edges  ({sidecar_nt})")
+        for user_str, track_str, count in _iter_listening_sidecar(
+            sidecar_nt, verbose=True
+        ):
+            u_idx = get_or_create_idx("user",  user_str)
+            t_idx = get_or_create_idx("track", track_str)
+            edge_dict["user_track"][0].append(u_idx)
+            edge_dict["user_track"][1].append(t_idx)
+            edge_dict["user_track_counts"].append(count)
+            _tsv_write(f"{user_str}\t{PRED_LISTENED_TO}\t{track_str}\n")
+        gc.collect()
 
     # ── Resolve Performance nodes → track_artist / key / mode / tempo / instr ─
     for perf_str, track_str in perf_track.items():
@@ -332,7 +469,7 @@ def extract_dl_artifacts(
             edge_dict["track_artist"][0].append(t_idx)
             edge_dict["track_artist"][1].append(a_idx)
             # TSV: emit track—performed_by→artist (collapsed from performance)
-            tsv_triples.append(
+            _tsv_write(
                 f"{track_str}\t{MRC_BASE}performed_by\t{artist_str}\n"
             )
 
@@ -376,15 +513,15 @@ def extract_dl_artifacts(
             edge_dict["artist_genre"][0].append(a_idx)
             edge_dict["artist_genre"][1].append(g_idx)
             edge_dict["artist_genre_weights"].append(weight_val)
-            tsv_triples.append(
+            _tsv_write(
                 f"{artist_str}\t{PRED_HAS_GENRE}\t{genre_str}\n"
             )
 
     print("3. Exporting artifacts...")
     edge_dict["node_mappings"] = node_mappings
 
-    with open(tsv_out_path, "w", encoding="utf-8") as f:
-        f.writelines(tsv_triples)
+    # TSV is already written incrementally — just close the handle.
+    tsv_fh.close()
 
     # Single JSON write — defaultdict values are converted to plain lists first,
     # and node_mappings (also defaultdict) is serialised inline.
@@ -404,7 +541,7 @@ def extract_dl_artifacts(
     n_users  = len(node_mappings["user"])
     n_edges  = len(edge_dict["user_track"][0])
     print(
-        f"Done! Extracted {len(tsv_triples):,} RotatE triples  |  "
+        f"Done! Extracted {tsv_count:,} RotatE triples  |  "
         f"tracks={n_tracks:,}  users={n_users:,}  user→track edges={n_edges:,}"
     )
     return edge_dict
