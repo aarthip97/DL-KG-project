@@ -465,9 +465,123 @@ def stream_users_to_ntriples(
     return counts
 
 
+def ensure_listening_sidecar(
+    builder: "KGBuilder",
+    taste: pd.DataFrame,
+    sidecar_path,
+    *,
+    merged: Optional[pd.DataFrame] = None,
+    song_to_track: Optional[Mapping[str, str]] = None,
+    simple: Optional[bool] = None,
+    force_rebuild: bool = False,
+    batch_size: int = 100_000,
+    flush_every: int = 1_000_000,
+    verbose: bool = True,
+) -> pathlib.Path:
+    """Create the sidecar N-Triples file if it does not yet exist (or
+    ``force_rebuild=True``), then return its path.
+
+    This is a convenience wrapper around :func:`stream_users_to_ntriples`
+    that implements the standard *skip-if-exists* gate used throughout the
+    notebook:
+
+    * **Exists & not forcing** → print a one-liner and return immediately.
+    * **Missing or forcing**   → call :func:`stream_users_to_ntriples`,
+      then call ``builder.save()`` once to persist the schema additions
+      (``mrc:ListeningEvent`` etc.) that the function writes to
+      ``builder.g``.
+
+    Parameters are identical to :func:`stream_users_to_ntriples`; the
+    only additions are:
+
+    force_rebuild : if True, always rebuild even if the file exists.
+
+    Returns
+    -------
+    pathlib.Path — path to the (possibly newly written) sidecar file.
+    """
+    sidecar_path = pathlib.Path(sidecar_path)
+    if sidecar_path.exists() and not force_rebuild:
+        size_mb = sidecar_path.stat().st_size / 1024 / 1024
+        if verbose:
+            print(f"[SKIP] listening sidecar exists: {sidecar_path.name} "
+                  f"({size_mb:,.1f} MiB)")
+        return sidecar_path
+
+    counts = stream_users_to_ntriples(
+        builder,
+        taste,
+        sidecar_path=sidecar_path,
+        song_to_track=song_to_track,
+        merged=merged,
+        simple=simple,
+        batch_size=batch_size,
+        flush_every=flush_every,
+        verbose=verbose,
+    )
+    # Persist the schema triples that stream_users_to_ntriples added to
+    # builder.g (mrc:ListeningEvent, mrc:hasListeningInteraction, …).
+    builder.save()
+    if verbose:
+        print(f"[SAVED] schema additions → {builder.out_ttl.name}")
+    return sidecar_path
+
+
+def merge_sidecar_into_graph(
+    g: "rdflib.Graph",
+    sidecar_path,
+    *,
+    verbose: bool = True,
+) -> int:
+    """Parse a sidecar N-Triples file into an existing rdflib graph **only
+    if** the sidecar is present.
+
+    Memory-safety note
+    ------------------
+    This *will* load all sidecar triples into RAM.  Only call it when you
+    actually need in-memory SPARQL access to listening data (e.g. for the
+    user-centric SPARQL queries or :func:`extract_dl_artifacts`).  After
+    the operation is done you can call ``gc.collect()`` to release pressure,
+    but the triples remain in ``g`` until it goes out of scope.
+
+    For the RotatE / PyG extraction pipeline prefer the two-file approach:
+    pass the ``.ttl`` to ``KGBuilder`` and the sidecar path to
+    ``extract_dl_artifacts`` separately (see its ``sidecar_nt`` parameter).
+
+    Parameters
+    ----------
+    g            : the live rdflib Graph (e.g. ``builder.g``).
+    sidecar_path : path to the ``.nt`` file produced by
+                   :func:`stream_users_to_ntriples`.
+    verbose      : print a summary line.
+
+    Returns
+    -------
+    int — number of triples added (``len(g)`` delta).
+    """
+    from rdflib import Graph as _Graph  # avoid circular at module level
+    sidecar_path = pathlib.Path(sidecar_path)
+    if not sidecar_path.exists():
+        if verbose:
+            print(f"[WARN] sidecar not found, skipping merge: {sidecar_path}")
+        return 0
+
+    n_before = len(g)
+    size_mb  = sidecar_path.stat().st_size / 1024 / 1024
+    if verbose:
+        print(f"Merging sidecar {sidecar_path.name}  ({size_mb:,.1f} MiB) …", end=" ", flush=True)
+    g.parse(str(sidecar_path), format="nt")
+    added = len(g) - n_before
+    if verbose:
+        print(f"+{added:,} triples  (total: {len(g):,})")
+    return added
+
+
 __all__ = (
     "user_uri",
     "add_listening_schema",
     "add_users_to_graph",
     "stream_users_to_ntriples",
+    "ensure_listening_sidecar",
+    "merge_sidecar_into_graph",
 )

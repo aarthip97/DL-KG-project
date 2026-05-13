@@ -54,4 +54,6 @@ from .listening import (  # noqa: F401
     add_listening_schema,
     add_users_to_graph,
     stream_users_to_ntriples,
+    ensure_listening_sidecar,
+    merge_sidecar_into_graph,
 )

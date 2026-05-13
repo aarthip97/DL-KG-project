@@ -49,7 +49,38 @@ import json
 from collections import defaultdict
 from torch_geometric.data import HeteroData
 
-def extract_dl_artifacts(g: rdflib.Graph, tsv_out_path: str, dict_out_path: str):
+def extract_dl_artifacts(
+    g: rdflib.Graph,
+    tsv_out_path: str,
+    dict_out_path: str,
+    sidecar_nt: str | None = None,
+):
+    """Extract PyKEEN TSV triples and a PyG edge_dict from a populated KG.
+
+    Parameters
+    ----------
+    g            : the in-memory rdflib Graph (populated .ttl, no listeners).
+    tsv_out_path : path for the RotatE / PyKEEN TSV file.
+    dict_out_path: path for the JSON edge_dict consumed by build_rich_hetero_graph.
+    sidecar_nt   : optional path to the listening sidecar N-Triples file.
+                   When provided the sidecar is parsed into ``g`` **in-place**
+                   before extraction so user/track edges are captured.
+                   This avoids the caller having to do a separate
+                   ``g.parse(sidecar_nt)`` step.  The merge is skipped
+                   silently if the file does not exist.
+    """
+    if sidecar_nt is not None:
+        import pathlib as _pl
+        _p = _pl.Path(sidecar_nt)
+        if _p.exists():
+            _n_before = len(g)
+            _size_mb  = _p.stat().st_size / 1024 / 1024
+            print(f"Merging sidecar {_p.name}  ({_size_mb:,.1f} MiB) …", end=" ", flush=True)
+            g.parse(str(_p), format="nt")
+            print(f"+{len(g) - _n_before:,} triples  (total: {len(g):,})")
+        else:
+            print(f"[WARN] sidecar_nt not found, skipping merge: {sidecar_nt}")
+
     print("1. Identifying skos:exactMatch / owl:sameAs aliases...")
     alias_map = {}
     # Catch both standard alias predicates
