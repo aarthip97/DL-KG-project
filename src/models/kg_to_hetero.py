@@ -355,21 +355,18 @@ def extract_dl_artifacts(g: rdflib.Graph, tsv_out_path: str, dict_out_path: str)
     with open(tsv_out_path, "w", encoding="utf-8") as f:
         f.writelines(tsv_triples)
 
+    # Single JSON write — defaultdict values are converted to plain lists first,
+    # and node_mappings (also defaultdict) is serialised inline.
+    serialisable = {
+        k: (list(v) if isinstance(v, defaultdict) else v)
+        for k, v in edge_dict.items()
+        if k != "node_mappings"
+    }
+    serialisable["node_mappings"] = {
+        ntype: list(uris)
+        for ntype, uris in node_mappings.items()
+    }
     with open(dict_out_path, "w", encoding="utf-8") as f:
-        json.dump({k: (list(v) if isinstance(v, (list, defaultdict)) else v)
-                   for k, v in edge_dict.items()
-                   if k != "node_mappings"},
-                  f)
-        # node_mappings contains defaultdict(list) — serialise separately
-    with open(dict_out_path, "w", encoding="utf-8") as f:
-        serialisable = {
-            k: (list(v) if isinstance(v, defaultdict) else v)
-            for k, v in edge_dict.items()
-        }
-        serialisable["node_mappings"] = {
-            ntype: list(uris)
-            for ntype, uris in node_mappings.items()
-        }
         json.dump(serialisable, f)
 
     n_tracks = len(node_mappings["track"])
