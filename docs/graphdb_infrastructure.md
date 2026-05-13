@@ -11,7 +11,7 @@ By running the provided setup scripts, the database will automatically download,
 ## 📋 Prerequisites
 
 * **Java 11 or 17** must be installed and available in your system's `PATH`.
-* **License File (Optional but Recommended):** If you received a `.license` file from Ontotext, save it in the root of this repository and name it exactly `graphdb.license`. The setup scripts will automatically inject it into the database configuration.
+* **License File (Optional but Recommended):** If you received a `.license` file from Ontotext, save it in the inside the `scripts` directory and name it exactly `graphdb.license`. The setup scripts will automatically inject it into the database configuration.
 
 ---
 
