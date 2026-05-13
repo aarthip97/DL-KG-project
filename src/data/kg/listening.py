@@ -54,8 +54,14 @@ from .kg_builder import DCT, EVENT, EX, FOAF, KGBuilder, MO, MRC, _slug
 
 # ── URI helpers ────────────────────────────────────────────────────────────
 def user_uri(user_id: str) -> URIRef:
-    """Stable URI for an Echo Nest taste-profile user."""
-    return EX[f"user/{_slug(str(user_id))}"]
+    """Stable URI for an Echo Nest taste-profile user.
+
+    Uses the same flat underscore pattern as all other entity URIs minted by
+    KGBuilder (``track_TRXXXXX``, ``artist_ARXXXXX``, ``decade_2010s``).
+    Result: ``ex:user_<slug>`` →
+    ``http://purl.org/ontology/mrc/resource/user_<slug>``.
+    """
+    return EX[f"user_{_slug(str(user_id))}"]
 
 
 # ── Schema additions ──────────────────────────────────────────────────────
