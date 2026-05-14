@@ -46,9 +46,7 @@ def _load_first_existing_dotenv(candidates: list[Path | None]) -> Path | None:
         if p and Path(p).exists():
             from dotenv import load_dotenv  # noqa: F811
             load_dotenv(dotenv_path=p, override=False)
-            print(f"  [.env] loaded {p}")
             return Path(p)
-    print(f"  [.env] none of the {len(candidates)} candidate paths found")
     return None
 
 
@@ -130,10 +128,10 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
         # gdrive_proj_path may already be in env from Colab Secret (set before
         # Drive mounted by the minimal bootstrap cell) — resolve it now that
         # Drive is up so we can probe for a .env inside it.
-        _gdrive_str = _resolve_secret(
+        _gdrive_str: str = _resolve_secret(
             "gdrive_proj_path",
             default="/content/drive/MyDrive/DL-KG-project",
-        )
+        ) or "/content/drive/MyDrive/DL-KG-project"
         gdrive_proj = Path(_gdrive_str)
 
         print("Searching for .env (Colab):")
@@ -147,10 +145,12 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
             gdrive_proj / ".env",
             ROOT / ".env",
         ]
-        _load_first_existing_dotenv(_dotenv_candidates)
+        _dotenv_loaded_colab = _load_first_existing_dotenv(_dotenv_candidates)
+        if not _dotenv_loaded_colab:
+            print("  [.env] not found in Drive or repo — continuing without it")
 
         # Re-resolve now that .env may have added more vars
-        _gdrive_str = _resolve_secret("gdrive_proj_path", default=_gdrive_str)
+        _gdrive_str = _resolve_secret("gdrive_proj_path", default=_gdrive_str) or _gdrive_str
         gdrive_proj = Path(_gdrive_str)
 
         if not gdrive_proj.exists():
@@ -179,8 +179,8 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
             print("  [INFO] WANDB_API_KEY not set — W&B logging disabled.")
 
     else:
-        print("Searching for .env (local):")
-        _load_first_existing_dotenv([ROOT / ".env", Path.cwd() / ".env"])
+        _dotenv_loaded = _load_first_existing_dotenv([ROOT / ".env", Path.cwd() / ".env"])
+        print(f"  [.env] {'found' if _dotenv_loaded else 'not found'}")
 
     # ── Path constants ────────────────────────────────────────────────────────
     _DATA    = ROOT / "data"
@@ -197,7 +197,7 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
     TASTE_PQ      = PROCESSED / "user_song_taste.parquet"
 
     # KG construction artefacts
-    ONTO_BASE        = ONTOLOGY / "knowledge_graph_full.ttl"
+    ONTO_BASE        = ONTOLOGY / "knowledge_graph_original.ttl"
     ONTO_OUT         = ONTOLOGY / "knowledge_graph_full_with_users.ttl"
     ONTO_OUT_SIMPLE  = ONTOLOGY / "knowledge_graph_simple.ttl"
     LISTENING_NT     = ONTOLOGY / "listening_triples.nt"
@@ -239,13 +239,28 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
     HGT_MODEL_PATH  = HGT_WEIGHTS_DIR / "model.pt"
     AE_MODEL_PATH   = AE_WEIGHTS_DIR / "model.pt"
 
-    # jSymbolic
-    JSYMBOLIC_JAR = Path(
-        _resolve_secret(
-            "jSymbolic2_path",
-            default=str(ROOT / "jSymbolic" / "jSymbolic2.jar"),
+    # Wikidata enrichment artefacts
+    WD_INSTR_PQ        = INTERIM / "wikidata_instruments.json"
+    WD_INSTR_CHAINS_PQ = INTERIM / "wikidata_instrument_chains.json"
+    WD_GENRE_PQ        = INTERIM / "wikidata_genres.json"
+    WD_GENRE_CHAINS_PQ = INTERIM / "wikidata_genre_chains.json"
+    WD_QID_META_PQ     = INTERIM / "wikidata_qid_metadata.json"
+    WD_DECADES_PQ      = INTERIM / "wikidata_decades.json"
+
+    # jSymbolic — local: always repo-local first; Colab: Drive path via secret
+    _jsym_default = str(ROOT / "jSymbolic" / "jSymbolic2.jar")
+    if ON_COLAB:
+        JSYMBOLIC_JAR = Path(
+            _resolve_secret("jSymbolic2_path", default=_jsym_default) or _jsym_default
         )
-    )
+    else:
+        # On local, ignore any Drive path that may have leaked into the env;
+        # only honour jSymbolic2_path if it points to something that actually exists.
+        _jsym_override = _resolve_secret("jSymbolic2_path")
+        if _jsym_override and Path(_jsym_override).exists():
+            JSYMBOLIC_JAR = Path(_jsym_override)
+        else:
+            JSYMBOLIC_JAR = Path(_jsym_default)
     GDRIVE_DATA_ROOT = (ROOT / "data") if ON_COLAB else None
 
     # ── Create directories ────────────────────────────────────────────────────
@@ -275,42 +290,52 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
     USE_GRAPHDB: bool = (not ON_COLAB) and bool(os.environ.get("GRAPHDB_URL"))
 
     # ── Sanity print ──────────────────────────────────────────────────────────
-    print(f"ROOT             : {_short(ROOT, ROOT.parent)}")
-    print(f"data             : {_short(_DATA, ROOT)}"
-          + (f"  →  {_DATA.resolve()}" if _DATA.is_symlink() else ""))
-    print(f"models           : {_short(MODELS_DIR, ROOT)}")
-    print(f"jSymbolic        : {_short(JSYMBOLIC_JAR, ROOT)}"
-          f"  ({'found' if JSYMBOLIC_JAR.exists() else 'NOT FOUND'})")
-    print(f"device           : {DEVICE}")
-    print(f"USE_GRAPHDB      : {USE_GRAPHDB}")
+    def _rel(p: Path) -> str:
+        """Show path relative to ROOT, or just the name if it escapes ROOT."""
+        try:
+            return str(p.relative_to(ROOT))
+        except ValueError:
+            return p.name  # never expose absolute system paths
+
+    _jsym_status = "✓ found" if JSYMBOLIC_JAR.exists() else "✗ not found"
+    _data_suffix = f"  → {_DATA.resolve().name}" if _DATA.is_symlink() else ""
+    print(f"  root       : {ROOT.name}/")
+    print(f"  data/      : {_rel(_DATA)}/{_data_suffix}")
+    print(f"  models/    : {_rel(MODELS_DIR)}/")
+    print(f"  jSymbolic  : {_rel(JSYMBOLIC_JAR)}  ({_jsym_status})")
+    print(f"  device     : {DEVICE}")
+    print(f"  USE_GRAPHDB: {USE_GRAPHDB}")
 
     # Return every name that downstream cells need as a global
-    return dict(
-        ROOT=ROOT, ON_COLAB=ON_COLAB, SEED=SEED, DEVICE=DEVICE,
-        USE_GRAPHDB=USE_GRAPHDB,
-        _DATA=_DATA, RAW=RAW, INTERIM=INTERIM, PROCESSED=PROCESSED,
-        FINAL=FINAL, ONTOLOGY=ONTOLOGY,
-        LAKH_PQ=LAKH_PQ, PER_SONG_CSV=PER_SONG_CSV,
-        PER_USER_CSV=PER_USER_CSV, TASTE_PQ=TASTE_PQ,
-        ONTO_BASE=ONTO_BASE, ONTO_OUT=ONTO_OUT,
-        ONTO_OUT_SIMPLE=ONTO_OUT_SIMPLE,
-        LISTENING_NT=LISTENING_NT, LISTENING_NT_SIM=LISTENING_NT_SIM,
-        INTERIM_CSV=INTERIM_CSV, KG_INPUT_PQ=KG_INPUT_PQ,
-        KG_TASTE_PQ=KG_TASTE_PQ, SPLIT_PQ=SPLIT_PQ, KFOLD_CSV=KFOLD_CSV,
-        KG_GRAPHDB_DIR=KG_GRAPHDB_DIR, KG_STATS_DIR=KG_STATS_DIR,
-        KG_PLOTS_DIR=KG_PLOTS_DIR,
-        FINAL_SPLITS_DIR=FINAL_SPLITS_DIR, FINAL_MODELS_DIR=FINAL_MODELS_DIR,
-        KNN_VAL_CSV=KNN_VAL_CSV, KNN_TEST_CSV=KNN_TEST_CSV,
-        KNN_VAL_PLOT_PNG=KNN_VAL_PLOT_PNG,
-        KNN_POP_CSV=KNN_POP_CSV, KNN_POP_JSON=KNN_POP_JSON,
-        HGT_RESULT_PATH=HGT_RESULT_PATH, AE_EMBEDDINGS_PQ=AE_EMBEDDINGS_PQ,
-        KNN_RESULTS_DIR=KNN_RESULTS_DIR, HGT_RESULTS_DIR=HGT_RESULTS_DIR,
-        AE_RESULTS_DIR=AE_RESULTS_DIR,
-        MODELS_DIR=MODELS_DIR, AE_WEIGHTS_DIR=AE_WEIGHTS_DIR,
-        HGT_WEIGHTS_DIR=HGT_WEIGHTS_DIR, KNN_CACHE_DIR=KNN_CACHE_DIR,
-        KNN_NBRS_CACHE=KNN_NBRS_CACHE,
-        HGT_MODEL_PATH=HGT_MODEL_PATH, AE_MODEL_PATH=AE_MODEL_PATH,
-        JSYMBOLIC_JAR=JSYMBOLIC_JAR, GDRIVE_DATA_ROOT=GDRIVE_DATA_ROOT,
+    return {
+        "ROOT": ROOT, "ON_COLAB": ON_COLAB, "SEED": SEED, "DEVICE": DEVICE,
+        "USE_GRAPHDB": USE_GRAPHDB,
+        "_DATA": _DATA, "RAW": RAW, "INTERIM": INTERIM, "PROCESSED": PROCESSED,
+        "FINAL": FINAL, "ONTOLOGY": ONTOLOGY,
+        "LAKH_PQ": LAKH_PQ, "PER_SONG_CSV": PER_SONG_CSV,
+        "PER_USER_CSV": PER_USER_CSV, "TASTE_PQ": TASTE_PQ,
+        "ONTO_BASE": ONTO_BASE, "ONTO_OUT": ONTO_OUT,
+        "ONTO_OUT_SIMPLE": ONTO_OUT_SIMPLE,
+        "LISTENING_NT": LISTENING_NT, "LISTENING_NT_SIM": LISTENING_NT_SIM,
+        "INTERIM_CSV": INTERIM_CSV, "KG_INPUT_PQ": KG_INPUT_PQ,
+        "KG_TASTE_PQ": KG_TASTE_PQ, "SPLIT_PQ": SPLIT_PQ, "KFOLD_CSV": KFOLD_CSV,
+        "KG_GRAPHDB_DIR": KG_GRAPHDB_DIR, "KG_STATS_DIR": KG_STATS_DIR,
+        "KG_PLOTS_DIR": KG_PLOTS_DIR,
+        "FINAL_SPLITS_DIR": FINAL_SPLITS_DIR, "FINAL_MODELS_DIR": FINAL_MODELS_DIR,
+        "KNN_VAL_CSV": KNN_VAL_CSV, "KNN_TEST_CSV": KNN_TEST_CSV,
+        "KNN_VAL_PLOT_PNG": KNN_VAL_PLOT_PNG,
+        "KNN_POP_CSV": KNN_POP_CSV, "KNN_POP_JSON": KNN_POP_JSON,
+        "HGT_RESULT_PATH": HGT_RESULT_PATH, "AE_EMBEDDINGS_PQ": AE_EMBEDDINGS_PQ,
+        "KNN_RESULTS_DIR": KNN_RESULTS_DIR, "HGT_RESULTS_DIR": HGT_RESULTS_DIR,
+        "AE_RESULTS_DIR": AE_RESULTS_DIR,
+        "MODELS_DIR": MODELS_DIR, "AE_WEIGHTS_DIR": AE_WEIGHTS_DIR,
+        "HGT_WEIGHTS_DIR": HGT_WEIGHTS_DIR, "KNN_CACHE_DIR": KNN_CACHE_DIR,
+        "KNN_NBRS_CACHE": KNN_NBRS_CACHE,
+        "HGT_MODEL_PATH": HGT_MODEL_PATH, "AE_MODEL_PATH": AE_MODEL_PATH,
+        "JSYMBOLIC_JAR": JSYMBOLIC_JAR, "GDRIVE_DATA_ROOT": GDRIVE_DATA_ROOT,
+        "WD_INSTR_PQ": WD_INSTR_PQ, "WD_INSTR_CHAINS_PQ": WD_INSTR_CHAINS_PQ,
+        "WD_GENRE_PQ": WD_GENRE_PQ, "WD_GENRE_CHAINS_PQ": WD_GENRE_CHAINS_PQ,
+        "WD_QID_META_PQ": WD_QID_META_PQ, "WD_DECADES_PQ": WD_DECADES_PQ,
         # expose helpers so other cells can use them if needed
-        _short=_short, _resolve_secret=_resolve_secret,
-    )
+        "_short": _short, "_resolve_secret": _resolve_secret,
+    }

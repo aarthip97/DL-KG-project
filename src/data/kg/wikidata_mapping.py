@@ -442,7 +442,7 @@ def build_parent_graph(
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(graph, indent=2, sort_keys=True))
         if verbose:
-            print(f"[wikidata] parent graph → {cache_path} "
+            print(f"[wikidata] has parent graph!"
                   f"({len(graph):,} nodes, {round_n} BFS rounds)")
     return graph
 
@@ -587,7 +587,7 @@ def fetch_qid_metadata(
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(cache, indent=2, sort_keys=True))
         if verbose:
-            print(f"[wikidata] cache -> {cache_path}")
+            print(f"[wikidata] cached!")
     return cache
 
 

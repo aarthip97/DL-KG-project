@@ -112,7 +112,7 @@ def load_or_build_kg_taste_profile(
 
     if cache_path.exists() and not force_rebuild:
         if verbose:
-            print(f"[user_data] loading cache from {cache_path}")
+            print(f"[user_data] loading cache!")
         return pd.read_parquet(cache_path)
 
     if kg_song_ids is None:
@@ -121,7 +121,7 @@ def load_or_build_kg_taste_profile(
         )
 
     if verbose:
-        print(f"[user_data] building cache from {taste_source}")
+        print(f"[user_data] building cache!")
     taste = pd.read_parquet(taste_source)
     out   = restrict_taste_profile_to_kg(
         taste, kg_song_ids,
@@ -131,6 +131,6 @@ def load_or_build_kg_taste_profile(
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     out.to_parquet(cache_path, index=False)
     if verbose:
-        print(f"[user_data] cached → {cache_path} "
+        print(f"[user_data] cached! "
               f"({cache_path.stat().st_size/1024:,.1f} KiB)")
     return out

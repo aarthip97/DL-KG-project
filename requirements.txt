@@ -31,6 +31,7 @@ plotly>=5.15
 
 # ── Dev utilities ─────────────────────────────────────────────────────────────
 scikit-learn>=1.4       # PCA, cosine similarity helpers
+dotenv
 
 # ── Experiment tracking (optional — code guards the import) ──────────────────
 wandb>=0.16
