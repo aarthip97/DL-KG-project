@@ -91,29 +91,54 @@ class GraphDBClient:
             )
 
     def ensure_repository(self) -> None:
-        """Idempotent repository creation."""
+        """Idempotent repository creation.
+
+        GraphDB's REST API requires each ``params`` entry to be a full
+        OwlimParameter object with ``name``, ``label``, and ``value`` keys —
+        not a plain string.  POSTed as ``application/json``.
+        """
         cfg = self.cfg
-        config = {
-            "id": cfg.repo_id,
-            "type": "graphdb",
+        if self.repository_exists():
+            log.debug("Repository %s already exists", cfg.repo_id)
+            return
+
+        def _param(name: str, label: str, value: str) -> dict:
+            return {"name": name, "label": label, "value": value}
+
+        payload = {
+            "id":       cfg.repo_id,
+            "title":    cfg.repo_title,
+            "type":     "free",
+            "location": "",
             "params": {
-                "title":         cfg.repo_title,
-                "ruleset":       cfg.ruleset,
-                "disableSameAs": str(cfg.disable_same_as).lower(),
+                "ruleset": _param(
+                    "ruleset", "Ruleset", cfg.ruleset
+                ),
+                "disableSameAs": _param(
+                    "disableSameAs", "Disable same-as",
+                    str(cfg.disable_same_as).lower()
+                ),
+                "enablePredicateList": _param(
+                    "enablePredicateList", "Enable predicate list", "true"
+                ),
+                "inMemoryLiteralProperties": _param(
+                    "inMemoryLiteralProperties",
+                    "Cache literal language tags", "true"
+                ),
             },
         }
         r = self._session.post(
             f"{cfg.url.rstrip('/')}/rest/repositories",
-            json=config,
+            json=payload,
             timeout=cfg.timeout,
         )
         if r.status_code == 201:
             log.info("Created repository %s", cfg.repo_id)
         elif r.status_code == 409:
-            log.debug("Repository %s already exists", cfg.repo_id)
+            log.debug("Repository %s already exists (race condition)", cfg.repo_id)
         else:
             raise GraphDBError(
-                f"Repository creation failed [{r.status_code}]: {r.text[:200]}"
+                f"Repository creation failed [{r.status_code}]: {r.text[:300]}"
             )
 
     def repository_exists(self) -> bool:
