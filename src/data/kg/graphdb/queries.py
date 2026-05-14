@@ -339,10 +339,22 @@ WHERE {
 
 
 # ── Entity / relation enumeration (used to build the node dict) ────────
-QUERY_ALL_ENTITIES = _q("""
-SELECT DISTINCT ?e ?type WHERE {
-    { ?e a ?type . FILTER(isIRI(?e) && isIRI(?type)) }
-}
+# OWL/RDFS meta-types are excluded — they are schema vocabulary, not data
+# nodes, and would create noise embedding dimensions.
+_OWL_META_TYPES = """(
+    owl:Class, owl:ObjectProperty, owl:DatatypeProperty,
+    owl:AnnotationProperty, owl:NamedIndividual, owl:Ontology,
+    owl:TransitiveProperty, owl:SymmetricProperty, owl:FunctionalProperty,
+    owl:InverseFunctionalProperty, owl:Restriction,
+    rdfs:Datatype, rdfs:Class, rdf:Property
+)"""
+
+QUERY_ALL_ENTITIES = _q(f"""
+SELECT DISTINCT ?e ?type WHERE {{
+    ?e a ?type .
+    FILTER(isIRI(?e) && isIRI(?type))
+    FILTER(?type NOT IN {_OWL_META_TYPES})
+}}
 ORDER BY ?type ?e
 """)
 
@@ -362,9 +374,13 @@ QUERY_TRIPLE_COUNT = _q("""
 SELECT (COUNT(*) AS ?n) WHERE { ?s ?p ?o }
 """)
 
-QUERY_NODE_TYPE_HISTOGRAM = _q("""
+QUERY_NODE_TYPE_HISTOGRAM = _q(f"""
 SELECT ?type (COUNT(DISTINCT ?e) AS ?n)
-WHERE { ?e a ?type . FILTER(isIRI(?e)) }
+WHERE {{
+    ?e a ?type .
+    FILTER(isIRI(?e) && isIRI(?type))
+    FILTER(?type NOT IN {_OWL_META_TYPES})
+}}
 GROUP BY ?type
 ORDER BY DESC(?n)
 """)

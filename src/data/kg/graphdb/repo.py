@@ -131,7 +131,7 @@ class KGRepo:
         # 2. PyKEEN triples + node dict + hetero edges
         if not skip_pykeen:
             triples = exports.export_pykeen_tsv(
-                self.client, cfg.out_dir / "kg_triples.tsv"
+                self.client, cfg.out_dir / "pykeen_triples.tsv"
             )
             ndict = exports.export_node_dict(
                 self.client, cfg.out_dir / "node_dict.json"
