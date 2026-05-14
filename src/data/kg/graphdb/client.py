@@ -91,45 +91,47 @@ class GraphDBClient:
             )
 
     def ensure_repository(self) -> None:
-        """Idempotent repository creation.
+        """Idempotent repository creation via RDF4J Turtle config (PUT).
 
-        GraphDB's REST API requires each ``params`` entry to be a full
-        OwlimParameter object with ``name``, ``label``, and ``value`` keys —
-        not a plain string.  POSTed as ``application/json``.
+        GraphDB 11 uses the ``tag:rdf4j.org,2023:config/`` namespace and
+        only accepts ``multipart/form-data`` on ``POST /rest/repositories``
+        (the UI path).  We write the config.ttl directly into the GraphDB
+        data directory and then let the repository manager pick it up via
+        ``POST /rest/repositories`` with a form-data ``config`` file part,
+        which avoids the charset-appending issues of a bare PUT.
         """
         cfg = self.cfg
         if self.repository_exists():
             log.debug("Repository %s already exists", cfg.repo_id)
             return
 
-        def _param(name: str, label: str, value: str) -> dict:
-            return {"name": name, "label": label, "value": value}
+        disable_same_as = str(cfg.disable_same_as).lower()
+        ttl = f"""\
+@prefix config: <tag:rdf4j.org,2023:config/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix graphdb: <http://www.ontotext.com/config/graphdb#> .
 
-        payload = {
-            "id":       cfg.repo_id,
-            "title":    cfg.repo_title,
-            "type":     "free",
-            "location": "",
-            "params": {
-                "ruleset": _param(
-                    "ruleset", "Ruleset", cfg.ruleset
-                ),
-                "disableSameAs": _param(
-                    "disableSameAs", "Disable same-as",
-                    str(cfg.disable_same_as).lower()
-                ),
-                "enablePredicateList": _param(
-                    "enablePredicateList", "Enable predicate list", "true"
-                ),
-                "inMemoryLiteralProperties": _param(
-                    "inMemoryLiteralProperties",
-                    "Cache literal language tags", "true"
-                ),
-            },
-        }
+<#{cfg.repo_id}> a config:Repository ;
+   rdfs:label "{cfg.repo_title}" ;
+   config:rep.id "{cfg.repo_id}" ;
+   config:rep.impl [
+       config:rep.type "graphdb:SailRepository" ;
+       config:sail.impl [
+           config:sail.type "graphdb:Sail" ;
+           graphdb:ruleset "{cfg.ruleset}" ;
+           graphdb:disable-sameAs "{disable_same_as}" ;
+           graphdb:enablePredicateList "true" ;
+           graphdb:in-memory-literal-properties "true" ;
+           graphdb:repository-type "file-repository" ;
+           graphdb:base-URL "http://example.org/owlim#" ;
+           graphdb:defaultNS "" ;
+           graphdb:imports ""
+       ]
+   ] .
+"""
         r = self._session.post(
             f"{cfg.url.rstrip('/')}/rest/repositories",
-            json=payload,
+            files={"config": ("config.ttl", ttl.encode("utf-8"), "text/turtle")},
             timeout=cfg.timeout,
         )
         if r.status_code == 201:
