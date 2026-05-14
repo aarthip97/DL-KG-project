@@ -87,9 +87,7 @@ LIMIT 30
 QUERY_FIND_TRACK_SIMPLE = _q("""
 SELECT ?title_URI ?title WHERE {
     ?title_URI a mrc:MSDTrack ;
-               dct:title  ?title ;
-               mrc:hasKey  ?k ;
-               mrc:hasMode ?m .
+               dct:title ?title .
 } LIMIT 1
 """)
 
@@ -113,7 +111,9 @@ SELECT ?artist_URI ?name WHERE {
 
 
 # ── Parametric queries (inject a live URI before running) ──────────────
-def query_key_mode_simple(track_uri: str) -> str:
+def query_key_mode_simple(track_uri: str | None) -> str:
+    if track_uri is None:
+        return _q("SELECT ?title ?keyLabel ?modeLabel WHERE { FILTER(false) }")
     return _q("""
 SELECT ?title ?keyLabel ?modeLabel
 WHERE {{
@@ -127,7 +127,9 @@ WHERE {{
 """).format(track_uri=track_uri)
 
 
-def query_key_mode_rich(track_uri: str) -> str:
+def query_key_mode_rich(track_uri: str | None) -> str:
+    if track_uri is None:
+        return _q("SELECT ?title ?keyLabel ?modeLabel ?keyConf ?modeConf ?tempo WHERE { FILTER(false) }")
     return _q("""
 SELECT ?title ?keyLabel ?modeLabel ?keyConf ?modeConf ?tempo
 WHERE {{
@@ -145,7 +147,9 @@ WHERE {{
 """).format(track_uri=track_uri)
 
 
-def query_artist_genre_weights(artist_uri: str) -> str:
+def query_artist_genre_weights(artist_uri: str | None) -> str:
+    if artist_uri is None:
+        return _q("SELECT ?artistName ?genreLabel ?weight WHERE { FILTER(false) }")
     return _q("""
 SELECT DISTINCT ?artistName ?genreLabel ?weight
 WHERE {{
@@ -291,16 +295,45 @@ LIMIT 50
 """)
 
 
+# ── Equivalence pairs (used to merge nodes before PyKEEN export) ──────
+# Fetches all owl:sameAs and skos:exactMatch pairs so the exporter can
+# build a canonical-URI map via union-find before writing triples.tsv.
+# Run with infer=False — we want only the explicit assertions; the reasoner
+# would derive the full transitive closure anyway, but we do it ourselves
+# so the canonical choice is deterministic.
+QUERY_EQUIV_PAIRS = _q("""
+SELECT ?a ?b WHERE {
+    { ?a owl:sameAs     ?b }
+    UNION
+    { ?a skos:exactMatch ?b }
+    FILTER(isIRI(?a) && isIRI(?b) && ?a != ?b)
+}
+""")
+
+
 # ── Triple export for PyKEEN ───────────────────────────────────────────
-# Drops owl:sameAs links (they're the high-degree noise that wrecks
-# negative sampling) and any reflexive (?h ?r ?h) edges.
+# Run with infer=True so RDFS+ class memberships are included.
+# owl:sameAs / skos:exactMatch nodes are MERGED (not just dropped) by
+# the exporter's union-find canonicalisation step; these predicates are
+# excluded here only to avoid writing redundant self-loop triples after
+# the merge.
+# Other filters applied:
+#   • reflexive edges     — no self-loops (also catches post-merge ones)
+#   • non-IRI nodes       — no blank nodes from OWL restriction machinery
+#   • OWL machinery preds — created by reasoner, have no embedding meaning
 QUERY_PYKEEN_TRIPLES = _q("""
 SELECT ?h ?r ?t
 WHERE {
     ?h ?r ?t .
-    FILTER(?r != owl:sameAs)
     FILTER(?h != ?t)
-    FILTER(isIRI(?h) && isIRI(?t))
+    FILTER(isIRI(?h) && isIRI(?r) && isIRI(?t))
+    FILTER(?r NOT IN (
+        owl:sameAs, skos:exactMatch,
+        owl:onProperty, owl:someValuesFrom, owl:allValuesFrom,
+        owl:hasValue, owl:onClass, owl:onDataRange,
+        owl:complementOf, owl:intersectionOf, owl:unionOf,
+        rdf:first, rdf:rest
+    ))
 }
 """)
 
@@ -308,7 +341,7 @@ WHERE {
 # ── Entity / relation enumeration (used to build the node dict) ────────
 QUERY_ALL_ENTITIES = _q("""
 SELECT DISTINCT ?e ?type WHERE {
-    { ?e a ?type . FILTER(isIRI(?e)) }
+    { ?e a ?type . FILTER(isIRI(?e) && isIRI(?type)) }
 }
 ORDER BY ?type ?e
 """)

@@ -201,14 +201,25 @@ class GraphDBClient:
             self.upload_rdf(p, replace=replace_first and i == 0)
 
     # ── querying ────────────────────────────────────────────────────────
-    def select_df(self, sparql: str) -> pd.DataFrame:
-        """Run a SPARQL SELECT and return the result as a DataFrame."""
+    def select_df(self, sparql: str, *, infer: bool = False) -> pd.DataFrame:
+        """Run a SPARQL SELECT and return the result as a DataFrame.
+
+        Parameters
+        ----------
+        infer:
+            Whether GraphDB should include RDFS/OWL inferred triples in the
+            result.  Defaults to **False** so stats/counts reflect only the
+            explicit triples you uploaded — consistent with ``/size``.
+            Pass ``infer=True`` when you want the full reasoned graph (e.g.
+            for embedding training data).
+        """
         r = self._session.post(
             self.cfg.repo_endpoint,
             headers={
                 "Accept":       "text/csv",
                 "Content-Type": "application/sparql-query",
             },
+            params={"infer": str(infer).lower()},
             data=sparql.encode("utf-8"),
             timeout=self.cfg.timeout,
         )
@@ -218,11 +229,12 @@ class GraphDBClient:
             )
         return pd.read_csv(io.StringIO(r.text))
 
-    def select_tsv(self, sparql: str, out_path: Path) -> Path:
+    def select_tsv(self, sparql: str, out_path: Path, *, infer: bool = False) -> Path:
         """Run a SPARQL SELECT and stream the result straight to a TSV file.
 
         Avoids materialising the whole result set in Python memory — useful
         for the PyKEEN triples export which can have tens of millions of rows.
+        ``infer`` has the same semantics as in :meth:`select_df`.
         """
         out_path = Path(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -232,6 +244,7 @@ class GraphDBClient:
                 "Accept":       "text/tab-separated-values",
                 "Content-Type": "application/sparql-query",
             },
+            params={"infer": str(infer).lower()},
             data=sparql.encode("utf-8"),
             timeout=self.cfg.timeout,
             stream=True,

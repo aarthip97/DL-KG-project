@@ -117,7 +117,11 @@ class KGRepo:
             for name, sparql in queries.STATS_QUERIES.items():
                 out_csv = cfg.stats_dir / f"{name}.csv"
                 try:
-                    df = self.client.select_df(sparql)
+                    # infer=True: stats reflect the full logical graph
+                    # (including RDFS+ inferences), not just explicit triples.
+                    # This makes triple_count.csv show the actual total the
+                    # embedder will see, which is > /size (explicit only).
+                    df = self.client.select_df(sparql, infer=True)
                     df.to_csv(out_csv, index=False)
                     out[f"stats:{name}"] = out_csv
                     log.info("Stats[%s] → %d rows", name, len(df))
