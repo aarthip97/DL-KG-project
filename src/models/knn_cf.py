@@ -40,38 +40,29 @@ from models.evaluation import evaluate_recs, overall_score
 # Torch-based neighbour finding
 # ---------------------------------------------------------------------------
 
-def _matrix_to_tensor(train_matrix_norm, device: str,
-                       sparse: bool = False) -> torch.Tensor:
-    """Convert a scipy sparse or numpy dense matrix to a float32 CPU/GPU tensor.
+def _matrix_to_tensor(train_matrix_norm, device: str) -> torch.Tensor:
+    """Convert a scipy sparse or numpy dense matrix to a dense float32 GPU tensor.
 
-    Parameters
-    ----------
-    sparse : bool
-        When True **and** the input is a scipy sparse matrix, return a
-        ``torch.sparse_csr_tensor`` instead of a dense tensor.  This avoids
-        materialising the full (N_users × N_items) dense array (~8 GB for
-        285K × 7K) and is safe to use on GPU.  The caller is responsible for
-        choosing a matmul path that accepts sparse inputs (see
-        ``_find_neighbors_torch``).
+    For a 285K × 7K L2-normalised matrix the dense float32 representation is
+    ~8 GB, which fits comfortably in a T4 (15 GB) or A100 (40/80 GB) GPU.
+    A plain dense tensor is used because:
+      - ``torch.sparse_csr_tensor`` + ``torch.sparse.mm`` have very limited
+        CUDA support in the PyTorch versions shipped with Colab and will either
+        raise errors or silently fall back to CPU.
+      - Dense batched matmul (``q @ train.T``) is extremely fast on GPU and
+        is the same pattern that works in the reference implementation.
+    The array is first built in CPU RAM (numpy), then transferred to the device
+    in one call to avoid fragmenting VRAM.
     """
     try:
         import scipy.sparse as sp
         if sp.issparse(train_matrix_norm):
-            if sparse:
-                csr = train_matrix_norm.tocsr().astype(np.float32)
-                crow = torch.from_numpy(csr.indptr.copy().astype(np.int64))
-                col  = torch.from_numpy(csr.indices.copy().astype(np.int64))
-                val  = torch.from_numpy(csr.data.copy().astype(np.float32))
-                t = torch.sparse_csr_tensor(crow, col, val,
-                                            size=tuple(csr.shape),
-                                            dtype=torch.float32)
-                return t.to(device)
-            arr = train_matrix_norm.toarray()
+            arr = train_matrix_norm.toarray().astype(np.float32)
         else:
-            arr = np.asarray(train_matrix_norm)
+            arr = np.asarray(train_matrix_norm, dtype=np.float32)
     except ImportError:
-        arr = np.asarray(train_matrix_norm)
-    return torch.from_numpy(arr.astype(np.float32)).to(device)
+        arr = np.asarray(train_matrix_norm, dtype=np.float32)
+    return torch.from_numpy(arr).to(device)
 
 
 def _find_neighbors_torch(
@@ -83,41 +74,24 @@ def _find_neighbors_torch(
     """Return the n_neighbors nearest-neighbour indices for each query row.
 
     Uses batched cosine similarity (dot product on L2-normalised rows).
-    Query and train tensors must already be on the same device.
+    Both tensors must be dense float32 and on the same device.
 
-    Supports both **dense** and **sparse CSR** ``train_tensor``.  When sparse,
-    the matmul is computed as ``(train_sparse @ query_batch.T).T`` using
-    ``torch.sparse.mm``, which avoids allocating the full dense matrix on GPU
-    (critical for large N_users on Colab T4).
-
-    Parameters are:
-      query_tensor -- (Q, I) float tensor of L2-normalised query user rows.
-      train_tensor -- (U, I) float tensor or sparse CSR tensor of train rows.
-      n_neighbors  -- number of neighbours to return per query (includes self).
-      batch_size   -- number of query rows scored per chunk to limit VRAM.
+    Batching over query rows keeps the intermediate similarity matrix at
+    ``batch_size × n_train × 4 B`` (≈ 1.4 MB at batch_size=512, n_train=285K)
+    rather than ``n_query × n_train`` all at once.
 
     Returns an (Q, n_neighbors) LongTensor of neighbour indices into train_tensor.
     """
     device = query_tensor.device
     Q = query_tensor.size(0)
-    U = train_tensor.shape[0]
-    k = min(n_neighbors, U)
+    k = min(n_neighbors, train_tensor.size(0))
     nbrs = torch.empty(Q, k, dtype=torch.long, device=device)
 
-    _is_sparse = train_tensor.layout in (torch.sparse_csr, torch.sparse_coo,
-                                          torch.sparse_bsr, torch.sparse_bsc)
-
     for start in range(0, Q, batch_size):
-        end        = min(start + batch_size, Q)
-        q_batch    = query_tensor[start:end].contiguous()   # (B, I)
-
-        if _is_sparse:
-            # sparse (U, I) @ dense (I, B)  →  dense (U, B)  →  .T → (B, U)
-            sim = torch.sparse.mm(train_tensor, q_batch.T).T  # (B, U)
-        else:
-            sim = q_batch @ train_tensor.t()                  # (B, U)
-
-        _, idx = torch.topk(sim, k, dim=-1)
+        end     = min(start + batch_size, Q)
+        q_batch = query_tensor[start:end]           # (B, I)
+        sim     = q_batch @ train_tensor.t()        # (B, U)
+        _, idx  = torch.topk(sim, k, dim=-1)
         nbrs[start:end] = idx
 
     return nbrs  # (Q, n_neighbors)
@@ -133,42 +107,30 @@ def _build_recs_torch(
     *,
     nbrs_tensor: torch.Tensor,
     qrow: Mapping[int, int],
-    train_tensor,
+    train_tensor: torch.Tensor,
     train_seen: Mapping[int, Set[int]],
     top_n: int,
     score_batch_size: int = 128,
 ) -> Dict[int, List[int]]:
     """Score items for a list of users using their k nearest neighbours.
 
-    ``train_tensor`` may be either a dense ``torch.Tensor`` **or** a scipy
-    sparse matrix.  When sparse, the k neighbour rows are extracted via
-    ``train_tensor[flat_indices].toarray()`` and converted to a dense tensor
-    on the fly.  This keeps peak VRAM proportional to
-    ``score_batch_size × k × n_items`` rather than ``n_users × n_items``.
-
-    The gather creates an intermediate tensor of shape (batch, k, I) which
-    is reduced to (batch, I) immediately.  Memory usage is bounded by
-    ``score_batch_size × k × I × 4`` bytes; reduce ``score_batch_size`` if
-    still hitting OOM.
+    ``train_tensor`` is the same dense GPU tensor used for neighbour finding.
+    The gather creates an intermediate tensor of shape (batch, k, I) which is
+    reduced to (batch, I) immediately; peak extra VRAM is
+    ``score_batch_size × k × n_items × 4 B`` (≈ 360 MB at defaults).
 
     Parameters are:
       k                -- number of nearest neighbours to aggregate.
       user_list        -- global user indices to generate recommendations for.
       nbrs_tensor      -- (Q, max_k+1) LongTensor from _find_neighbors_torch.
       qrow             -- mapping from global user id to row in nbrs_tensor.
-      train_tensor     -- (U, I) dense torch.Tensor **or** scipy sparse matrix.
+      train_tensor     -- (U, I) dense float32 GPU tensor.
       train_seen       -- training interactions per user (for masking).
       top_n            -- number of items to return per user.
       score_batch_size -- users processed per scoring chunk.
 
     Returns a dict mapping global user id to an ordered list of item ids.
     """
-    try:
-        import scipy.sparse as _sp
-        _scipy_sparse = _sp.issparse(train_tensor)
-    except ImportError:
-        _scipy_sparse = False
-
     device = nbrs_tensor.device
     users  = list(user_list)
     recs: Dict[int, List[int]] = {}
@@ -176,27 +138,13 @@ def _build_recs_torch(
     for start in range(0, len(users), score_batch_size):
         batch_users = users[start : start + score_batch_size]
 
-        # Row indices into nbrs_tensor for this batch
         local_rows = torch.tensor([qrow[u] for u in batch_users],
                                   dtype=torch.long, device=device)
 
-        # Gather k neighbours per user (skip col-0 = self)
-        nbr_k = nbrs_tensor[local_rows, 1 : k + 1]   # (B, k) on device
+        # skip col-0 (self) → take cols 1…k
+        nbr_k  = nbrs_tensor[local_rows, 1 : k + 1]        # (B, k)
+        scores = train_tensor[nbr_k].sum(dim=1)             # (B, I)
 
-        if _scipy_sparse:
-            # Extract k rows per user from scipy sparse → dense numpy → tensor
-            flat_idx   = nbr_k.cpu().numpy().flatten()              # (B*k,)
-            rows_dense = train_tensor[flat_idx].toarray()           # (B*k, I)
-            B = len(batch_users)
-            rows_t = torch.from_numpy(
-                rows_dense.reshape(B, k, -1).astype(np.float32)
-            ).to(device)                                            # (B, k, I)
-            scores = rows_t.sum(dim=1)                              # (B, I)
-        else:
-            # Dense path: index into the full GPU tensor
-            scores = train_tensor[nbr_k].sum(dim=1)                # (B, I)
-
-        # Per-user seen-item masking
         for bi, u in enumerate(batch_users):
             seen = train_seen.get(u)
             if seen:
@@ -324,36 +272,18 @@ def run_knn_sweep(
     _device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[KNN] building neighbours on {_device}")
 
-    # ── Memory-efficient tensor strategy ─────────────────────────────────────
-    # Large datasets (e.g. 285K users × 7K items) would require ~8 GB for a
-    # dense float32 GPU tensor.  Instead:
-    #   1. Neighbour-finding uses a *sparse CSR* GPU tensor so only the non-zero
-    #      entries (≈2M) are on VRAM, not the full 2B-element dense matrix.
-    #   2. Scoring (_build_recs_torch) receives the *original scipy sparse matrix*
-    #      and extracts only the k neighbour rows per batch on the fly
-    #      (score_batch_size × k × n_items × 4 B ≈ 360 MB at defaults).
-    try:
-        import scipy.sparse as _sp
-        _input_is_sparse = _sp.issparse(train_matrix_norm)
-    except ImportError:
-        _input_is_sparse = False
-
-    train_t = _matrix_to_tensor(train_matrix_norm, _device,
-                                 sparse=_input_is_sparse)
-    # For scoring pass the original scipy matrix (memory-safe row extraction).
-    # Fall back to the dense GPU tensor when input is already dense.
-    _train_for_scoring = train_matrix_norm if _input_is_sparse else train_t
+    # Convert the full L2-normalised matrix to a dense float32 GPU tensor once.
+    # 285K × 7K × 4 B ≈ 8 GB — fits in T4 (15 GB) and A100 (40/80 GB).
+    # torch.sparse_csr_tensor is intentionally NOT used because its CUDA matmul
+    # support is incomplete in the PyTorch versions shipped with Colab and causes
+    # cryptic errors or silent CPU fallback.
+    print(f"[KNN] loading matrix to {_device} (dense float32) …")
+    train_t = _matrix_to_tensor(train_matrix_norm, _device)
+    print(f"[KNN] train tensor: {tuple(train_t.shape)}  "
+          f"({train_t.element_size() * train_t.nelement() / 1e9:.2f} GB)")
 
     all_query = sorted(set(val_users) | set(test_users))
-
-    if _input_is_sparse:
-        # Build a dense query tensor from only the query user rows.
-        # scipy sparse row indexing is cheap even for a large matrix.
-        _csr = train_matrix_norm.tocsr()
-        query_arr = np.asarray(_csr[all_query].toarray(), dtype=np.float32)
-        query_t   = torch.from_numpy(query_arr).to(_device)
-    else:
-        query_t = train_t[torch.tensor(all_query, device=_device)]
+    query_t   = train_t[torch.tensor(all_query, dtype=torch.long, device=_device)]
 
     k_list = list(k_range)
     max_k  = max(k_list)
@@ -362,7 +292,7 @@ def run_knn_sweep(
         query_t, train_t, n_neighbors=max_k + 1,
         batch_size=nbr_batch_size,
     )
-    nbrs_t = nbrs_t_dev.cpu()   # store on CPU to save VRAM
+    nbrs_t = nbrs_t_dev.cpu()   # keep CPU copy; nbrs_t_dev stays on GPU for scoring
     qrow   = {u: i for i, u in enumerate(all_query)}
 
     # ── k-sweep on validation set ─────────────────────────────────────────────
@@ -371,7 +301,7 @@ def run_knn_sweep(
         recs = _build_recs_torch(
             k, val_users,
             nbrs_tensor=nbrs_t_dev, qrow=qrow,
-            train_tensor=_train_for_scoring, train_seen=train_seen,
+            train_tensor=train_t, train_seen=train_seen,
             top_n=top_n, score_batch_size=score_batch_size,
         )
         m = evaluate_recs(recs, val_gt, train_seen, n_songs, pop_norm, k=top_n)
@@ -386,7 +316,7 @@ def run_knn_sweep(
     test_recs    = _build_recs_torch(
         best_k, test_users,
         nbrs_tensor=nbrs_t_dev, qrow=qrow,
-        train_tensor=_train_for_scoring, train_seen=train_seen,
+        train_tensor=train_t, train_seen=train_seen,
         top_n=top_n, score_batch_size=score_batch_size,
     )
     test_metrics = evaluate_recs(test_recs, test_gt, train_seen,
