@@ -346,7 +346,9 @@ _OWL_META_TYPES = """(
     owl:AnnotationProperty, owl:NamedIndividual, owl:Ontology,
     owl:TransitiveProperty, owl:SymmetricProperty, owl:FunctionalProperty,
     owl:InverseFunctionalProperty, owl:Restriction,
-    rdfs:Datatype, rdfs:Class, rdf:Property
+    rdfs:Datatype, rdfs:Class, rdf:Property,
+    foaf:Agent,
+    skos:ConceptScheme
 )"""
 
 QUERY_ALL_ENTITIES = _q(f"""
