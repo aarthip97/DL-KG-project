@@ -274,7 +274,7 @@ WHERE {
 
     # Rank — make popular tracks larger (normalised 0–1)
     OPTIONAL {
-        SELECT ?node (MIN(1.0, COUNT(DISTINCT ?u) / 50.0) AS ?listenRank) WHERE {
+        SELECT ?node (IF(COUNT(DISTINCT ?u) / 50.0 > 1.0, 1.0, COUNT(DISTINCT ?u) / 50.0) AS ?listenRank) WHERE {
             ?u mrc:hasListeningInteraction ?ev .
             ?ev mrc:onTrack ?node .
         } GROUP BY ?node

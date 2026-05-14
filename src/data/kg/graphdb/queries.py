@@ -147,7 +147,7 @@ WHERE {{
 
 def query_artist_genre_weights(artist_uri: str) -> str:
     return _q("""
-SELECT ?artistName ?genreLabel ?weight
+SELECT DISTINCT ?artistName ?genreLabel ?weight
 WHERE {{
     BIND(<{artist_uri}> AS ?artist)
     ?artist foaf:name         ?artistName ;
@@ -195,13 +195,13 @@ LIMIT 24
 QUERY_GENRE_HIERARCHY = _q("""
 SELECT DISTINCT ?parentLabel ?childLabel ?leafLabel
 WHERE {
-    ?leaf skos:inScheme mrc:GenreScheme ;
-          rdfs:label    ?leafLabel .
+    ?leaf skos:inScheme scheme:GenreScheme ;
+          skos:prefLabel    ?leafLabel .
     FILTER(LANG(?leafLabel) = "en")
     ?leaf    skos:broader+  ?child .
     ?child   skos:broader   ?parent .
-    OPTIONAL { ?child  rdfs:label ?childLabel  . FILTER(LANG(?childLabel)  = "en") }
-    OPTIONAL { ?parent rdfs:label ?parentLabel . FILTER(LANG(?parentLabel) = "en") }
+    OPTIONAL { ?child  skos:prefLabel ?childLabel  . FILTER(LANG(?childLabel)  = "en") }
+    OPTIONAL { ?parent skos:prefLabel ?parentLabel . FILTER(LANG(?parentLabel) = "en") }
 }
 ORDER BY ?leafLabel ?childLabel
 LIMIT 200
@@ -210,13 +210,13 @@ LIMIT 200
 QUERY_INSTRUMENT_HIERARCHY = _q("""
 SELECT DISTINCT ?parentLabel ?childLabel ?leafLabel
 WHERE {
-    ?leaf skos:inScheme mrc:InstrumentScheme ;
-          rdfs:label    ?leafLabel .
+    ?leaf skos:inScheme scheme:InstrumentScheme ;
+          skos:prefLabel    ?leafLabel .
     FILTER(LANG(?leafLabel) = "en")
     ?leaf   skos:broader+  ?child .
     ?child  skos:broader   ?parent .
-    OPTIONAL { ?child  rdfs:label ?childLabel  . FILTER(LANG(?childLabel)  = "en") }
-    OPTIONAL { ?parent rdfs:label ?parentLabel . FILTER(LANG(?parentLabel) = "en") }
+    OPTIONAL { ?child  skos:prefLabel ?childLabel  . FILTER(LANG(?childLabel)  = "en") }
+    OPTIONAL { ?parent skos:prefLabel ?parentLabel . FILTER(LANG(?parentLabel) = "en") }
 }
 ORDER BY ?leafLabel ?childLabel
 LIMIT 200
