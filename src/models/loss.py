@@ -89,6 +89,8 @@ def debiased_listwise_loss(
 
     Returns a scalar loss tensor, mean over the user batch.
     """
+    if not (0.0 <= lambda_reg <= 1.0):
+        raise ValueError(f"lambda_reg must be in [0.0, 1.0], got {lambda_reg!r}")
     u_norm = F.normalize(user_embs, p=2, dim=1)
     i_norm = F.normalize(all_track_embs, p=2, dim=1)
     logits = torch.matmul(u_norm, i_norm.t()) / temperature

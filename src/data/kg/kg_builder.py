@@ -444,13 +444,13 @@ class KGBuilder:
     def _purge_legacy_individuals(self) -> None:
         """Remove every triple whose subject is one of the old URIs that
         previous generations of this builder used (sub-path Key/TempoClass
-        nodes from the base ontology TTL, and the older ``mrc:KeyC`` /
-        ``mrc:MajorMode`` / ``mrc:Allegro`` flat individuals that lived
-        directly inside ``mrc:`` before the per-entity resource namespaces
+        nodes from the base ontology TTL, and the older mrc:KeyC /
+        mrc:MajorMode / mrc:Allegro flat individuals that lived
+        directly inside mrc: before the per-entity resource namespaces
         were introduced).
 
-        Any ``skos:inScheme`` pointer that still references a legacy scheme
-        URI is *rewritten* to the canonical ``scheme:<X>`` replacement so
+        Any skos:inScheme pointer that still references a legacy scheme
+        URI is rewritten to the canonical scheme:<X> replacement so
         concepts keep their scheme membership.
         """
         # Old Key and TempoClass named individuals (sub-path) ----------------
@@ -458,8 +458,8 @@ class KGBuilder:
             MRC[frag] for frag in _LEGACY_KEY_FRAGS + _LEGACY_TEMPO_FRAGS
         ]
         # Older "flat-inside-mrc:" generation of named individuals ----------
-        # These lived as ``mrc:KeyC_sharp``, ``mrc:MajorMode``, ``mrc:Allegro``
-        # before the move to the typed ``key:`` / ``mode:`` / ``tempo:``
+        # These lived as mrc:KeyC_sharp, mrc:MajorMode, mrc:Allegro
+        # before the move to the typed key: / mode: / tempo:
         # resource namespaces.
         old_nodes.extend(MRC[frag] for frag in _LEGACY_FLAT_KEY_FRAGS)
         old_nodes.extend(MRC[frag] for frag in _LEGACY_FLAT_MODE_FRAGS)
@@ -721,15 +721,16 @@ class KGBuilder:
         self.g.add((ELEM_SCH, RDF.type, SKOS.ConceptScheme))
         self.g.add((ELEM_SCH, RDFS.label,    Literal("Elements of Music Scheme", lang="en")))
         self.g.add((ELEM_SCH, SKOS.prefLabel, Literal("Elements of Music Scheme", lang="en")))
-        # Link the top concept
-        self.g.add((ELEM_SCH, SKOS.hasTopConcept, MRC["ElementsOfMusic"]))
+        # Link the top concept — base ontology uses the *singular* URI mrc:ElementOfMusic
+        self.g.add((ELEM_SCH, SKOS.hasTopConcept, MRC["ElementOfMusic"]))
 
-        # Normalise mrc:ElementsOfMusic (ontology class, singular) so it carries
-        #TODO SOMETHING IS WRONG, STILL NOT WORKING
-        # the same canonical lowercase label as its Wikidata counterpart
-        # wd:Q11696608.  This prevents SPARQL results from showing both
-        # "Element of Music" and "elements of music" as distinct values.
-        ELEM_OF_MUSIC = MRC["ElementsOfMusic"]
+        # Normalise mrc:ElementOfMusic so its label matches the Wikidata counterpart
+        # wd:Q11696608 ("elements of music").  The base TTL has "Element of Music"@en
+        # (singular, title-case) on this node; overwrite with the lowercase plural
+        # so SPARQL hierarchy queries return a single consistent value at every hop.
+        # Root cause of the previous TODO: code incorrectly targeted MRC["ElementsOfMusic"]
+        # (plural) which is a different, unlabelled URI — g.remove() was a silent no-op.
+        ELEM_OF_MUSIC = MRC["ElementOfMusic"]
         # Remove any existing labels written by the base ontology TTL
         self.g.remove((ELEM_OF_MUSIC, RDFS.label, None))
         self.g.remove((ELEM_OF_MUSIC, SKOS.prefLabel, None))

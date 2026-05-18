@@ -62,6 +62,15 @@ def _matrix_to_tensor(train_matrix_norm, device: str) -> torch.Tensor:
             arr = np.asarray(train_matrix_norm, dtype=np.float32)
     except ImportError:
         arr = np.asarray(train_matrix_norm, dtype=np.float32)
+    size_gb = arr.nbytes / 1e9
+    if size_gb > 4.0:
+        import warnings
+        warnings.warn(
+            f"_matrix_to_tensor: dense float32 tensor is {size_gb:.1f} GB — "
+            f"ensure the target device has sufficient memory.",
+            ResourceWarning,
+            stacklevel=2,
+        )
     return torch.from_numpy(arr).to(device)
 
 

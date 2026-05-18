@@ -21,66 +21,33 @@ from typing import Dict
 
 import pandas as pd
 
+from ..canonicalize import build_canonical_map, pick_canonical
 from . import queries
 from .client import GraphDBClient
 
 log = logging.getLogger(__name__)
 
 
-# ── Canonical URI helpers ────────────────────────────────────────────────
-_CANON_PREFERENCE = (
-    "purl.org/ontology/mrc/resource/",  # our own data nodes — highest priority
-    "purl.org/ontology/mrc/",           # our ontology terms
-    "wikidata.org/entity/",             # Wikidata entities
-    "purl.org/ontology/mo/",            # Music Ontology
-    "xmlns.com/foaf/",                  # FOAF
-)
-
-
-def _pick_canonical(a: str, b: str) -> str:
-    """Return whichever URI is the preferred canonical representative.
-
-    Priority: mrc:resource > mrc: > wd: > mo: > foaf: > lexicographic min.
-    """
-    for prefix in _CANON_PREFERENCE:
-        if prefix in a and prefix not in b:
-            return a
-        if prefix in b and prefix not in a:
-            return b
-    return min(a, b)  # lexicographic fallback — at least deterministic
+# Canonical URI helpers (delegated to canonicalize module).
+# Both this exporter and the in-memory kg_to_hetero exporter share one
+# union-find + preference-order definition.  Thin private aliases preserve
+# the historical module API.
+_pick_canonical = pick_canonical
 
 
 def _build_canonical_map(equiv_df: pd.DataFrame) -> Dict[str, str]:
-    """Build a {uri → canonical_uri} map from an equivalence-pair DataFrame.
+    """Build a {uri -> canonical_uri} map from an equivalence-pair DataFrame.
 
-    Uses path-compressed union-find so the whole thing is O(n·α(n)).
-    Any URI that has no equivalences maps to itself implicitly (callers
-    should use ``canon_map.get(uri, uri)``).
+    Thin wrapper around canonicalize.build_canonical_map that handles the
+    SPARQL column-name variance ("a"/"b" vs "?a"/"?b").
     """
-    parent: Dict[str, str] = {}
-
-    def find(x: str) -> str:
-        parent.setdefault(x, x)
-        if parent[x] != x:
-            parent[x] = find(parent[x])   # path compression
-        return parent[x]
-
-    def union(a: str, b: str) -> None:
-        ra, rb = find(a), find(b)
-        if ra == rb:
-            return
-        winner = _pick_canonical(ra, rb)
-        loser  = rb if winner == ra else ra
-        parent[loser] = winner
-
-    # Column names may come back as "a"/"b" or "?a"/"?b"
     a_col = "a" if "a" in equiv_df.columns else "?a"
     b_col = "b" if "b" in equiv_df.columns else "?b"
-    for a, b in zip(equiv_df[a_col].astype(str), equiv_df[b_col].astype(str)):
-        union(a, b)
-
-    # Materialise fully-compressed map for all nodes seen
-    return {k: find(k) for k in parent}
+    pairs = zip(
+        equiv_df[a_col].astype(str),
+        equiv_df[b_col].astype(str),
+    )
+    return build_canonical_map(pairs)
 
 
 # ── PyKEEN ──────────────────────────────────────────────────────────────

@@ -42,8 +42,11 @@ class jSymbolicAutoencoder(nn.Module):
 
     @torch.no_grad()
     def embed(self, x: torch.Tensor) -> torch.Tensor:
+        was_training = self.training
         self.eval()
-        return self.encoder(x)
+        result = self.encoder(x)
+        self.train(was_training)
+        return result
 
 
 def _to_tensor(X) -> torch.Tensor:

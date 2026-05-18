@@ -186,7 +186,6 @@ def user_level_stratified_split(
     df["stratum"] = df[song_col].map(song_strata).fillna("_misc_")
 
     train_p = 1.0 - val_size - test_size
-    probs = np.array([train_p, val_size, test_size], dtype=float)
 
     train_rows: list = []
     val_rows: list = []
@@ -199,9 +198,9 @@ def user_level_stratified_split(
         if n == 0:
             return
         if n == 1:
-            # one row → randomly placed by probs
-            choice = rng.choice(3, p=probs)
-            [train_rows, val_rows, test_rows][choice].append(int(idxs[0]))
+            # single interaction → always to train; a user with nothing in
+            # training has no embedding and cannot be meaningfully evaluated
+            train_rows.append(int(idxs[0]))
             return
         if n == 2:
             # one to train, the other to val or test (val gets it ~33%, test ~67%)
