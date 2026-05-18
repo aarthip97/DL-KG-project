@@ -52,7 +52,7 @@ from typing import Literal as TypingLiteral
 
 from torch_geometric.data import HeteroData
 
-from src.data.kg.canonicalize import build_canonical_map
+from data.kg.canonicalize import build_canonical_map
 
 
 # ─────────────────────────────────────────────────────────────────────────────
