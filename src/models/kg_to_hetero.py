@@ -48,7 +48,11 @@ import rdflib
 from rdflib import BNode, Literal
 import json
 from collections import defaultdict
+from typing import Literal as TypingLiteral
+
 from torch_geometric.data import HeteroData
+
+from data.kg.canonicalize import build_canonical_map
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -169,6 +173,8 @@ def extract_dl_artifacts(
     tsv_out_path: str,
     dict_out_path: str,
     sidecar_nt: str | None = None,
+    *,
+    kge_scope: TypingLiteral["semantic", "semantic+listen", "all"] = "semantic",
 ):
     """Extract PyKEEN TSV triples and a PyG edge_dict from a populated KG.
 
@@ -179,10 +185,32 @@ def extract_dl_artifacts(
     dict_out_path: path for the JSON edge_dict consumed by build_rich_hetero_graph.
     sidecar_nt   : optional path to the listening sidecar N-Triples file.
                    When provided the sidecar is **streamed** (line-based parser,
-                   no rdflib load) and user→track edges are emitted directly.
+                   no rdflib load) and user-track edges are emitted directly.
                    ``g`` is *not* mutated, so the caller's graph stays small
                    and the function is safe to run on machines that cannot
                    afford to materialise the merged graph in RAM.
+    kge_scope    : which triples enter the PyKEEN TSV (the PyG edge_dict is
+                   always fully populated regardless).
+
+                   * ``"semantic"`` (default) -- semantic backbone only.
+                     Listening, OWL machinery, and reflexive/alias triples
+                     are excluded.  Recommended for a recsys pipeline where
+                     HGT consumes user-track interactions and KGE only seeds
+                     metadata node features.  Avoids leaking held-out
+                     listening events into KGE.
+                   * ``"semantic+listen"`` -- semantic backbone PLUS
+                     user-track listening triples.  Use only when KGE is
+                     expected to score interactions directly.
+                   * ``"all"`` -- writes every non-BNode triple seen
+                     (legacy behaviour, kept for backwards compatibility).
+
+    Side effects
+    ------------
+    Writes ``tsv_out_path`` (TSV for pykeen.triples.TriplesFactory) and
+    ``dict_out_path`` (JSON; see edge_dict structure below).  The JSON
+    additionally contains ``canonical_map`` mapping each non-canonical URI
+    to its canonical form, so ``build_rich_hetero_graph`` can resolve
+    embedding look-ups across alias classes.
     """
     # Stream TSV rows straight to disk to avoid keeping millions of
     # f-string objects in memory.  We open the file early so all writers
@@ -195,18 +223,31 @@ def extract_dl_artifacts(
         tsv_fh.write(line)
         tsv_count += 1
 
-    print("1. Identifying skos:exactMatch / owl:sameAs aliases...")
-    alias_map = {}
-    # Catch both standard alias predicates
-    for s, p, o in g.triples((None, rdflib.URIRef("http://www.w3.org/2004/02/skos/core#exactMatch"), None)):
-        alias_map[str(s)] = str(o)
-    for s, p, o in g.triples((None, rdflib.URIRef("http://www.w3.org/2002/07/owl#sameAs"), None)):
-        alias_map[str(s)] = str(o)
+    print("1. Building canonical-URI map (owl:sameAs + skos:exactMatch)...")
+    # Collect equivalence pairs in BOTH directions, then collapse via
+    # path-compressed union-find with deterministic canonical preference
+    # (mrc:resource > mrc: > wd: > mo: > foaf: > lex-min).  Shared with the
+    # GraphDB exporter so the two paths agree on canonical URIs.
+    _EXACT_MATCH = rdflib.URIRef("http://www.w3.org/2004/02/skos/core#exactMatch")
+    _SAME_AS     = rdflib.URIRef("http://www.w3.org/2002/07/owl#sameAs")
 
-    # Helper to resolve aliases instantly
-    def resolve(uri_ref):
+    def _iter_equiv_pairs():
+        for s, _, o in g.triples((None, _EXACT_MATCH, None)):
+            yield str(s), str(o)
+        for s, _, o in g.triples((None, _SAME_AS, None)):
+            yield str(s), str(o)
+
+    canon_map = build_canonical_map(_iter_equiv_pairs())
+    n_canonical = len(set(canon_map.values()))
+    print(
+        f"   Equivalence classes: {n_canonical:,} canonical URIs cover "
+        f"{len(canon_map):,} aliased URIs"
+    )
+
+    # Helper to resolve a URI (or rdflib node) to its canonical form
+    def resolve(uri_ref) -> str:
         uri_str = str(uri_ref)
-        return alias_map.get(uri_str, uri_str)
+        return canon_map.get(uri_str, uri_str)
 
     print("2. Parsing graph for PyKEEN and PyG artifacts...")
 
@@ -262,6 +303,43 @@ def extract_dl_artifacts(
     PRED_INSTRUMENT             = MO_BASE  + "instrument"           # perf → instrument
     PRED_IN_DECADE              = MRC_BASE + "inDecade"             # track → decade
     PRED_SKOS_BROADER           = "http://www.w3.org/2004/02/skos/core#broader"
+
+    # ── OWL / RDF machinery predicates excluded from KGE TSV ─────────────────
+    # These describe class restrictions and equivalence axioms, not real
+    # binary facts about instances.  Including them would inflate the TSV
+    # with self-loops and constructs PyKEEN cannot learn meaningfully.
+    _OWL_MACHINERY_PREDS = frozenset({
+        "http://www.w3.org/2002/07/owl#onProperty",
+        "http://www.w3.org/2002/07/owl#someValuesFrom",
+        "http://www.w3.org/2002/07/owl#allValuesFrom",
+        "http://www.w3.org/2002/07/owl#hasValue",
+        "http://www.w3.org/2002/07/owl#equivalentClass",
+        "http://www.w3.org/2002/07/owl#sameAs",
+        "http://www.w3.org/2002/07/owl#disjointWith",
+        "http://www.w3.org/1999/02/22-rdf-syntax-ns#first",
+        "http://www.w3.org/1999/02/22-rdf-syntax-ns#rest",
+        "http://www.w3.org/2004/02/skos/core#exactMatch",
+    })
+
+    # Listening-related predicates -- gated by kge_scope
+    _LISTENING_PREDS = frozenset({
+        PRED_LISTENED_TO,
+        PRED_HAS_LISTENING,
+        PRED_ON_TRACK,
+        PRED_LISTEN_COUNT,
+    })
+
+    def _allow_in_tsv(pred_uri: str, head_uri: str, tail_uri: str) -> bool:
+        """Return True iff this triple should be written to the PyKEEN TSV."""
+        if kge_scope == "all":
+            # Legacy behaviour: only filter self-loops and BNode artefacts
+            return head_uri != tail_uri
+        if pred_uri in _OWL_MACHINERY_PREDS:
+            return False
+        if kge_scope == "semantic" and pred_uri in _LISTENING_PREDS:
+            return False
+        # Drop self-loops -- KGE cannot learn anything from them.
+        return head_uri != tail_uri
 
     # ── Per-entity-type resource namespace prefixes ──────────────────────────
     # Every individual minted by KGBuilder lives in a namespace dedicated to
@@ -360,8 +438,13 @@ def extract_dl_artifacts(
         s_res = resolve(s)
         o_res = resolve(o) if o_str else str(o)
 
-        # Add every non-BNode triple to PyKEEN TSV
-        if not isinstance(s, BNode) and not isinstance(o, BNode):
+        # Add every non-BNode triple to PyKEEN TSV (filtered by kge_scope)
+        if (
+            not isinstance(s, BNode)
+            and not isinstance(o, BNode)
+            and o_str is not None
+            and _allow_in_tsv(p_str, s_res, o_res)
+        ):
             _tsv_write(f"{s_res}\t{p_str}\t{o_res}\n")
 
         # ── PyG structural edges ──────────────────────────────────────────────
@@ -436,7 +519,8 @@ def extract_dl_artifacts(
         edge_dict["user_track"][0].append(u_idx)
         edge_dict["user_track"][1].append(t_idx)
         edge_dict["user_track_counts"].append(count)
-        _tsv_write(f"{user_str}\t{PRED_LISTENED_TO}\t{track_str}\n")
+        if _allow_in_tsv(PRED_LISTENED_TO, user_str, track_str):
+            _tsv_write(f"{user_str}\t{PRED_LISTENED_TO}\t{track_str}\n")
 
     # Free the bnode dicts now that g-walk users have been resolved.
     user_listening_bnodes.clear()
@@ -457,7 +541,8 @@ def extract_dl_artifacts(
             edge_dict["user_track"][0].append(u_idx)
             edge_dict["user_track"][1].append(t_idx)
             edge_dict["user_track_counts"].append(count)
-            _tsv_write(f"{user_str}\t{PRED_LISTENED_TO}\t{track_str}\n")
+            if _allow_in_tsv(PRED_LISTENED_TO, user_str, track_str):
+                _tsv_write(f"{user_str}\t{PRED_LISTENED_TO}\t{track_str}\n")
         gc.collect()
 
     # ── Resolve Performance nodes → track_artist / key / mode / tempo / instr ─
@@ -468,10 +553,12 @@ def extract_dl_artifacts(
             a_idx = get_or_create_idx("artist", artist_str)
             edge_dict["track_artist"][0].append(t_idx)
             edge_dict["track_artist"][1].append(a_idx)
-            # TSV: emit track—performed_by→artist (collapsed from performance)
-            _tsv_write(
-                f"{track_str}\t{MRC_BASE}performed_by\t{artist_str}\n"
-            )
+            # TSV: emit track-performed_by-artist (collapsed from performance)
+            _perf_pred = MRC_BASE + "performed_by"
+            if _allow_in_tsv(_perf_pred, track_str, artist_str):
+                _tsv_write(
+                    f"{track_str}\t{_perf_pred}\t{artist_str}\n"
+                )
 
         key_str = perf_key.get(perf_str)
         if key_str and track_str:
@@ -513,12 +600,14 @@ def extract_dl_artifacts(
             edge_dict["artist_genre"][0].append(a_idx)
             edge_dict["artist_genre"][1].append(g_idx)
             edge_dict["artist_genre_weights"].append(weight_val)
-            _tsv_write(
-                f"{artist_str}\t{PRED_HAS_GENRE}\t{genre_str}\n"
-            )
+            if _allow_in_tsv(PRED_HAS_GENRE, artist_str, genre_str):
+                _tsv_write(
+                    f"{artist_str}\t{PRED_HAS_GENRE}\t{genre_str}\n"
+                )
 
     print("3. Exporting artifacts...")
     edge_dict["node_mappings"] = node_mappings
+    edge_dict["canonical_map"] = canon_map
 
     # TSV is already written incrementally — just close the handle.
     tsv_fh.close()
@@ -528,12 +617,13 @@ def extract_dl_artifacts(
     serialisable = {
         k: (list(v) if isinstance(v, defaultdict) else v)
         for k, v in edge_dict.items()
-        if k != "node_mappings"
+        if k not in ("node_mappings", "canonical_map")
     }
     serialisable["node_mappings"] = {
         ntype: list(uris)
         for ntype, uris in node_mappings.items()
     }
+    serialisable["canonical_map"] = canon_map
     with open(dict_out_path, "w", encoding="utf-8") as f:
         json.dump(serialisable, f)
 
@@ -561,8 +651,23 @@ def build_rich_hetero_graph(
     kge_dim   = 256
     audio_dim = 128
 
+    # Canonical map: alias URI -> canonical URI.  Built by extract_dl_artifacts
+    # so embedding look-ups can transparently resolve owl:sameAs /
+    # skos:exactMatch aliases (PyKEEN only trained on canonical URIs).
+    canon_map: dict = edge_dict.get("canonical_map", {})
+
+    def _kge_lookup(uri: str) -> np.ndarray:
+        return rotate_embeddings.get(
+            canon_map.get(uri, uri),
+            np.zeros(kge_dim),
+        )
+
+    missing_kge = 0
+    total_nodes = 0
+
     for node_type, uris in edge_dict["node_mappings"].items():
         n_nodes = len(uris)
+        total_nodes += n_nodes
 
         if node_type == "track":
             # Tracks: audio (128D) || KGE (256D) = 384D
@@ -572,21 +677,34 @@ def build_rich_hetero_graph(
                     track_audio_features.get(uri, np.zeros(audio_dim)),
                     dtype=torch.float32,
                 )
-                kge = torch.as_tensor(
-                    rotate_embeddings.get(uri, np.zeros(kge_dim)),
-                    dtype=torch.float32,
-                )
+                kge_vec = _kge_lookup(uri)
+                if not np.any(kge_vec):
+                    missing_kge += 1
+                kge = torch.as_tensor(kge_vec, dtype=torch.float32)
                 x[i] = torch.cat([audio, kge])
         else:
             # Metadata nodes: KGE only (256D)
             x = torch.zeros(n_nodes, kge_dim, dtype=torch.float32)
             for i, uri in enumerate(uris):
-                x[i] = torch.as_tensor(
-                    rotate_embeddings.get(uri, np.zeros(kge_dim)),
-                    dtype=torch.float32,
-                )
+                kge_vec = _kge_lookup(uri)
+                if not np.any(kge_vec):
+                    missing_kge += 1
+                x[i] = torch.as_tensor(kge_vec, dtype=torch.float32)
 
         data[node_type].x = x
+
+    if total_nodes:
+        pct = 100.0 * missing_kge / total_nodes
+        print(
+            f"build_rich_hetero_graph: {missing_kge:,}/{total_nodes:,} "
+            f"nodes ({pct:.1f}%) have a zero KGE slice"
+        )
+        if pct > 25.0:
+            print(
+                "  WARNING: more than 25% of nodes have no KGE embedding. "
+                "Check that the canonical_map and rotate_embeddings are "
+                "consistent (same canonicalisation, same training corpus)."
+            )
 
     # -- Edge topology -------------------------------------------------------
     # User interactions

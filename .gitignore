@@ -176,6 +176,10 @@ ENV/
 env.bak/
 venv.bak/
 
+# Github 
+.github/
+
+
 #other secret files
 graphdb.license
 

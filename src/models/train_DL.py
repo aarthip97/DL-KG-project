@@ -131,6 +131,11 @@ def train_hgt(
     # Edge splits for held-out evaluation
     if rev_edge_type not in data.edge_types:
         data = T.ToUndirected(merge=False)(data)
+        if rev_edge_type not in data.edge_types:
+            raise ValueError(
+                f"ToUndirected() did not create the expected reverse edge type "
+                f"{rev_edge_type!r}. Available edge types: {data.edge_types}"
+            )
 
     transform = T.RandomLinkSplit(
         num_val=val_ratio,
