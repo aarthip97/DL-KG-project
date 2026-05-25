@@ -14,6 +14,7 @@ data/**
 !data/*/*/*/
 !data/*/*/*/*/
 !data/**/.gitkeep
+!data/**/knowledge_graph_original.ttl
 
 # ── W&B local run cache ───────────────────────────────────────────────────────
 # wandb.init() writes local logs/metadata here; the real data lives on the cloud.

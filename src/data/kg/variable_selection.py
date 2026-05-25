@@ -144,43 +144,21 @@ INTERIM_KG_FEATURES: tuple[str, ...] = (
 
 _MD5_RE = re.compile(r"([0-9a-f]{32})", re.IGNORECASE)
 
-
-def _md5_from_path(path: Optional[str]) -> Optional[str]:
-    """
-    Extract the 32-char hex MIDI md5 from a path string.
-
-    Works for both POSIX (``…/<md5>.mid``) and Windows
-    (``…\\midi_dir\\<md5>.mid``) layouts.
-    """
-    if path is None or not isinstance(path, str):
-        return None
-    # Try filename stem first (cheap, robust to any separator).
-    stem = pathlib.PurePath(path.replace("\\", "/")).stem
-    m = _MD5_RE.fullmatch(stem) or _MD5_RE.search(stem)
-    if m:
-        return m.group(1).lower()
-    # Fallback: search the whole path.
-    m = _MD5_RE.search(path)
-    return m.group(1).lower() if m else None
-
-
-def load_interim_features(
-    interim_csv: str | pathlib.Path,
+def load_music_features(
+    music_features_pq: str | pathlib.Path,
     feature_columns: Iterable[str] = INTERIM_KG_FEATURES,
-    path_col: str = "Unnamed: 0",
+    join_col: str = "song_id", #Column on which dataframes will be joined later
     verbose: bool = True,
 ) -> pd.DataFrame:
     """
     Load only the path column + a small feature subset from the interim CSV
-    and add a clean ``midi_md5`` join key.
+    and add a clean ``song_id`` join key.
 
-    Returns a DataFrame indexed by ``midi_md5`` (str, lowercase, 32 hex
-    chars), with one column per requested feature.  Rows without a parsable
-    md5 are dropped.
+    Returns a DataFrame indexed by ``song_id``, with one column per requested feature
     """
-    interim_csv = pathlib.Path(interim_csv)
-    requested = [path_col, *feature_columns]
-    df = pd.read_csv(interim_csv, usecols=lambda c: c in requested)
+    music_features_pq = pathlib.Path(music_features_pq)
+    requested = [join_col, *feature_columns]
+    df = pd.read_parquet(music_features_pq, columns=requested)
 
     # Some columns may be missing in older dumps — be permissive.
     missing = [c for c in feature_columns if c not in df.columns]
@@ -188,12 +166,8 @@ def load_interim_features(
         print(f"[INFO] {len(missing)} requested interim features missing: "
               f"{missing[:5]}{'…' if len(missing) > 5 else ''}")
 
-    df["midi_md5"] = df[path_col].map(_md5_from_path)
-    n_bad = int(df["midi_md5"].isna().sum())
-    if n_bad and verbose:
-        print(f"[WARN] {n_bad} interim rows had no parseable MIDI md5 — dropped.")
-    df = df.dropna(subset=["midi_md5"]).drop(columns=[path_col])
-    df = df.set_index("midi_md5")
+    df = df.dropna(subset=[join_col])
+    df = df.set_index(join_col)
 
     if verbose:
         print(f"Loaded interim features: {df.shape[0]} rows × {df.shape[1]} cols.")
@@ -203,31 +177,29 @@ def load_interim_features(
 def merge_parquet_with_interim(
     parquet_df: pd.DataFrame,
     interim_df: pd.DataFrame,
-    midi_path_col: str = "midi_path",
+    join_col: str = "song_id",
     how: Literal["left", "right", "outer", "inner"] = "left",
     verbose: bool = True,
 ) -> pd.DataFrame:
     """
-    Left-join ``parquet_df`` (keyed by MIDI md5 derived from
-    ``midi_path``) with the indexed ``interim_df`` returned by
+    Left-join ``parquet_df`` (keyed by song_id usually) with the indexed ``interim_df`` returned by
     :func:`load_interim_features`.
 
     The resulting frame keeps every parquet row; interim columns are
     ``NaN`` when no jSymbolic features were extracted for that file.
     """
-    if midi_path_col not in parquet_df.columns:
-        raise KeyError(f"Parquet has no {midi_path_col!r} column to derive md5 from.")
+    if join_col not in parquet_df.columns:
+        raise KeyError(f"Parquet has no {join_col} column to join on")
 
     p = parquet_df.copy()
-    p["midi_md5"] = p[midi_path_col].map(_md5_from_path)
 
-    n_unmapped = int(p["midi_md5"].isna().sum())
+    n_unmapped = int(p[join_col].isna().sum())
     if n_unmapped and verbose:
-        print(f"[WARN] {n_unmapped} parquet rows had no parseable MIDI md5.")
+        print(f"[WARN] {n_unmapped} parquet rows had NA value for {join_col}.")
 
     merged = p.merge(
         interim_df,
-        left_on="midi_md5",
+        left_on=join_col,
         right_index=True,
         how=how,
     )
@@ -244,6 +216,6 @@ __all__ = (
     "DEFAULT_KG_COLUMNS",
     "INTERIM_KG_FEATURES",
     "select_kg_columns",
-    "load_interim_features",
+    "load_music_features",
     "merge_parquet_with_interim",
 )

@@ -16,7 +16,7 @@ from .variable_selection import (  # noqa: F401
     KG_RENAME_MAP,
     INTERIM_KG_FEATURES,
     select_kg_columns,
-    load_interim_features,
+    load_music_features,
     merge_parquet_with_interim,
 )
 from .kg_builder import (  # noqa: F401

@@ -204,7 +204,9 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
     LISTENING_NT_SIM = ONTOLOGY / "listening_triples_simple.nt"
 
     # DL pipeline artefacts
-    INTERIM_CSV  = INTERIM   / "music_features_interim.csv"
+    JSYMB_CSV    = INTERIM   / "jsymbolic_features.csv"
+    M21_CSV      = INTERIM   / "music21_features.csv"
+    FEATURES_PQ  = PROCESSED / 'music_features.parquet'
     KG_INPUT_PQ  = PROCESSED / "kg_input.parquet"
     KG_TASTE_PQ  = PROCESSED / "kg_input_with_taste.parquet"
     SPLIT_PQ     = PROCESSED / "kg_input_with_taste_split.parquet"
@@ -261,6 +263,7 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
             JSYMBOLIC_JAR = Path(_jsym_override)
         else:
             JSYMBOLIC_JAR = Path(_jsym_default)
+    JSYMB_CONFIG = str(ROOT / "jSymbolic" / "jSymbolicConfig.txt")
     GDRIVE_DATA_ROOT = (ROOT / "data") if ON_COLAB else None
 
     # ── Create directories ────────────────────────────────────────────────────
@@ -317,7 +320,9 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
         "ONTO_BASE": ONTO_BASE, "ONTO_OUT": ONTO_OUT,
         "ONTO_OUT_SIMPLE": ONTO_OUT_SIMPLE,
         "LISTENING_NT": LISTENING_NT, "LISTENING_NT_SIM": LISTENING_NT_SIM,
-        "INTERIM_CSV": INTERIM_CSV, "KG_INPUT_PQ": KG_INPUT_PQ,
+        "JSYMB_CSV": JSYMB_CSV, "M21_CSV": M21_CSV,
+        "JSYMB_CONFIG": JSYMB_CONFIG, "KG_INPUT_PQ": KG_INPUT_PQ,
+        "FEATURES_PQ": FEATURES_PQ,
         "KG_TASTE_PQ": KG_TASTE_PQ, "SPLIT_PQ": SPLIT_PQ, "KFOLD_CSV": KFOLD_CSV,
         "KG_GRAPHDB_DIR": KG_GRAPHDB_DIR, "KG_STATS_DIR": KG_STATS_DIR,
         "KG_PLOTS_DIR": KG_PLOTS_DIR,
