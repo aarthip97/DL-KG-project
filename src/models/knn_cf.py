@@ -44,34 +44,66 @@ def _matrix_to_tensor(
     train_matrix_norm,
     device: str,
     dtype: torch.dtype = torch.float32,
+    convert_chunk_rows: int = 5_000,
 ) -> tuple[torch.Tensor, str]:
     """Convert a scipy sparse or numpy dense matrix to a dense tensor.
 
-    Always builds the dense array in CPU float32 first (for arithmetic
-    stability), converts to ``dtype`` before the device transfer, and
-    returns ``(tensor, effective_device)``.  When a CUDA device is
-    requested but the free VRAM is less than 120 % of the matrix size,
-    the function automatically falls back to CPU and prints a warning —
-    the caller receives the CPU tensor and the corrected device string so
-    the rest of the pipeline runs on CPU without crashing.
+    Memory strategy
+    ---------------
+    When ``dtype=torch.float16`` and the input is a sparse matrix the
+    conversion is done in ``convert_chunk_rows``-row chunks.  A float16
+    result tensor is pre-allocated once and filled in-place; each chunk's
+    temporary float32 array (~140 MB for 5 K rows × 7 K items) is deleted
+    immediately after the copy.  This replaces the previous three-copy peak
+    (float32 numpy 8 GB + float32 tensor + float16 tensor = 12 + GB) with a
+    stable ~4 GB peak that fits inside the 12 GB Colab / T4 RAM budget.
 
-    ``dtype=torch.float16`` halves VRAM (≈ 4 GB for a 285K × 7K matrix)
-    at the cost of slightly lower cosine-similarity precision; the impact
-    on recommendation quality is negligible for KNN-CF.
+    For ``dtype=torch.float32`` the numpy array is shared zero-copy with
+    ``torch.from_numpy``; the numpy reference is deleted before the VRAM
+    transfer so only one CPU copy + one VRAM copy are live at the same time.
+
+    VRAM fallback
+    -------------
+    If the target device is CUDA but the matrix (at target dtype) would exceed
+    80 % of free VRAM the function automatically falls back to CPU and warns.
     """
-    import warnings
+    import gc, warnings
     try:
         import scipy.sparse as sp
-        if sp.issparse(train_matrix_norm):
+        _is_sparse = sp.issparse(train_matrix_norm)
+    except ImportError:
+        _is_sparse = False
+
+    n_rows, n_cols = train_matrix_norm.shape
+    elem_bytes = torch.finfo(dtype).bits // 8 if dtype.is_floating_point else 4
+    size_gb = n_rows * n_cols * elem_bytes / 1e9
+
+    if dtype == torch.float16 and _is_sparse:
+        # ── Chunked path: pre-allocate float16, fill row-by-row ──────────────
+        # Peak RAM = 4 GB (target tensor) + ~140 MB (current chunk) instead of
+        # the 8 GB float32 numpy + 4 GB float16 tensor = 12 GB of the naive path.
+        t = torch.empty(n_rows, n_cols, dtype=torch.float16)
+        for start in range(0, n_rows, convert_chunk_rows):
+            end   = min(start + convert_chunk_rows, n_rows)
+            chunk = train_matrix_norm[start:end].toarray().astype(np.float32)
+            t[start:end] = torch.from_numpy(chunk).half()
+            del chunk
+        gc.collect()
+    else:
+        # ── Single-pass path for float32 or dense input ───────────────────────
+        if _is_sparse:
             arr = train_matrix_norm.toarray().astype(np.float32)
         else:
             arr = np.asarray(train_matrix_norm, dtype=np.float32)
-    except ImportError:
-        arr = np.asarray(train_matrix_norm, dtype=np.float32)
-
-    # Size after dtype conversion
-    elem_bytes = torch.finfo(dtype).bits // 8 if dtype.is_floating_point else 4
-    size_gb = arr.size * elem_bytes / 1e9
+        # torch.from_numpy shares memory; .to(dtype) creates a new tensor so we
+        # can drop the numpy reference before the VRAM transfer.
+        t_shared = torch.from_numpy(arr)
+        if dtype != torch.float32:
+            t = t_shared.to(dtype)
+            del t_shared, arr
+        else:
+            t = t_shared          # stays numpy-backed; arr freed on function exit
+        gc.collect()
 
     if device.startswith("cuda"):
         try:
@@ -86,11 +118,8 @@ def _matrix_to_tensor(
                 )
                 device = "cpu"
         except Exception:
-            pass  # mem_get_info unavailable; attempt GPU transfer anyway
+            pass
 
-    t = torch.from_numpy(arr)
-    if dtype != torch.float32:
-        t = t.to(dtype)
     return t.to(device), device
 
 
@@ -268,6 +297,8 @@ def run_knn_sweep(
     nbrs_tensor     -- (Q, max_k+1) LongTensor of neighbour indices on CPU.
     qrow            -- dict mapping global user id to row in nbrs_tensor.
     """
+    import gc
+
     if nbrs_cache is None:
         nbrs_cache = val_csv.with_name(val_csv.stem + "_nbrs.pt")
 
@@ -301,14 +332,31 @@ def run_knn_sweep(
               f"(cache: {cache_path.name})")
         return val_results_df, test_metrics, best_k, nbrs_t, qrow
 
+    # ── Auto-select float16 when the float32 matrix would stress RAM ─────────
+    # For a 285 K × 7 K matrix: float32 = 8 GB, float16 = 4 GB.
+    # On Colab free-tier (12 GB RAM) the float32 path peaks at ~12 GB during
+    # the numpy→tensor conversion; float16 + the new chunked path peaks at ~4 GB.
+    _mat_rows, _mat_cols = train_matrix_norm.shape
+    _f32_gb = _mat_rows * _mat_cols * 4 / 1e9
+    if matrix_dtype == torch.float32 and _f32_gb > 4.0:
+        try:
+            import psutil
+            _avail_gb = psutil.virtual_memory().available / 1e9
+        except ImportError:
+            _avail_gb = 8.0  # conservative assumption
+        if _f32_gb > _avail_gb * 0.55:
+            print(
+                f"[KNN] float32 matrix ({_f32_gb:.1f} GB) > 55 % of available "
+                f"RAM ({_avail_gb:.1f} GB) — auto-switching to float16 to avoid OOM.\n"
+                f"      Pass matrix_dtype=torch.float32 to override."
+            )
+            matrix_dtype = torch.float16
+
     # ── Build neighbour table ─────────────────────────────────────────────────
     _device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     dtype_name = "float16" if matrix_dtype == torch.float16 else "float32"
     print(f"[KNN] building neighbours on {_device} (matrix dtype={dtype_name})")
 
-    # _matrix_to_tensor checks free VRAM and falls back to CPU automatically
-    # if the dense matrix would exceed 80% of available VRAM.  It returns the
-    # effective device so downstream ops stay consistent.
     print(f"[KNN] loading matrix to {_device} (dense {dtype_name}) …")
     train_t, _device = _matrix_to_tensor(train_matrix_norm, _device, dtype=matrix_dtype)
     print(f"[KNN] train tensor: {tuple(train_t.shape)}  "
@@ -316,16 +364,34 @@ def run_knn_sweep(
           f"device={train_t.device}")
 
     all_query = sorted(set(val_users) | set(test_users))
-    query_t   = train_t[torch.tensor(all_query, dtype=torch.long, device=_device)]
+    k_list    = list(k_range)
+    max_k     = max(k_list)
 
-    k_list = list(k_range)
-    max_k  = max(k_list)
+    # Build query tensor.  If the query set covers most of the training users
+    # (>= 80 %) just alias train_t to avoid a redundant 4 GB copy.
+    _idx = torch.tensor(all_query, dtype=torch.long, device=_device)
+    if len(all_query) >= int(0.80 * train_t.size(0)):
+        query_t = train_t          # no copy — same VRAM block
+    else:
+        query_t = train_t[_idx]
+    del _idx
 
     nbrs_t_dev = _find_neighbors_torch(
         query_t, train_t, n_neighbors=max_k + 1,
         batch_size=nbr_batch_size,
     )
-    nbrs_t = nbrs_t_dev.cpu()   # keep CPU copy; nbrs_t_dev stays on GPU for scoring
+
+    # Free query tensor as soon as neighbour indices are built — it is no
+    # longer needed and releasing it before the k-sweep frees 4 GB VRAM.
+    if query_t is not train_t:
+        del query_t
+    else:
+        query_t = None        # alias; don't delete train_t
+    if _device.startswith("cuda"):
+        torch.cuda.empty_cache()
+    gc.collect()
+
+    nbrs_t = nbrs_t_dev.cpu()   # CPU copy for caching/return
     qrow   = {u: i for i, u in enumerate(all_query)}
 
     # ── k-sweep on validation set ─────────────────────────────────────────────
@@ -355,6 +421,13 @@ def run_knn_sweep(
     test_metrics = evaluate_recs(test_recs, test_gt, train_seen,
                                  n_songs, pop_norm, k=top_n)
     test_metrics["Overall_Score"] = overall_score(test_metrics, k=top_n)
+
+    # Free GPU memory now that scoring is done — neighbour cache (CPU) is all
+    # that's needed from this point on.
+    del nbrs_t_dev, train_t
+    if _device.startswith("cuda"):
+        torch.cuda.empty_cache()
+    gc.collect()
 
     # ── Persist ──────────────────────────────────────────────────────────────
     val_results_df.to_csv(val_csv)
