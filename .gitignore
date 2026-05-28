@@ -176,8 +176,10 @@ ENV/
 env.bak/
 venv.bak/
 
-# Github 
+# Copilots
+.claude/
 .github/
+CLAUDE.md
 
 
 #other secret files
