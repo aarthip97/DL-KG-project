@@ -390,15 +390,18 @@ def overall_score(
 ) -> float:
     """Weighted composite score combining ranking, coverage, and diversity.
 
-    Default weights produce 0.60 * NDCG@K + 0.20 * Coverage + 0.20 * (1 - PopularityBias). 
+    Default weights produce 0.60 * NDCG@K + 0.20 * Coverage + 0.20 * (1 - PopularityBias).
     The anti-popularity term rewards models that avoid concentrating all recommendations
     on already-popular tracks.
+
+    Accepts both the ``Mean_NDCG@K`` / ``Mean_PopularityBias@K`` keys returned by
+    :func:`evaluate_recs` and the bare ``NDCG@K`` / ``PopularityBias@K`` keys
+    returned by the vectorised :func:`fast_eval_top_k` path.
     """
-    return (
-        + w_ndcg     * metrics[f"NDCG@{k}"]
-        + w_cov      * metrics["Coverage"]
-        + w_anti_pop * (1.0 - metrics[f"PopularityBias@{k}"])
-    )
+    ndcg = metrics.get(f"NDCG@{k}", metrics.get(f"Mean_NDCG@{k}", 0.0))
+    pop  = metrics.get(f"PopularityBias@{k}", metrics.get(f"Mean_PopularityBias@{k}", 0.0))
+    cov  = metrics.get("Coverage", 0.0)
+    return w_ndcg * ndcg + w_cov * cov + w_anti_pop * (1.0 - pop)
 
 
 def multi_k_evaluation(

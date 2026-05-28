@@ -203,11 +203,19 @@ def _build_recs_torch(
         nbr_k  = nbrs_tensor[local_rows, 1 : k + 1]        # (B, k)
         scores = train_tensor[nbr_k].sum(dim=1)             # (B, I)
 
+        # Vectorised seen-item masking: build row / col index pairs for a
+        # single scatter_ call instead of looping per user.  Avoids creating
+        # one tensor per user × per k during the sweep.
+        seen_rows, seen_cols = [], []
         for bi, u in enumerate(batch_users):
             seen = train_seen.get(u)
             if seen:
-                seen_t = torch.tensor(list(seen), dtype=torch.long, device=device)
-                scores[bi].scatter_(0, seen_t, 0.0)
+                seen_cols.extend(seen)
+                seen_rows.extend([bi] * len(seen))
+        if seen_rows:
+            r = torch.tensor(seen_rows, dtype=torch.long, device=device)
+            c = torch.tensor(seen_cols, dtype=torch.long, device=device)
+            scores[r, c] = 0.0
 
         _, top_idx = torch.topk(scores, min(top_n, scores.size(1)), dim=-1)
         for bi, u in enumerate(batch_users):
