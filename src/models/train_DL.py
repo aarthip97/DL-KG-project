@@ -74,6 +74,7 @@ def train_hgt(
     lr_eta_min: float = 1e-5,
     clip_grad_norm: float = 1.0,
     device: Optional[str] = None,
+    use_amp: bool = True,
     use_wandb: bool = False,
     wandb_project: str = "music-recommender-hgt",
     wandb_config: Optional[dict] = None,
@@ -127,6 +128,13 @@ def train_hgt(
     """
     torch.manual_seed(seed)
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Keep the (U, I) interaction matrix on CPU — debiased_listwise_loss calls
+    # .to(device) per batch, so it never needs to live in VRAM all at once.
+    user_interaction_matrix = user_interaction_matrix.cpu()
+
+    _amp_enabled = use_amp and dev.startswith("cuda")
+    scaler = torch.cuda.amp.GradScaler(enabled=_amp_enabled)
 
     # Edge splits for held-out evaluation
     if rev_edge_type not in data.edge_types:
@@ -217,36 +225,44 @@ def train_hgt(
         model.train()
         opt.zero_grad(set_to_none=True)
 
-        # Full-graph forward pass — once per epoch
-        out = model(train_data.x_dict, train_data.edge_index_dict)
-        all_track_embs = out[dst_t]  # (I, D)
+        # Full-graph forward + listwise loss — wrapped in autocast when AMP is on.
+        # AMP halves VRAM for the HGT forward pass and speeds up matmuls on
+        # Tensor-core GPUs (T4, A100).  Sensitive ops (softmax, log) are
+        # automatically upcast to float32 by PyTorch inside the context.
+        with torch.cuda.amp.autocast(enabled=_amp_enabled):
+            out = model(train_data.x_dict, train_data.edge_index_dict)
+            all_track_embs = out[dst_t]  # (I, D)
 
-        # Accumulate listwise loss across user mini-batches, then back-prop once
-        total_loss: torch.Tensor | None = None
-        for user_batch_indices in user_loader:
-            user_batch_indices = user_batch_indices.to(dev)
-            batch_u_embs = out[src_t][user_batch_indices]
-            batch_loss = debiased_listwise_loss(
-                batch_u_embs,
-                all_track_embs,
-                user_batch_indices,
-                user_interaction_matrix,
-                log_track_pop,
-                lambda_reg=lambda_reg,
-                temperature=temperature,
-            )
-            # Scale so accumulated loss equals the full-batch mean
-            scaled = batch_loss * (user_batch_indices.numel() / n_users)
-            total_loss = scaled if total_loss is None else total_loss + scaled
+            # Accumulate listwise loss across user mini-batches, then back-prop once
+            total_loss: torch.Tensor | None = None
+            for user_batch_indices in user_loader:
+                user_batch_indices = user_batch_indices.to(dev)
+                batch_u_embs = out[src_t][user_batch_indices]
+                batch_loss = debiased_listwise_loss(
+                    batch_u_embs,
+                    all_track_embs,
+                    user_batch_indices,
+                    user_interaction_matrix,
+                    log_track_pop,
+                    lambda_reg=lambda_reg,
+                    temperature=temperature,
+                )
+                # Scale so accumulated loss equals the full-batch mean
+                scaled = batch_loss * (user_batch_indices.numel() / n_users)
+                total_loss = scaled if total_loss is None else total_loss + scaled
 
         if total_loss is not None:
             epoch_loss_scalar = total_loss.item()
-            total_loss.backward()
+            scaler.scale(total_loss).backward()
+            # Unscale before clipping so the norm threshold is in the original scale
+            scaler.unscale_(opt)
             torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
+            scaler.step(opt)
+            scaler.update()
         else:
             epoch_loss_scalar = 0.0
+            opt.step()
 
-        opt.step()
         scheduler.step()
 
         current_lr = scheduler.get_last_lr()[0]

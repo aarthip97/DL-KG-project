@@ -40,20 +40,26 @@ from models.evaluation import evaluate_recs, overall_score
 # Torch-based neighbour finding
 # ---------------------------------------------------------------------------
 
-def _matrix_to_tensor(train_matrix_norm, device: str) -> torch.Tensor:
-    """Convert a scipy sparse or numpy dense matrix to a dense float32 GPU tensor.
+def _matrix_to_tensor(
+    train_matrix_norm,
+    device: str,
+    dtype: torch.dtype = torch.float32,
+) -> tuple[torch.Tensor, str]:
+    """Convert a scipy sparse or numpy dense matrix to a dense tensor.
 
-    For a 285K × 7K L2-normalised matrix the dense float32 representation is
-    ~8 GB, which fits comfortably in a T4 (15 GB) or A100 (40/80 GB) GPU.
-    A plain dense tensor is used because:
-      - ``torch.sparse_csr_tensor`` + ``torch.sparse.mm`` have very limited
-        CUDA support in the PyTorch versions shipped with Colab and will either
-        raise errors or silently fall back to CPU.
-      - Dense batched matmul (``q @ train.T``) is extremely fast on GPU and
-        is the same pattern that works in the reference implementation.
-    The array is first built in CPU RAM (numpy), then transferred to the device
-    in one call to avoid fragmenting VRAM.
+    Always builds the dense array in CPU float32 first (for arithmetic
+    stability), converts to ``dtype`` before the device transfer, and
+    returns ``(tensor, effective_device)``.  When a CUDA device is
+    requested but the free VRAM is less than 120 % of the matrix size,
+    the function automatically falls back to CPU and prints a warning —
+    the caller receives the CPU tensor and the corrected device string so
+    the rest of the pipeline runs on CPU without crashing.
+
+    ``dtype=torch.float16`` halves VRAM (≈ 4 GB for a 285K × 7K matrix)
+    at the cost of slightly lower cosine-similarity precision; the impact
+    on recommendation quality is negligible for KNN-CF.
     """
+    import warnings
     try:
         import scipy.sparse as sp
         if sp.issparse(train_matrix_norm):
@@ -62,16 +68,30 @@ def _matrix_to_tensor(train_matrix_norm, device: str) -> torch.Tensor:
             arr = np.asarray(train_matrix_norm, dtype=np.float32)
     except ImportError:
         arr = np.asarray(train_matrix_norm, dtype=np.float32)
-    size_gb = arr.nbytes / 1e9
-    if size_gb > 4.0:
-        import warnings
-        warnings.warn(
-            f"_matrix_to_tensor: dense float32 tensor is {size_gb:.1f} GB — "
-            f"ensure the target device has sufficient memory.",
-            ResourceWarning,
-            stacklevel=2,
-        )
-    return torch.from_numpy(arr).to(device)
+
+    # Size after dtype conversion
+    elem_bytes = torch.finfo(dtype).bits // 8 if dtype.is_floating_point else 4
+    size_gb = arr.size * elem_bytes / 1e9
+
+    if device.startswith("cuda"):
+        try:
+            free_gb = torch.cuda.mem_get_info(0)[0] / 1e9
+            if size_gb > free_gb * 0.80:
+                warnings.warn(
+                    f"[KNN] Matrix is {size_gb:.1f} GB but only "
+                    f"{free_gb:.1f} GB VRAM free — falling back to CPU. "
+                    f"Pass device='cpu' or dtype=torch.float16 to suppress.",
+                    ResourceWarning,
+                    stacklevel=3,
+                )
+                device = "cpu"
+        except Exception:
+            pass  # mem_get_info unavailable; attempt GPU transfer anyway
+
+    t = torch.from_numpy(arr)
+    if dtype != torch.float32:
+        t = t.to(dtype)
+    return t.to(device), device
 
 
 def _find_neighbors_torch(
@@ -222,6 +242,7 @@ def run_knn_sweep(
     device: Optional[str] = None,
     nbr_batch_size: int = 512,
     score_batch_size: int = 128,
+    matrix_dtype: torch.dtype = torch.float32,
 ) -> Tuple[pd.DataFrame, Dict[str, float], int, torch.Tensor, Dict[int, int]]:
     """Run (or load cached) KNN-CF k-sweep and final test evaluation.
 
@@ -234,6 +255,9 @@ def run_knn_sweep(
       device            -- 'cuda', 'cpu', or None (auto-detect).
       nbr_batch_size    -- query rows per chunk during neighbour finding.
       score_batch_size  -- users per chunk during item scoring.
+      matrix_dtype      -- dtype for the dense GPU tensor. ``torch.float16``
+                           halves VRAM (~4 GB for a 285K×7K matrix) at
+                           negligible quality cost. Default: ``torch.float32``.
       (all other parameters match the previous signature)
 
     Returns
@@ -279,17 +303,17 @@ def run_knn_sweep(
 
     # ── Build neighbour table ─────────────────────────────────────────────────
     _device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[KNN] building neighbours on {_device}")
+    dtype_name = "float16" if matrix_dtype == torch.float16 else "float32"
+    print(f"[KNN] building neighbours on {_device} (matrix dtype={dtype_name})")
 
-    # Convert the full L2-normalised matrix to a dense float32 GPU tensor once.
-    # 285K × 7K × 4 B ≈ 8 GB — fits in T4 (15 GB) and A100 (40/80 GB).
-    # torch.sparse_csr_tensor is intentionally NOT used because its CUDA matmul
-    # support is incomplete in the PyTorch versions shipped with Colab and causes
-    # cryptic errors or silent CPU fallback.
-    print(f"[KNN] loading matrix to {_device} (dense float32) …")
-    train_t = _matrix_to_tensor(train_matrix_norm, _device)
+    # _matrix_to_tensor checks free VRAM and falls back to CPU automatically
+    # if the dense matrix would exceed 80% of available VRAM.  It returns the
+    # effective device so downstream ops stay consistent.
+    print(f"[KNN] loading matrix to {_device} (dense {dtype_name}) …")
+    train_t, _device = _matrix_to_tensor(train_matrix_norm, _device, dtype=matrix_dtype)
     print(f"[KNN] train tensor: {tuple(train_t.shape)}  "
-          f"({train_t.element_size() * train_t.nelement() / 1e9:.2f} GB)")
+          f"({train_t.element_size() * train_t.nelement() / 1e9:.2f} GB)  "
+          f"device={train_t.device}")
 
     all_query = sorted(set(val_users) | set(test_users))
     query_t   = train_t[torch.tensor(all_query, dtype=torch.long, device=_device)]
