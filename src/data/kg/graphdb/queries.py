@@ -57,7 +57,7 @@ QUERY_GENRES_SIMPLE = _q("""
 SELECT ?genreLabel (COUNT(DISTINCT ?artist) AS ?n_artists)
 WHERE {
     ?artist mrc:hasGenre ?g .
-    ?g      skos:prefLabel ?genreLabel .
+    ?g      rdfs:label ?genreLabel .
     FILTER(LANG(?genreLabel) = "en")
 }
 GROUP BY ?genreLabel
@@ -74,7 +74,7 @@ WHERE {
     ?artist mrc:hasGenreAssoc ?assoc .
     ?assoc  mrc:genre  ?g ;
             mrc:weight ?w .
-    ?g      skos:prefLabel ?genreLabel .
+    ?g      rdfs:label ?genreLabel .
     FILTER(LANG(?genreLabel) = "en")
 }
 GROUP BY ?genreLabel
@@ -121,8 +121,8 @@ WHERE {{
     ?t  dct:title   ?title ;
         mrc:hasKey  ?k ;
         mrc:hasMode ?m .
-    OPTIONAL {{ ?k skos:prefLabel ?keyLabel  . FILTER(LANG(?keyLabel)  = "en") }}
-    OPTIONAL {{ ?m skos:prefLabel ?modeLabel . FILTER(LANG(?modeLabel) = "en") }}
+    OPTIONAL {{ ?k rdfs:label ?keyLabel  . FILTER(LANG(?keyLabel)  = "en") }}
+    OPTIONAL {{ ?m rdfs:label ?modeLabel . FILTER(LANG(?modeLabel) = "en") }}
 }}
 """).format(track_uri=track_uri)
 
@@ -141,8 +141,8 @@ WHERE {{
     OPTIONAL {{ ?perf mo:tempo           ?tempo    }}
     OPTIONAL {{ ?perf mrc:keyConfidence  ?keyConf  }}
     OPTIONAL {{ ?perf mrc:modeConfidence ?modeConf }}
-    OPTIONAL {{ ?k skos:prefLabel ?keyLabel  . FILTER(LANG(?keyLabel)  = "en") }}
-    OPTIONAL {{ ?m skos:prefLabel ?modeLabel . FILTER(LANG(?modeLabel) = "en") }}
+    OPTIONAL {{ ?k rdfs:label ?keyLabel  . FILTER(LANG(?keyLabel)  = "en") }}
+    OPTIONAL {{ ?m rdfs:label ?modeLabel . FILTER(LANG(?modeLabel) = "en") }}
 }}
 """).format(track_uri=track_uri)
 
@@ -158,7 +158,7 @@ WHERE {{
             mrc:hasGenreAssoc ?assoc .
     ?assoc  mrc:genre         ?g ;
             mrc:weight        ?weight .
-    ?g      skos:prefLabel    ?genreLabel .
+    ?g      rdfs:label        ?genreLabel .
     FILTER(LANG(?genreLabel) = "en")
 }}
 ORDER BY DESC(?weight)
@@ -170,8 +170,8 @@ QUERY_CONFIDENT_KEYS_SIMPLE = _q("""
 SELECT ?keyLabel (COUNT(*) AS ?n)
 WHERE {
     ?t a mrc:MSDTrack ;
-       mrc:hasKey  ?k .
-    ?k skos:prefLabel ?keyLabel .
+       mrc:hasKey ?k .
+    ?k rdfs:label ?keyLabel .
     FILTER(LANG(?keyLabel) = "en")
 }
 GROUP BY ?keyLabel
@@ -186,7 +186,7 @@ WHERE {
           mrc:hasKey          ?k ;
           mrc:keyConfidence   ?kc .
     FILTER(?kc >= 0.8)
-    ?k skos:prefLabel ?keyLabel .
+    ?k rdfs:label ?keyLabel .
     FILTER(LANG(?keyLabel) = "en")
 }
 GROUP BY ?keyLabel
@@ -199,13 +199,13 @@ LIMIT 24
 QUERY_GENRE_HIERARCHY = _q("""
 SELECT DISTINCT ?parentLabel ?childLabel ?leafLabel
 WHERE {
-    ?leaf skos:inScheme scheme:GenreScheme ;
-          skos:prefLabel    ?leafLabel .
+    ?leaf rdf:type mrc:Genre ;
+          rdfs:label ?leafLabel .
     FILTER(LANG(?leafLabel) = "en")
-    ?leaf    skos:broader+  ?child .
-    ?child   skos:broader   ?parent .
-    OPTIONAL { ?child  skos:prefLabel ?childLabel  . FILTER(LANG(?childLabel)  = "en") }
-    OPTIONAL { ?parent skos:prefLabel ?parentLabel . FILTER(LANG(?parentLabel) = "en") }
+    ?leaf    rdfs:subClassOf+  ?child .
+    ?child   rdfs:subClassOf   ?parent .
+    OPTIONAL { ?child  rdfs:label ?childLabel  . FILTER(LANG(?childLabel)  = "en") }
+    OPTIONAL { ?parent rdfs:label ?parentLabel . FILTER(LANG(?parentLabel) = "en") }
 }
 ORDER BY ?leafLabel ?childLabel
 LIMIT 200
@@ -214,13 +214,13 @@ LIMIT 200
 QUERY_INSTRUMENT_HIERARCHY = _q("""
 SELECT DISTINCT ?parentLabel ?childLabel ?leafLabel
 WHERE {
-    ?leaf skos:inScheme scheme:InstrumentScheme ;
-          skos:prefLabel    ?leafLabel .
+    ?leaf rdf:type mo:Instrument ;
+          rdfs:label ?leafLabel .
     FILTER(LANG(?leafLabel) = "en")
-    ?leaf   skos:broader+  ?child .
-    ?child  skos:broader   ?parent .
-    OPTIONAL { ?child  skos:prefLabel ?childLabel  . FILTER(LANG(?childLabel)  = "en") }
-    OPTIONAL { ?parent skos:prefLabel ?parentLabel . FILTER(LANG(?parentLabel) = "en") }
+    ?leaf   rdfs:subClassOf+  ?child .
+    ?child  rdfs:subClassOf   ?parent .
+    OPTIONAL { ?child  rdfs:label ?childLabel  . FILTER(LANG(?childLabel)  = "en") }
+    OPTIONAL { ?parent rdfs:label ?parentLabel . FILTER(LANG(?parentLabel) = "en") }
 }
 ORDER BY ?leafLabel ?childLabel
 LIMIT 200
@@ -230,19 +230,19 @@ QUERY_DECADE_CHAIN = _q("""
 SELECT ?prevLabel ?decadeLabel ?nextLabel ?centuryLabel
 WHERE {
     ?decade a mrc:Decade ;
-            skos:prefLabel ?decadeLabel .
+            rdfs:label ?decadeLabel .
     FILTER(LANG(?decadeLabel) = "en")
     OPTIONAL {
-        ?decade skos:broader ?century .
+        ?decade rdfs:subClassOf ?century .
         OPTIONAL { ?century rdfs:label ?centuryLabel . FILTER(LANG(?centuryLabel) = "en") }
     }
     OPTIONAL {
         ?decade wdt:P155 ?prev .
-        OPTIONAL { ?prev skos:prefLabel ?prevLabel . FILTER(LANG(?prevLabel) = "en") }
+        OPTIONAL { ?prev rdfs:label ?prevLabel . FILTER(LANG(?prevLabel) = "en") }
     }
     OPTIONAL {
         ?decade wdt:P156 ?next .
-        OPTIONAL { ?next skos:prefLabel ?nextLabel . FILTER(LANG(?nextLabel) = "en") }
+        OPTIONAL { ?next rdfs:label ?nextLabel . FILTER(LANG(?nextLabel) = "en") }
     }
 }
 ORDER BY ?decadeLabel
@@ -379,6 +379,7 @@ WHERE {{
     ?e a ?type .
     FILTER(isIRI(?e) && isIRI(?type))
     FILTER(?type NOT IN {_OWL_META_TYPES})
+    FILTER(!STRSTARTS(STR(?type), "http://www.wikidata.org/"))
 }}
 GROUP BY ?type
 ORDER BY DESC(?n)

@@ -502,16 +502,34 @@ def fetch_subclass_chains(
 # ---------------------------------------------------------------------------
 # QID metadata (label / description / aliases) via wbgetentities
 # ---------------------------------------------------------------------------
-def _wbgetentities_batch(qids: list[str], language: str = "en"
+def _wbgetentities_batch(qids: list[str],
+                         languages: tuple[str, ...] = ("en",)
                          ) -> dict[str, dict]:
-    """One wbgetentities call (<=50 IDs)."""
+    """One wbgetentities call (<=50 IDs), multi-language.
+
+    Returns a dict keyed by QID.  Each value has the flat backward-compat
+    keys (``label``, ``description``, ``aliases``) drawn from the first
+    language in *languages*, plus two per-language dicts for all fetched
+    languages so ``_attach_qid_metadata`` can emit ``@lang`` triples:
+
+    .. code-block:: python
+
+        {
+            "label":       "20th century",          # primary-language label
+            "description": "...",
+            "aliases":     [...],
+            "labels":      {"en": "20th century", "pt": "século XX", ...},
+            "descriptions":{"en": "...",           "pt": "...",       ...},
+        }
+    """
     if not qids:
         return {}
+    primary = languages[0]
     params = {
         "action":    "wbgetentities",
         "ids":       "|".join(qids),
         "props":     "labels|descriptions|aliases",
-        "languages": language,
+        "languages": "|".join(languages),
         "format":    "json",
     }
     r = _session().get(WIKIDATA_API, params=params, timeout=30)
@@ -519,13 +537,19 @@ def _wbgetentities_batch(qids: list[str], language: str = "en"
     payload = r.json().get("entities", {})
     out: dict[str, dict] = {}
     for qid, ent in payload.items():
-        labels  = ent.get("labels", {}).get(language, {})
-        descs   = ent.get("descriptions", {}).get(language, {})
-        aliases = ent.get("aliases", {}).get(language, []) or []
+        ent_labels  = ent.get("labels", {})
+        ent_descs   = ent.get("descriptions", {})
+        pri_aliases = ent.get("aliases", {}).get(primary, []) or []
         out[qid] = {
-            "label":       labels.get("value"),
-            "description": descs.get("value"),
-            "aliases":     [a.get("value") for a in aliases if a.get("value")],
+            # Flat backward-compat keys (primary language only)
+            "label":       ent_labels.get(primary, {}).get("value"),
+            "description": ent_descs.get(primary, {}).get("value"),
+            "aliases":     [a["value"] for a in pri_aliases if a.get("value")],
+            # Per-language dicts consumed by _attach_qid_metadata
+            "labels":      {lg: v["value"] for lg, v in ent_labels.items()
+                            if v.get("value")},
+            "descriptions":{lg: v["value"] for lg, v in ent_descs.items()
+                            if v.get("value")},
         }
     return out
 
@@ -533,16 +557,25 @@ def _wbgetentities_batch(qids: list[str], language: str = "en"
 def fetch_qid_metadata(
     qids: Iterable[str],
     language: str = "en",
+    extra_languages: tuple[str, ...] = ("pt",),
     cache_path: Optional[pathlib.Path] = None,
     force_refresh: bool = False,
     parallel: int = 4,
     batch_size: int = 50,
     verbose: bool = True,
 ) -> dict[str, dict]:
+    """Fetch labels / description / aliases for a set of QIDs.
+
+    Fetches *language* (primary, default ``"en"``) plus every language in
+    *extra_languages* (default ``("pt",)``) in a single wbgetentities call
+    per batch.  The returned dict keeps backward-compat flat EN keys
+    (``label``, ``description``, ``aliases``) and adds ``labels`` /
+    ``descriptions`` per-language dicts so ``_attach_qid_metadata`` can
+    emit ``rdfs:label @lang`` triples for every available language.
     """
-    Fetch English label / description / aliases for a set of QIDs, using
-    batched wbgetentities calls dispatched in parallel.
-    """
+    _langs: tuple[str, ...] = (language,) + tuple(
+        lg for lg in extra_languages if lg != language
+    )
     cache: dict[str, dict] = {}
     if cache_path and cache_path.exists() and not force_refresh:
         cache = json.loads(cache_path.read_text())
@@ -553,14 +586,15 @@ def fetch_qid_metadata(
     uniq = [q for q in dict.fromkeys(qids) if q and q not in cache]
     if verbose:
         print(f"[wikidata] fetching metadata for {len(uniq):,} new QIDs "
-              f"(workers={parallel}, batch={batch_size}) ...")
+              f"(languages={list(_langs)}, workers={parallel}, "
+              f"batch={batch_size}) ...")
     if not uniq:
         return cache
 
     batches = [uniq[i:i + batch_size] for i in range(0, len(uniq), batch_size)]
     lock = threading.Lock()
     with ThreadPoolExecutor(max_workers=parallel) as pool:
-        futures = {pool.submit(_wbgetentities_batch, b, language): b
+        futures = {pool.submit(_wbgetentities_batch, b, _langs): b
                    for b in batches}
         bar = tqdm(as_completed(futures), total=len(futures),
                    desc="qid-meta", unit="batch",
@@ -589,15 +623,31 @@ def _attach_qid_metadata(g, node: URIRef, qid: str,
                          meta: dict, fallback_label: Optional[str]) -> None:
     """Stamp a Wikidata QID node with OWL annotations and type it as owl:Class.
 
-    Emits ``rdfs:label`` (standard OWL annotation) and ``rdfs:comment``
-    (description from Wikidata), always types the node as ``owl:Class`` so
-    it appears in Protégé's class hierarchy and supports ``rdfs:subClassOf``.
+    Emits ``rdfs:label @lang`` for every language present in
+    ``meta["labels"]`` (produced by the updated ``fetch_qid_metadata``).
+    Falls back to the flat ``meta["label"]``, then ``fallback_label``, then
+    the bare QID for the required English label.  Also emits
+    ``rdfs:comment @lang`` for all available descriptions.
     """
-    label = meta.get("label") or fallback_label or qid
-    g.add((node, RDF.type,   OWL.Class))
-    g.add((node, RDFS.label, Literal(label, lang="en")))
-    if meta.get("description"):
-        g.add((node, RDFS.comment, Literal(meta["description"], lang="en")))
+    g.add((node, RDF.type, OWL.Class))
+
+    all_labels = meta.get("labels") or {}
+    all_descs  = meta.get("descriptions") or {}
+
+    # English label is mandatory — fall through to fallback / qid if absent.
+    en_label = all_labels.get("en") or meta.get("label") or fallback_label or qid
+    g.add((node, RDFS.label, Literal(en_label, lang="en")))
+    en_desc = all_descs.get("en") or meta.get("description")
+    if en_desc:
+        g.add((node, RDFS.comment, Literal(en_desc, lang="en")))
+
+    # Additional languages (e.g. pt) stored as separate @lang literals.
+    for lang, lbl in all_labels.items():
+        if lang != "en" and lbl:
+            g.add((node, RDFS.label, Literal(lbl, lang=lang)))
+    for lang, desc in all_descs.items():
+        if lang != "en" and desc:
+            g.add((node, RDFS.comment, Literal(desc, lang=lang)))
 
 
 def enrich_graph_with_wikidata(
@@ -636,7 +686,34 @@ def enrich_graph_with_wikidata(
 
     qid_seen: set[URIRef] = set()
     _hierarchy_visited: set[str] = set()
-    metadata = qid_metadata or {}
+    metadata: dict[str, dict] = dict(qid_metadata or {})
+
+    # Collect every QID reachable in the parent-graph chains via BFS, then
+    # fetch metadata for any that the caller didn't supply.  This prevents
+    # intermediate ancestor QIDs (discovered during _walk_hierarchy) from
+    # falling back to the bare QID string as their rdfs:label.
+    def _all_chain_qids(chains: Optional[dict]) -> set[str]:
+        if not chains:
+            return set()
+        visited: set[str] = set()
+        queue = set(chains.keys())
+        while queue:
+            cur = queue.pop()
+            if cur in visited:
+                continue
+            visited.add(cur)
+            for p_qid, _ in chains.get(cur) or []:
+                queue.add(p_qid)
+        return visited
+
+    missing_qids = (
+        _all_chain_qids(instrument_chains) | _all_chain_qids(genre_chains)
+    ) - set(metadata)
+    if missing_qids:
+        if verbose:
+            print(f"[wikidata] auto-fetching metadata for {len(missing_qids)} "
+                  f"ancestor QIDs not supplied in qid_metadata ...")
+        metadata.update(fetch_qid_metadata(list(missing_qids), verbose=False))
 
     def _ensure_wd_class(qid: str, fallback_label: Optional[str] = None) -> URIRef:
         node = WD[qid]

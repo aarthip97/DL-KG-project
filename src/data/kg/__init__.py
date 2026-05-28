@@ -10,6 +10,7 @@ from .tempo_classes import (  # noqa: F401
     TEMPO_CLASSES,
     classify_tempo,
     add_tempo_class_column,
+    tempo_class_table,
 )
 from .variable_selection import (  # noqa: F401
     DEFAULT_KG_COLUMNS,
@@ -21,11 +22,9 @@ from .variable_selection import (  # noqa: F401
 )
 from .kg_builder import (  # noqa: F401
     MRC, MO, FOAF, EVENT, DCT,
-    EX, SCHEME,
+    EX,
     TRACK_NS, ARTIST_NS, USER_NS, GENRE_NS, INSTRUMENT_NS,
     DECADE_NS, TEMPO_NS, KEY_NS, MODE_NS, PERFORMANCE_NS,
-    INSTRUMENT_SCHEME_URI, GENRE_SCHEME_URI, DECADE_SCHEME_URI,
-    KEY_SCHEME_URI, TEMPO_SCHEME_URI, MODE_SCHEME_URI, ELEMENTS_SCHEME_URI,
     KGBuilder,
 )
 from .user_data import (  # noqa: F401
@@ -35,10 +34,9 @@ from .user_data import (  # noqa: F401
 from .wikidata_mapping import (  # noqa: F401
     WD, WDT,
     INSTRUMENT_ROOT, GENRE_ROOT,
-    INSTRUMENT_SCHEME, GENRE_SCHEME, DECADE_SCHEME,
     resolve_label, resolve_labels,
     fetch_direct_parents, build_parent_graph,
-    fetch_subclass_chain, fetch_subclass_chains,  # deprecated wrappers
+    fetch_subclass_chain, fetch_subclass_chains,
     fetch_qid_metadata,
     enrich_graph_with_wikidata,
     audit_wikidata_enrichment,

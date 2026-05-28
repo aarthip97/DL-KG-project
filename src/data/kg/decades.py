@@ -1,19 +1,16 @@
 """
 Decade modelling for the KG.
 
-We mint one ``mrc:Decade`` instance per distinct release decade observed
-in the dataset (e.g. 1960, 1970, ..., 2010). Each decade is also a SKOS
-concept inside ``mrc:scheme/Decades`` and forms a *sequence* via the
-Wikidata properties ``wdt:P155`` (follows) / ``wdt:P156`` (followed by),
-so SPARQL can walk forward/backward in time.
+We mint one ``mrc:Decade`` individual per distinct release decade observed
+in the dataset (e.g. 1960, 1970, ..., 2010).  Each decade forms a
+*sequence* via the Wikidata properties ``wdt:P155`` (follows) /
+``wdt:P156`` (followed by), so SPARQL can walk forward/backward in time.
 
 When Wikidata enrichment runs, every local decade also gets:
 
-* ``skos:exactMatch wd:Q...``     - canonical Wikidata decade entity
-* ``skos:prefLabel "<en-label>"@en`` and ``skos:definition`` from
-  Wikidata
-* ``skos:broader wd:Q<century>``  - the parent century (Wikidata P361
-  "part of")
+* ``owl:sameAs wd:Q...``          - canonical Wikidata decade entity
+* ``rdfs:label "<en-label>"@en``  - label from Wikidata
+* ``rdfs:subClassOf wd:Q<century>`` - parent century (Wikidata P361)
 * ``wdt:P31 wd:Q39825``           - "decade" type, lifted from Wikidata
 
 Track ↔ decade is asserted with ``mrc:inDecade``.
@@ -34,13 +31,12 @@ import requests
 from tqdm.auto import tqdm
 
 from rdflib import Literal, URIRef
-from rdflib.namespace import OWL, RDF, SKOS, XSD
+from rdflib.namespace import OWL, RDF, RDFS, XSD
 
-from .kg_builder import KGBuilder, MRC, DECADE_SCHEME_URI
+from .kg_builder import KGBuilder, MRC
 from .wikidata_mapping import (
     WD, WDT,
-    DECADE_SCHEME,
-    _attach_qid_metadata, _ensure_scheme, _session,
+    _attach_qid_metadata, _session,
     fetch_qid_metadata,
 )
 
@@ -226,16 +222,14 @@ def add_decades_to_graph(
     g       = builder.g
     counts  = {"decades": 0, "track_links": 0, "qid_concepts": 0}
     decade_qids  = decade_qids  or {}
-    qid_metadata = qid_metadata or {}
+    qid_metadata = dict(qid_metadata or {})  # local copy — never mutate caller's dict
 
-    # ── 1. ConceptScheme + class header ────────────────────────────────────
-    scheme = URIRef(DECADE_SCHEME_URI)
-    _ensure_scheme(g, scheme, "Decades")
-
+    # ── 1. Declare mrc:Decade as an OWL class ──────────────────────────────
     DECADE_CLS = MRC["Decade"]
     g.add((DECADE_CLS, RDF.type, OWL.Class))
+    g.add((DECADE_CLS, RDFS.label, Literal("Decade", lang="en")))
 
-    # ── 2. ensure each Wikidata QID node we will reference is a SKOS concept ─
+    # ── 2. Annotate referenced Wikidata QID nodes ──────────────────────────
     referenced_qids: set[str] = set()
     for entry in decade_qids.values():
         if not entry:
@@ -245,9 +239,21 @@ def add_decades_to_graph(
             if v:
                 referenced_qids.add(v)
 
+    # Auto-fetch metadata for any QIDs the caller did not supply.  This
+    # prevents century / neighbour-decade nodes from falling back to the
+    # bare QID string as their rdfs:label (e.g. "Q6927" instead of
+    # "20th century").  fetch_qid_metadata also fetches Portuguese labels
+    # by default so the KG gets @pt rdfs:label triples for free.
+    missing = referenced_qids - set(qid_metadata)
+    if missing:
+        if verbose:
+            print(f"[decades] auto-fetching metadata for {len(missing)} "
+                  f"QIDs not supplied in qid_metadata ...")
+        qid_metadata.update(fetch_qid_metadata(list(missing), verbose=False))
+
     for qid in referenced_qids:
         wd_node = WD[qid]
-        _attach_qid_metadata(g, wd_node, scheme, qid,
+        _attach_qid_metadata(g, wd_node, qid,
                              qid_metadata.get(qid, {}),
                              fallback_label=None)
         counts["qid_concepts"] += 1
@@ -259,10 +265,9 @@ def add_decades_to_graph(
     for start in starts_present:
         node = builder.decade_uri(start)
         decade_node[start] = node
-        g.add((node, RDF.type, DECADE_CLS))
-        g.add((node, RDF.type, SKOS.Concept))
-        g.add((node, SKOS.inScheme, scheme))
-        g.add((node, SKOS.prefLabel, Literal(decade_label(start), lang="en")))
+        g.add((node, RDF.type,      DECADE_CLS))
+        g.add((node, RDF.type,      OWL.NamedIndividual))
+        g.add((node, RDFS.label,    Literal(decade_label(start), lang="en")))
         # First-class temporal anchor
         g.add((node, MRC["startYear"],
                Literal(int(start), datatype=XSD.gYear)))
@@ -274,17 +279,16 @@ def add_decades_to_graph(
         entry = decade_qids.get(int(start))
         if entry and entry.get("qid"):
             wd_node = WD[entry["qid"]]
-            g.add((node, SKOS.exactMatch, wd_node))
-            # decade typed as "decade" via P31; the SPARQL allowed any
-            # subclass of Q39911, so write the canonical type explicitly.
+            g.add((node, OWL.sameAs, wd_node))
+            # decade typed as "decade" via P31
             g.add((wd_node, WDT["P31"], WD[WD_DECADE_TYPE]))
 
             # Parent century: wd:<decade> wdt:P361 wd:<century>;
-            # also surface the relation on the local node via skos:broader.
+            # surface on local node via rdfs:subClassOf.
             if entry.get("century_qid"):
                 century_node = WD[entry["century_qid"]]
                 g.add((wd_node, WDT["P361"], century_node))
-                g.add((node,    SKOS.broader, century_node))
+                g.add((node,    RDFS.subClassOf, century_node))
                 g.add((century_node, WDT["P31"], WD["Q578"]))  # century
 
             # Neighbour decades on Wikidata (mirrors the local sequence below).

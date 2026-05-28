@@ -876,8 +876,7 @@ class KGBuilder:
             "tempo_classes": count_instances(MRC["TempoClass"]),
             "decades":       count_instances(MRC["Decade"]),
             "users":         count_instances(MRC["User"]),          # populated by listening.py
-            "skos_concepts": count_instances(SKOS.Concept),
-            "skos_schemes":  count_instances(SKOS.ConceptScheme),
+            "named_individuals": count_instances(OWL.NamedIndividual),
         }
 
 
