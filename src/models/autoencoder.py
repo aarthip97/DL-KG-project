@@ -117,7 +117,12 @@ def train_autoencoder(
     """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model  = model.to(device)
-    X_t    = _to_tensor(X).to(device)
+    # Keep features on CPU — each mini-batch is transferred with non_blocking=True
+    # so the CPU→GPU copy overlaps with the previous batch's compute.
+    # For our dataset (~7K tracks × 900 features ≈ 25 MB) the difference is
+    # small, but this pattern avoids VRAM pressure when larger feature tables
+    # are passed (e.g. from a different dataset).
+    X_t    = _to_tensor(X)           # stays on CPU
 
     # -- W&B initialisation --------------------------------------------------
     # If the caller already started a run (e.g. in the notebook), reuse it
@@ -156,14 +161,23 @@ def train_autoencoder(
     if val_split > 0:
         n_val   = max(1, int(n_total * val_split))
         n_train = n_total - n_val
-        perm    = torch.randperm(n_total, device=device)
+        perm    = torch.randperm(n_total)         # CPU perm matches CPU tensor
         X_train = X_t[perm[:n_train]]
         X_val   = X_t[perm[n_train:]]
     else:
         X_train = X_t
         X_val   = None
 
-    train_loader = DataLoader(TensorDataset(X_train), batch_size=batch_size, shuffle=True, num_workers=0)
+    # pin_memory lets the CUDA DMA engine transfer each batch asynchronously,
+    # overlapping CPU→GPU copy with the previous batch's compute.
+    _pin = (device != "cpu")
+    train_loader = DataLoader(
+        TensorDataset(X_train),
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=0,
+        pin_memory=_pin,
+    )
     loss_fn = nn.MSELoss()
     opt     = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
@@ -176,6 +190,7 @@ def train_autoencoder(
         model.train()
         running = 0.0
         for (batch,) in train_loader:
+            batch = batch.to(device, non_blocking=_pin)
             opt.zero_grad()
             recon = model(batch)
             loss  = loss_fn(recon, batch)
@@ -188,8 +203,9 @@ def train_autoencoder(
         # -- validation -------------------------------------------------------
         if X_val is not None:
             model.eval()
-            with torch.no_grad():
-                val_loss = loss_fn(model(X_val), X_val).item()
+            with torch.inference_mode():
+                X_val_dev = X_val.to(device, non_blocking=_pin)
+                val_loss = loss_fn(model(X_val_dev), X_val_dev).item()
             history["val_loss"].append(val_loss)
         else:
             val_loss = None

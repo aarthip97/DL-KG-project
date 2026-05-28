@@ -75,7 +75,9 @@ def train_hgt(
     clip_grad_norm: float = 1.0,
     device: Optional[str] = None,
     use_amp: bool = True,
-    use_wandb: bool = False,
+    use_checkpoint: bool = False,
+    compile_model: bool = False,
+    use_wandb: bool = True,
     wandb_project: str = "music-recommender-hgt",
     wandb_config: Optional[dict] = None,
     seed: int = 42,
@@ -117,6 +119,14 @@ def train_hgt(
       lr_eta_min              -- minimum learning rate at the cosine trough.
       clip_grad_norm          -- maximum L2 norm for gradient clipping.
       device                  -- target device; defaults to cuda when available.
+      use_amp                 -- enable automatic mixed precision (default True on CUDA).
+                                 Halves activation VRAM; uses GradScaler for stable backward.
+      use_checkpoint          -- enable gradient checkpointing in HGTConv layers.
+                                 Trades ~20% extra compute for ~40-60% less activation VRAM.
+                                 Recommended when use_amp alone is still not enough.
+      compile_model           -- call torch.compile() on the model before training
+                                 (PyTorch >= 2.0 only; adds ~30s startup, then 20-40%
+                                 faster per epoch on T4/A100 via Triton JIT).
       use_wandb               -- enable Weights and Biases logging.
       wandb_project           -- W&B project name.
       wandb_config            -- extra key-value pairs merged into the W&B run config.
@@ -135,6 +145,12 @@ def train_hgt(
 
     _amp_enabled = use_amp and dev.startswith("cuda")
     scaler = torch.cuda.amp.GradScaler(enabled=_amp_enabled)
+
+    if dev.startswith("cuda"):
+        # cuDNN selects the fastest convolution algorithm for fixed input shapes.
+        # The full-graph forward always has the same shape, so this pays off after
+        # the first epoch with no correctness impact.
+        torch.backends.cudnn.benchmark = True
 
     # Edge splits for held-out evaluation
     if rev_edge_type not in data.edge_types:
@@ -178,11 +194,17 @@ def train_hgt(
         num_heads=num_heads,
         num_layers=num_layers,
         dropout=dropout,
+        use_checkpoint=use_checkpoint,
     ).to(dev)
 
     # Materialise lazy Linear(-1, h) weights with a dry forward pass
     with torch.no_grad():
         model(train_data.x_dict, train_data.edge_index_dict)
+
+    # torch.compile fuses kernel launches via Triton JIT — ~30 s startup cost,
+    # then 20-40 % faster per epoch.  Silently skipped on PyTorch < 2.0.
+    if compile_model and hasattr(torch, "compile"):
+        model = torch.compile(model)
 
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
@@ -274,7 +296,7 @@ def train_hgt(
 
         if ep % eval_every == 0 or ep == epochs:
             model.eval()
-            with torch.no_grad():
+            with torch.inference_mode():
                 out_eval = model(train_data.x_dict, train_data.edge_index_dict)
 
             val_eli = val_data[edge_type].edge_label_index
@@ -310,7 +332,7 @@ def train_hgt(
         model.load_state_dict(best_state)
 
     model.eval()
-    with torch.no_grad():
+    with torch.inference_mode():
         out_test = model(test_data.x_dict, test_data.edge_index_dict)
 
     test_eli = test_data[edge_type].edge_label_index

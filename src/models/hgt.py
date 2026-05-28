@@ -31,6 +31,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 from torch_geometric.data import HeteroData
 from torch_geometric.nn import HGTConv, Linear
 
@@ -55,6 +56,13 @@ class RecommenderHGT(nn.Module):
         more layers may over-smooth unless dropout is increased accordingly.
     dropout : float
         Dropout probability applied between layers and inside the head MLP.
+    use_checkpoint : bool
+        When ``True``, each HGTConv layer uses
+        ``torch.utils.checkpoint`` to recompute activations during the
+        backward pass instead of storing them.  Cuts activation VRAM
+        by ~40–60 % at the cost of ~20 % more compute per epoch.  Safe
+        to enable on any GPU but most beneficial on T4 / V100 where
+        activation memory is the binding constraint.
     """
 
     def __init__(
@@ -65,11 +73,13 @@ class RecommenderHGT(nn.Module):
         num_heads: int = 4,
         num_layers: int = 3,
         dropout: float = 0.1,
+        use_checkpoint: bool = False,
     ) -> None:
         super().__init__()
         self.hidden_channels = hidden_channels
         self.out_channels = out_channels
         self.num_layers = num_layers
+        self.use_checkpoint = use_checkpoint
 
         node_types: list[str] = list(metadata[0])
 
@@ -136,7 +146,12 @@ class RecommenderHGT(nn.Module):
         # Multi-hop message passing: norm → activation → dropout → residual
         for i, conv in enumerate(self.convs):
             skip = {nt: h for nt, h in out.items()}          # keep reference
-            out = conv(out, edge_index_dict)
+            # use_reentrant=False lets checkpoint handle dict inputs without
+            # requiring every argument to be a Tensor (PyTorch >= 1.13).
+            if self.use_checkpoint:
+                out = checkpoint(conv, out, edge_index_dict, use_reentrant=False)
+            else:
+                out = conv(out, edge_index_dict)
             layer_norms: nn.ModuleDict = self.norms[i]  # type: ignore[assignment]
             for nt in out:
                 out[nt] = layer_norms[nt](out[nt])
