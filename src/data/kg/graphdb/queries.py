@@ -296,16 +296,15 @@ LIMIT 50
 
 
 # ── Equivalence pairs (used to merge nodes before PyKEEN export) ──────
-# Fetches all owl:sameAs and skos:exactMatch pairs so the exporter can
-# build a canonical-URI map via union-find before writing triples.tsv.
-# Run with infer=False — we want only the explicit assertions; the reasoner
-# would derive the full transitive closure anyway, but we do it ourselves
-# so the canonical choice is deterministic.
+# Fetches owl:sameAs (instance-level) and owl:equivalentClass (class-level)
+# pairs so the exporter can build a canonical-URI map via union-find.
+# Run with infer=False — we want only the explicit assertions; we do the
+# transitive closure ourselves so the canonical choice is deterministic.
 QUERY_EQUIV_PAIRS = _q("""
 SELECT ?a ?b WHERE {
-    { ?a owl:sameAs     ?b }
+    { ?a owl:sameAs ?b }
     UNION
-    { ?a skos:exactMatch ?b }
+    { ?a owl:equivalentClass ?b }
     FILTER(isIRI(?a) && isIRI(?b) && ?a != ?b)
 }
 """)
@@ -313,10 +312,9 @@ SELECT ?a ?b WHERE {
 
 # ── Triple export for PyKEEN ───────────────────────────────────────────
 # Run with infer=True so RDFS+ class memberships are included.
-# owl:sameAs / skos:exactMatch nodes are MERGED (not just dropped) by
-# the exporter's union-find canonicalisation step; these predicates are
-# excluded here only to avoid writing redundant self-loop triples after
-# the merge.
+# owl:sameAs nodes are MERGED (not just dropped) by the exporter's
+# union-find canonicalisation step; the predicate is excluded here only
+# to avoid writing redundant self-loop triples after the merge.
 # Other filters applied:
 #   • reflexive edges     — no self-loops (also catches post-merge ones)
 #   • non-IRI nodes       — no blank nodes from OWL restriction machinery
@@ -328,7 +326,7 @@ WHERE {
     FILTER(?h != ?t)
     FILTER(isIRI(?h) && isIRI(?r) && isIRI(?t))
     FILTER(?r NOT IN (
-        owl:sameAs, skos:exactMatch,
+        owl:sameAs,
         owl:onProperty, owl:someValuesFrom, owl:allValuesFrom,
         owl:hasValue, owl:onClass, owl:onDataRange,
         owl:complementOf, owl:intersectionOf, owl:unionOf,
@@ -347,8 +345,7 @@ _OWL_META_TYPES = """(
     owl:TransitiveProperty, owl:SymmetricProperty, owl:FunctionalProperty,
     owl:InverseFunctionalProperty, owl:Restriction,
     rdfs:Datatype, rdfs:Class, rdf:Property,
-    foaf:Agent,
-    skos:ConceptScheme
+    foaf:Agent
 )"""
 
 QUERY_ALL_ENTITIES = _q(f"""

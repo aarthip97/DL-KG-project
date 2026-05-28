@@ -223,18 +223,22 @@ def extract_dl_artifacts(
         tsv_fh.write(line)
         tsv_count += 1
 
-    print("1. Building canonical-URI map (owl:sameAs + skos:exactMatch)...")
+    print("1. Building canonical-URI map (owl:sameAs + owl:equivalentClass)...")
     # Collect equivalence pairs in BOTH directions, then collapse via
     # path-compressed union-find with deterministic canonical preference
     # (mrc:resource > mrc: > wd: > mo: > foaf: > lex-min).  Shared with the
     # GraphDB exporter so the two paths agree on canonical URIs.
-    _EXACT_MATCH = rdflib.URIRef("http://www.w3.org/2004/02/skos/core#exactMatch")
+    # owl:equivalentClass covers class-level anchors (e.g. mrc:Genre ↔ wd:Q188451);
+    # owl:sameAs covers instance-level links (e.g. genre:rock ↔ wd:Q11399).
+    # After merging, both predicate types produce self-loops that _allow_in_tsv
+    # drops — no need to explicitly block them from the TSV.
     _SAME_AS     = rdflib.URIRef("http://www.w3.org/2002/07/owl#sameAs")
+    _EQUIV_CLASS = rdflib.URIRef("http://www.w3.org/2002/07/owl#equivalentClass")
 
     def _iter_equiv_pairs():
-        for s, _, o in g.triples((None, _EXACT_MATCH, None)):
-            yield str(s), str(o)
         for s, _, o in g.triples((None, _SAME_AS, None)):
+            yield str(s), str(o)
+        for s, _, o in g.triples((None, _EQUIV_CLASS, None)):
             yield str(s), str(o)
 
     canon_map = build_canonical_map(_iter_equiv_pairs())
@@ -302,23 +306,21 @@ def extract_dl_artifacts(
     PRED_HAS_TEMPO_CLASS        = MRC_BASE + "hasTempoClass"        # perf → tempo class
     PRED_INSTRUMENT             = MO_BASE  + "instrument"           # perf → instrument
     PRED_IN_DECADE              = MRC_BASE + "inDecade"             # track → decade
-    PRED_SKOS_BROADER           = "http://www.w3.org/2004/02/skos/core#broader"
+    PRED_SUBCLASS_OF            = "http://www.w3.org/2000/01/rdf-schema#subClassOf"
 
     # ── OWL / RDF machinery predicates excluded from KGE TSV ─────────────────
-    # These describe class restrictions and equivalence axioms, not real
-    # binary facts about instances.  Including them would inflate the TSV
-    # with self-loops and constructs PyKEEN cannot learn meaningfully.
+    # Only structural axiom *parts* that PyKEEN would treat as meaningless
+    # relation URIs are excluded.  owl:sameAs and owl:equivalentClass are
+    # handled by canonicalisation above — after merging they become self-loops
+    # which _allow_in_tsv already drops.  owl:disjointWith and rdfs:subClassOf
+    # are genuine binary facts that benefit KGE training.
     _OWL_MACHINERY_PREDS = frozenset({
         "http://www.w3.org/2002/07/owl#onProperty",
         "http://www.w3.org/2002/07/owl#someValuesFrom",
         "http://www.w3.org/2002/07/owl#allValuesFrom",
         "http://www.w3.org/2002/07/owl#hasValue",
-        "http://www.w3.org/2002/07/owl#equivalentClass",
-        "http://www.w3.org/2002/07/owl#sameAs",
-        "http://www.w3.org/2002/07/owl#disjointWith",
         "http://www.w3.org/1999/02/22-rdf-syntax-ns#first",
         "http://www.w3.org/1999/02/22-rdf-syntax-ns#rest",
-        "http://www.w3.org/2004/02/skos/core#exactMatch",
     })
 
     # Listening-related predicates -- gated by kge_scope
@@ -432,8 +434,9 @@ def extract_dl_artifacts(
         s_str = str(s)
         o_str = str(o) if not isinstance(o, Literal) else None
 
-        if "exactMatch" in p_str or "sameAs" in p_str:
-            continue
+        # owl:sameAs / owl:equivalentClass triples resolve to self-loops after
+        # canonicalisation; _allow_in_tsv drops them via the head == tail check.
+        # No explicit skip needed here.
 
         s_res = resolve(s)
         o_res = resolve(o) if o_str else str(o)
@@ -469,8 +472,8 @@ def extract_dl_artifacts(
         elif p_str == PRED_HAS_GENRE_ASSOC and o_str:
             artist_genre_assoc[s_res].append(o_str)
 
-        # 4. SKOS broader (genre/instrument hierarchies)
-        elif p_str == PRED_SKOS_BROADER and o_str:
+        # 4. rdfs:subClassOf (genre/instrument hierarchies)
+        elif p_str == PRED_SUBCLASS_OF and o_str:
             # Identify the child node by its resource namespace prefix —
             # cleaner and safer than substring matching on labels.
             if _is_genre(s_res):
@@ -483,7 +486,7 @@ def extract_dl_artifacts(
                 parent_idx = get_or_create_idx("instrument", o_res)
                 edge_dict["instrument_parent"][0].append(child_idx)
                 edge_dict["instrument_parent"][1].append(parent_idx)
-            # else: skos:broader on schemes / WD upper concepts — skip
+            # else: rdfs:subClassOf on OWL upper classes / WD anchors — skip
 
         # 5. Track key/mode (simple graph variant — attached directly to track)
         elif p_str == PRED_HAS_KEY and not _is_performance(s_str) and o_str:
@@ -652,8 +655,8 @@ def build_rich_hetero_graph(
     audio_dim = 128
 
     # Canonical map: alias URI -> canonical URI.  Built by extract_dl_artifacts
-    # so embedding look-ups can transparently resolve owl:sameAs /
-    # skos:exactMatch aliases (PyKEEN only trained on canonical URIs).
+    # so embedding look-ups can transparently resolve owl:sameAs aliases
+    # (PyKEEN only trained on canonical URIs).
     canon_map: dict = edge_dict.get("canonical_map", {})
 
     def _kge_lookup(uri: str) -> np.ndarray:

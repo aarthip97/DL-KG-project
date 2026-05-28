@@ -57,8 +57,9 @@ def export_pykeen_tsv(client: GraphDBClient, out_path: Path) -> Path:
 
     Steps
     -----
-    1. Fetch all ``owl:sameAs`` / ``skos:exactMatch`` pairs and build a
-       union-find canonical map (e.g. Wikidata genre URI → mrc: genre URI).
+    1. Fetch all ``owl:sameAs`` (instance) and ``owl:equivalentClass`` (class)
+       pairs and build a union-find canonical map
+       (e.g. Wikidata genre URI → mrc: genre URI).
     2. Stream triples from GraphDB (``infer=True`` for RDFS+ memberships).
     3. Replace every h/r/t URI with its canonical form.
     4. Drop self-loops that arose from the merge (``h == t``).
@@ -71,7 +72,7 @@ def export_pykeen_tsv(client: GraphDBClient, out_path: Path) -> Path:
     log.info("Exporting PyKEEN triples → %s", out_path)
 
     # ── Step 1: build canonical map ───────────────────────────────────
-    log.info("Fetching equivalence pairs (owl:sameAs + skos:exactMatch) …")
+    log.info("Fetching equivalence pairs (owl:sameAs + owl:equivalentClass) …")
     equiv_df = client.select_df(queries.QUERY_EQUIV_PAIRS, infer=False)
     canon_map: Dict[str, str] = _build_canonical_map(equiv_df)
     n_components = len(set(canon_map.values()))
