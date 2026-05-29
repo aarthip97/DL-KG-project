@@ -248,8 +248,12 @@ def train_kge(
     )
 
     _t0 = time.perf_counter()
+    # testing=tf reuses all triples so every entity is trained on; evaluation
+    # metrics are inflated but are not used downstream (loss curve is the only
+    # signal of record for KGE here).
     pykeen_result = pipeline(
         training=tf,
+        testing=tf,
         model=model,
         model_kwargs={"embedding_dim": entity_dim},
         training_kwargs={
