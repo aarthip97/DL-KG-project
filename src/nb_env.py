@@ -237,6 +237,15 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
     AE_EMBEDDINGS_PQ = FINAL / "ae_embeddings.parquet"
     XGB_RESULTS_CSV  = FINAL / "xgb_hybrid_results.csv"
     XGB_MODEL_CACHE  = FINAL / "xgb_hybrid.ubj"
+    # Training/validation loss histories — CSV + PNG duplicates of the W&B curves,
+    # persisted to Drive (data/final is symlinked) so they survive without W&B and
+    # are trivially extractable (pandas/Excel), no unpickling required.
+    AE_HISTORY_CSV   = FINAL / "ae_loss_history.csv"
+    AE_LOSS_PNG      = FINAL / "ae_loss_curve.png"
+    HGT_HISTORY_CSV  = FINAL / "hgt_loss_history.csv"
+    HGT_CURVES_PNG   = FINAL / "hgt_training_curves.png"
+    KGE_HISTORY_CSV  = FINAL / "kge_loss_history.csv"
+    KGE_LOSS_PNG     = FINAL / "kge_loss_curve.png"
 
     # Model weight directories (lives in ROOT/models/ — gitignored)
     MODELS_DIR      = ROOT / "models"
@@ -348,6 +357,9 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
         "KNN_POP_CSV": KNN_POP_CSV, "KNN_POP_JSON": KNN_POP_JSON,
         "HGT_RESULT_PATH": HGT_RESULT_PATH, "AE_EMBEDDINGS_PQ": AE_EMBEDDINGS_PQ,
         "XGB_RESULTS_CSV": XGB_RESULTS_CSV, "XGB_MODEL_CACHE": XGB_MODEL_CACHE,
+        "AE_HISTORY_CSV": AE_HISTORY_CSV, "AE_LOSS_PNG": AE_LOSS_PNG,
+        "HGT_HISTORY_CSV": HGT_HISTORY_CSV, "HGT_CURVES_PNG": HGT_CURVES_PNG,
+        "KGE_HISTORY_CSV": KGE_HISTORY_CSV, "KGE_LOSS_PNG": KGE_LOSS_PNG,
         "MODELS_DIR": MODELS_DIR, "AE_WEIGHTS_DIR": AE_WEIGHTS_DIR,
         "HGT_WEIGHTS_DIR": HGT_WEIGHTS_DIR, "KNN_CACHE_DIR": KNN_CACHE_DIR,
         "KNN_NBRS_CACHE": KNN_NBRS_CACHE,

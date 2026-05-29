@@ -154,6 +154,7 @@ def train_kge(
     device: str | None = None,
     seed: int = 42,
     checkpoint_path: str | pathlib.Path | None = None,
+    history_csv_path: str | pathlib.Path | None = None,
     wandb_project: str | None = None,
     wandb_run_name: str | None = None,
 ) -> KGEResult:
@@ -186,6 +187,11 @@ def train_kge(
     checkpoint_path
         If given, the embedding dict is persisted here as a .pt file and
         can be reloaded with load_kge_checkpoint() to skip retraining.
+    history_csv_path
+        If given, the per-epoch training loss is written to this CSV
+        (columns: epoch, train_loss) plus a "<stem>_meta.json" sidecar with
+        the run hyperparameters and final/best loss. This is the on-disk
+        duplicate of the W&B loss curve and needs no unpickling to read.
     wandb_project
         Weights and Biases project name.  If None (default) or if wandb is
         not installed, no W&B logging is performed.
@@ -210,27 +216,30 @@ def train_kge(
         tf.num_triples, tf.num_entities, tf.num_relations,
     )
 
-    # -- W&B initialisation --------------------------------------------------
+    # -- Run config (shared by W&B and the on-disk metadata sidecar) ---------
+    _cfg = {
+        "model":       model,
+        "entity_dim":  entity_dim,
+        "epochs":      epochs,
+        "batch_size":  batch_size,
+        "lr":          lr,
+        "device":      resolved_device,
+        "seed":        seed,
+        "n_triples":   tf.num_triples,
+        "n_entities":  tf.num_entities,
+        "n_relations": tf.num_relations,
+    }
+
+    # -- W&B initialisation (optional; never fatal) --------------------------
     _run = None
     if _WANDB and wandb_project is not None:
         run_name = wandb_run_name or f"{model}_dim{entity_dim}_ep{epochs}"
-        _run = _wandb.init(
-            project=wandb_project,
-            name=run_name,
-            config={
-                "model":       model,
-                "entity_dim":  entity_dim,
-                "epochs":      epochs,
-                "batch_size":  batch_size,
-                "lr":          lr,
-                "device":      resolved_device,
-                "seed":        seed,
-                "n_triples":   tf.num_triples,
-                "n_entities":  tf.num_entities,
-                "n_relations": tf.num_relations,
-            },
-        )
-        logger.info("W&B run initialised: %s / %s", wandb_project, run_name)
+        try:
+            _run = _wandb.init(project=wandb_project, name=run_name, config=_cfg)
+            logger.info("W&B run initialised: %s / %s", wandb_project, run_name)
+        except Exception as exc:  # noqa: BLE001
+            _run = None
+            logger.warning("W&B init failed (%s); continuing without W&B.", exc)
 
     logger.info(
         "Starting PyKEEN pipeline: model=%s  entity_dim=%d  epochs=%d  device=%s",
@@ -274,6 +283,10 @@ def train_kge(
 
     if checkpoint_path is not None:
         _save_checkpoint(embeddings, tf, checkpoint_path)
+
+    if history_csv_path is not None:
+        _save_history(pykeen_result, history_csv_path,
+                      config={**_cfg, "out_dim": out_dim})
 
     return KGEResult(
         embeddings=embeddings,
@@ -320,6 +333,47 @@ def _save_checkpoint(
 
     torch.save({"uris": uris, "vecs": vecs}, cp_path)
     logger.info("Checkpoint saved to %s", cp_path)
+
+
+def _save_history(
+    pipeline_result,
+    path: str | pathlib.Path,
+    *,
+    config: dict | None = None,
+) -> None:
+    """Persist the per-epoch training loss to CSV + a metadata JSON sidecar.
+
+    Writes two files:
+        <path>            -- CSV with columns epoch, train_loss
+        <path stem>_meta.json -- run hyperparameters + final/best train loss
+
+    PyKEEN exposes the per-epoch mean loss as pipeline_result.losses (a list of
+    floats); KGE here is trained without a held-out split, so there is no test
+    metric to store -- the loss curve is the training signal of record.
+    """
+    import csv
+    import json
+
+    p = pathlib.Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+    losses = list(getattr(pipeline_result, "losses", []) or [])
+    with open(p, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["epoch", "train_loss"])
+        for ep, loss_val in enumerate(losses, start=1):
+            writer.writerow([ep, float(loss_val)])
+
+    meta = dict(config or {})
+    if losses:
+        meta["final_train_loss"] = float(losses[-1])
+        meta["best_train_loss"]  = float(min(losses))
+        meta["n_epochs_recorded"] = len(losses)
+    meta_path = p.with_name(p.stem + "_meta.json")
+    with open(meta_path, "w") as f:
+        json.dump(meta, f, indent=2)
+
+    logger.info("KGE history saved to %s (+ %s)", p, meta_path.name)
 
 
 __all__ = (
