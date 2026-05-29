@@ -7,6 +7,7 @@ feature table.
 """
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 import numpy as np
@@ -185,6 +186,7 @@ def train_autoencoder(
     if X_val is not None:
         history["val_loss"] = []
 
+    t_start = time.time()
     for ep in range(1, epochs + 1):
         # -- train ------------------------------------------------------------
         model.train()
@@ -233,6 +235,8 @@ def train_autoencoder(
         if _owns_run:
             _wandb.finish()
 
+    t_elapsed = time.time() - t_start
+    history["training_time_seconds"] = t_elapsed
     return model, history
 
 

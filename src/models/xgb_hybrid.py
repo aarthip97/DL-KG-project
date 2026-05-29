@@ -17,6 +17,7 @@ if your machine has more RAM.
 from __future__ import annotations
 
 import gc
+import time
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
@@ -289,8 +290,10 @@ def run_xgb_hybrid(
     del X_train, y_train, qid_train
     gc.collect()
 
+    t_start = time.time()
     model = xgb.train(params, dtrain, num_boost_round=num_boost_round,
                       verbose_eval=False)
+    t_xgb_elapsed = time.time() - t_start
     del dtrain
     gc.collect()
 
@@ -349,6 +352,7 @@ def run_xgb_hybrid(
         ks=list(ks),
         model_name="XGBoost-Hybrid",
     )
+    results_df["training_time_seconds"] = t_xgb_elapsed
 
     # ── Persist ───────────────────────────────────────────────────────────────
     if results_csv is not None:

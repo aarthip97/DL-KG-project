@@ -22,6 +22,7 @@ Extras: cosine LR warm restarts, gradient clipping, optional W&B logging.
 from __future__ import annotations
 
 import copy
+import time
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
@@ -46,6 +47,7 @@ class TrainResult:
     history: list[dict] = field(default_factory=list)
     best_val: dict = field(default_factory=dict)
     test_metrics: dict = field(default_factory=dict)
+    timing_seconds: float = 0.0
 
 def train_hgt(
     data: HeteroData,
@@ -248,6 +250,7 @@ def train_hgt(
     k_list = sorted(set(int(k) for k in k_list))
     primary_k = k_list[0]
 
+    t_start = time.time()
     for ep in range(1, epochs + 1):
         model.train()
         opt.zero_grad(set_to_none=True)
@@ -368,11 +371,13 @@ def train_hgt(
         wandb.summary.update({f"test/{k}": v for k, v in test_metrics.items()})
         wandb.finish()
 
+    t_elapsed = time.time() - t_start
     return TrainResult(
         model=model,
         history=history,
         best_val=best_val,
         test_metrics=test_metrics,
+        timing_seconds=t_elapsed,
     )
 
 

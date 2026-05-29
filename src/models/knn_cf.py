@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+import time
 
 import numpy as np
 import pandas as pd
@@ -365,6 +366,7 @@ def run_knn_sweep(
     dtype_name = "float16" if matrix_dtype == torch.float16 else "float32"
     print(f"[KNN] building neighbours on {_device} (matrix dtype={dtype_name})")
 
+    t_start = time.time()
     print(f"[KNN] loading matrix to {_device} (dense {dtype_name}) …")
     train_t, _device = _matrix_to_tensor(train_matrix_norm, _device, dtype=matrix_dtype)
     print(f"[KNN] train tensor: {tuple(train_t.shape)}  "
@@ -439,6 +441,7 @@ def run_knn_sweep(
 
     # ── Persist ──────────────────────────────────────────────────────────────
     val_results_df.to_csv(val_csv)
+    t_elapsed = time.time() - t_start
     pd.DataFrame([{
         "best_k": best_k,
         **test_metrics,
@@ -447,6 +450,7 @@ def run_knn_sweep(
         "train_interactions": len(train_df),
         "val_interactions":   len(val_df),
         "test_interactions":  len(test_df),
+        "computation_time_seconds": t_elapsed,
     }]).to_csv(test_csv, index=False)
     torch.save({"nbrs_tensor": nbrs_t,
                 "all_query":   torch.tensor(all_query, dtype=torch.long)},

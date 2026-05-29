@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
+import time
 from dataclasses import dataclass
 from typing import Literal
 
@@ -246,6 +247,7 @@ def train_kge(
         model, entity_dim, epochs, resolved_device,
     )
 
+    t_start = time.time()
     pykeen_result = pipeline(
         training=tf,
         model=model,
@@ -260,6 +262,7 @@ def train_kge(
         random_seed=seed,
         device=resolved_device,
     )
+    t_elapsed = time.time() - t_start
 
     # -- W&B: log per-epoch losses -------------------------------------------
     # pykeen_result.losses is a list of per-epoch mean loss floats
@@ -286,7 +289,7 @@ def train_kge(
 
     if history_csv_path is not None:
         _save_history(pykeen_result, history_csv_path,
-                      config={**_cfg, "out_dim": out_dim})
+                      config={**_cfg, "out_dim": out_dim, "training_time_seconds": t_elapsed})
 
     return KGEResult(
         embeddings=embeddings,
