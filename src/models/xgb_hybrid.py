@@ -30,6 +30,14 @@ from models.evaluation import multi_k_evaluation
 from models.evaluation.metrics import recs_from_embeddings
 
 
+def _xgb_device() -> str:
+    try:
+        import torch
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except ImportError:
+        return "cpu"
+
+
 _XGB_DEFAULTS: dict = {
     "objective":          "rank:ndcg",
     "eval_metric":        "ndcg@10",
@@ -39,7 +47,8 @@ _XGB_DEFAULTS: dict = {
     # (ndcg_exp_gain=False) uses the label value directly, so it accepts our
     # continuous play-count relevance instead of rejecting it.
     "ndcg_exp_gain":      False,
-    "tree_method":        "hist",
+    "tree_method":        "hist",   # works for both CPU and GPU (device= controls which)
+    "device":             _xgb_device(),   # "cuda" on T4/GPU, "cpu" otherwise
     "learning_rate":      0.1,
     "max_depth":          6,
     "subsample":          0.8,
@@ -65,10 +74,11 @@ def _load_ae_matrix(
     ae_cols = [c for c in ae_df.columns if c.startswith("ae_")]
     emb_dim = len(ae_cols)
     ae_matrix = np.zeros((n_songs, emb_dim), dtype=np.float32)
-    for _, row in ae_df.iterrows():
-        sidx = song_id_to_sidx.get(str(row["song_id"]))
-        if sidx is not None and 0 <= int(sidx) < n_songs:
-            ae_matrix[int(sidx)] = row[ae_cols].to_numpy(dtype=np.float32)
+    # Vectorised: map all song_ids at once, then batch-assign valid rows.
+    sidx_series = ae_df["song_id"].astype(str).map(song_id_to_sidx)
+    valid = sidx_series.notna() & sidx_series.between(0, n_songs - 1)
+    dest_idx = sidx_series[valid].astype(int).to_numpy()
+    ae_matrix[dest_idx] = ae_df.loc[valid, ae_cols].to_numpy(dtype=np.float32)
     return ae_matrix, emb_dim
 
 
@@ -153,7 +163,15 @@ def build_track_categorical_features(
     """
     from collections import Counter
 
-    meta = track_meta.copy()
+    # Only pull the columns we actually need — avoids copying the full 900-col merged df.
+    _need = ["song_id"]
+    for c in list(onehot_cols) + list(target_encode_cols):
+        if c in track_meta.columns:
+            _need.append(c)
+    if multihot_col and multihot_col in track_meta.columns:
+        _need.append(multihot_col)
+    meta = track_meta[_need].copy()
+
     meta["s_idx"] = meta["song_id"].map(song_id_to_sidx)
     meta = meta.dropna(subset=["s_idx"])
     meta["s_idx"] = meta["s_idx"].astype(int)
@@ -224,13 +242,20 @@ def build_track_categorical_features(
         for lst in meta[multihot_col].dropna():
             if isinstance(lst, (list, np.ndarray)):
                 counter.update(str(v) for v in lst)
-        for inst, _ in counter.most_common(top_instruments):
-            arr = np.zeros(n_songs, dtype=np.float32)
-            for sidx, lst in meta[multihot_col].items():
-                if isinstance(lst, (list, np.ndarray)) and inst in {str(v) for v in lst}:
-                    arr[sidx] = 1.0
+        top_insts = [inst for inst, _ in counter.most_common(top_instruments)]
+        inst_col  = {inst: j for j, inst in enumerate(top_insts)}
+        # Single pass over tracks: O(n_songs × avg_instruments_per_track)
+        # vs the old O(n_songs × top_instruments) nested loop.
+        multihot = np.zeros((n_songs, len(top_insts)), dtype=np.float32)
+        for sidx, lst in meta[multihot_col].items():
+            if isinstance(lst, (list, np.ndarray)):
+                for v in lst:
+                    j = inst_col.get(str(v))
+                    if j is not None:
+                        multihot[sidx, j] = 1.0
+        for j, inst in enumerate(top_insts):
             names.append(f"instr={inst}")
-            feats.append(arr)
+            feats.append(multihot[:, j])
 
     if not feats:
         return np.zeros((n_songs, 0), dtype=np.float32), []
