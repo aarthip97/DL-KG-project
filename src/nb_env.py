@@ -8,7 +8,7 @@ Usage (notebook cell 4):
     globals().update(setup(ROOT, ON_COLAB))
 
 `setup()` returns a plain dict whose keys become notebook globals:
-    ROOT, ON_COLAB, DEVICE, SEED, USE_GRAPHDB
+    ROOT, ON_COLAB, DEVICE, SEED, USE_GRAPHDB, CAPACITY
     _DATA, RAW, INTERIM, PROCESSED, FINAL, ONTOLOGY
     LAKH_PQ, PER_SONG_CSV, PER_USER_CSV, TASTE_PQ
     ONTO_BASE, ONTO_OUT, ONTO_OUT_SIMPLE, LISTENING_NT, LISTENING_NT_SIM
@@ -303,6 +303,18 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
 
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+    # ── Hardware-aware capacity ───────────────────────────────────────────────
+    # Detect VRAM / RAM and recommend batch sizes + workload counts so the same
+    # notebook scales from a Colab T4 up to a large GPU server automatically.
+    # Exposed as the CAPACITY global; training cells read it with the small-tier
+    # values as a safe baseline and may always override.
+    try:
+        from utils.resources import recommend_capacity  # noqa: PLC0415
+        CAPACITY = recommend_capacity(verbose=True)
+    except Exception as _cap_err:  # noqa: BLE001
+        print(f"  [INFO] capacity auto-sizing unavailable ({_cap_err}); using defaults.")
+        CAPACITY = {}
+
     # ── GraphDB flag ──────────────────────────────────────────────────────────
     USE_GRAPHDB: bool = (not ON_COLAB) and bool(os.environ.get("GRAPHDB_URL"))
 
@@ -335,7 +347,7 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
     # Return every name that downstream cells need as a global
     return {
         "ROOT": ROOT, "ON_COLAB": ON_COLAB, "SEED": SEED, "DEVICE": DEVICE,
-        "USE_GRAPHDB": USE_GRAPHDB,
+        "USE_GRAPHDB": USE_GRAPHDB, "CAPACITY": CAPACITY,
         "WANDB_PROJECT": WANDB_PROJECT, "WANDB_ENTITY": WANDB_ENTITY,
         "WANDB_GROUP": WANDB_GROUP,
         "_DATA": _DATA, "RAW": RAW, "INTERIM": INTERIM, "PROCESSED": PROCESSED,
