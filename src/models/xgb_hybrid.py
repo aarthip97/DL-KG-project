@@ -33,6 +33,12 @@ from models.evaluation.metrics import recs_from_embeddings
 _XGB_DEFAULTS: dict = {
     "objective":          "rank:ndcg",
     "eval_metric":        "ndcg@10",
+    # Our relevance label is log1p(play_count) -- a *continuous* graded signal.
+    # rank:ndcg defaults to exponential gain (2^rel - 1), which newer XGBoost
+    # only allows for non-negative *integer* relevance grades. Linear gain
+    # (ndcg_exp_gain=False) uses the label value directly, so it accepts our
+    # continuous play-count relevance instead of rejecting it.
+    "ndcg_exp_gain":      False,
     "tree_method":        "hist",
     "learning_rate":      0.1,
     "max_depth":          6,
@@ -108,20 +114,148 @@ def _candidates_ae(
     )
 
 
+def build_track_categorical_features(
+    track_meta: pd.DataFrame,
+    train_df: pd.DataFrame,
+    song_id_to_sidx: Mapping[str, int],
+    n_songs: int,
+    *,
+    onehot_cols: Sequence[str] = ("key", "mode", "tempo_class"),
+    target_encode_cols: Sequence[str] = ("primary_genre", "artist_id"),
+    multihot_col: Optional[str] = "midi_instrument_names",
+    top_instruments: int = 20,
+    smoothing: float = 20.0,
+    te_folds: int = 5,
+    te_seed: int = 42,
+    target_col: str = "play_count",
+) -> Tuple[np.ndarray, List[str]]:
+    """Build a per-track ``(n_songs, F)`` categorical/content feature matrix.
+
+    Encoding strategy by cardinality / shape:
+
+    * ``onehot_cols`` (low cardinality, e.g. key/mode/tempo_class) -> one-hot.
+    * ``target_encode_cols`` (high cardinality, e.g. genre/artist) -> *out-of-fold
+      smoothed mean-target encoding* fit on ``train_df`` interactions only. Each
+      category is encoded by its mean ``log1p(play_count)`` -- the graded-relevance
+      analogue of Weight of Evidence (WoE needs a binary target; ours is
+      continuous). To avoid a track's own interactions leaking into its own
+      feature, tracks are partitioned into ``te_folds`` folds and each track's
+      category statistic is computed only from tracks in the *other* folds,
+      smoothed toward the global mean. This removes self-leakage while keeping a
+      single static per-track matrix; fitting on the training split only keeps
+      the held-out val/test interactions out of the features entirely.
+    * ``multihot_col`` (a list-valued column, e.g. MIDI instruments) -> multi-hot
+      over the ``top_instruments`` most frequent values.
+
+    Rows are indexed by ``s_idx``; tracks absent from ``track_meta`` keep zeros
+    (target-encoded columns default to the global mean). Returns
+    ``(matrix float32, feature_names)``.
+    """
+    from collections import Counter
+
+    meta = track_meta.copy()
+    meta["s_idx"] = meta["song_id"].map(song_id_to_sidx)
+    meta = meta.dropna(subset=["s_idx"])
+    meta["s_idx"] = meta["s_idx"].astype(int)
+    meta = meta[(meta["s_idx"] >= 0) & (meta["s_idx"] < n_songs)]
+    meta = meta.drop_duplicates("s_idx").set_index("s_idx")
+    _rows = meta.index.to_numpy()
+
+    feats: List[np.ndarray] = []
+    names: List[str] = []
+
+    # ── one-hot low-cardinality columns ──────────────────────────────────────
+    for col in onehot_cols:
+        if col not in meta.columns:
+            continue
+        col_vals = meta[col].astype("string")
+        for c in sorted(col_vals.dropna().unique()):
+            arr = np.zeros(n_songs, dtype=np.float32)
+            arr[_rows] = (col_vals == c).to_numpy(dtype=np.float32)
+            names.append(f"{col}={c}")
+            feats.append(arr)
+
+    # ── out-of-fold smoothed mean-target encoding (no self-leakage) ──────────
+    # Fit on train interactions only. Tracks are split into ``te_folds`` folds;
+    # each track's category statistic is computed from tracks in the *other*
+    # folds, so a track's own play counts never inform its own feature.
+    tr = train_df[["s_idx", target_col]].copy()
+    tr["_y"] = np.log1p(tr[target_col].astype(float))
+    global_mean = float(tr["_y"].mean()) if len(tr) else 0.0
+
+    if any(c in meta.columns for c in target_encode_cols):
+        _te_rng = np.random.default_rng(te_seed)
+        _tg = tr.groupby("s_idx")["_y"]
+        track_sum = _tg.sum()
+        track_cnt = _tg.count()
+
+        # Per-track scaffold: fold assignment + that track's own train totals.
+        base = pd.DataFrame({"s_idx": _rows})
+        base["fold"] = _te_rng.integers(0, max(1, te_folds), size=len(base))
+        base["tsum"] = base["s_idx"].map(track_sum).fillna(0.0).to_numpy()
+        base["tcnt"] = base["s_idx"].map(track_cnt).fillna(0.0).to_numpy()
+
+        for col in target_encode_cols:
+            if col not in meta.columns:
+                continue
+            base["_cat"] = base["s_idx"].map(meta[col]).to_numpy()
+            cat_tot  = base.groupby("_cat")[["tsum", "tcnt"]].sum()
+            cat_fold = base.groupby(["_cat", "fold"])[["tsum", "tcnt"]].sum()
+            td = base.merge(
+                cat_tot.rename(columns={"tsum": "c_sum", "tcnt": "c_cnt"}),
+                left_on="_cat", right_index=True, how="left",
+            ).merge(
+                cat_fold.rename(columns={"tsum": "f_sum", "tcnt": "f_cnt"}).reset_index(),
+                on=["_cat", "fold"], how="left",
+            )
+            # Out-of-fold totals = category totals minus this track's own fold.
+            oof_sum = (td["c_sum"] - td["f_sum"]).to_numpy(dtype=np.float64)
+            oof_cnt = (td["c_cnt"] - td["f_cnt"]).to_numpy(dtype=np.float64)
+            enc = (oof_sum + smoothing * global_mean) / (oof_cnt + smoothing)
+            enc = np.where(np.isfinite(enc), enc, global_mean)   # unknown cat -> global mean
+            arr = np.full(n_songs, global_mean, dtype=np.float32)
+            arr[td["s_idx"].to_numpy()] = enc.astype(np.float32)
+            names.append(f"te_{col}")
+            feats.append(arr)
+
+    # ── multi-hot over the top-N most frequent list values (instruments) ─────
+    if multihot_col and multihot_col in meta.columns:
+        counter: Counter = Counter()
+        for lst in meta[multihot_col].dropna():
+            if isinstance(lst, (list, np.ndarray)):
+                counter.update(str(v) for v in lst)
+        for inst, _ in counter.most_common(top_instruments):
+            arr = np.zeros(n_songs, dtype=np.float32)
+            for sidx, lst in meta[multihot_col].items():
+                if isinstance(lst, (list, np.ndarray)) and inst in {str(v) for v in lst}:
+                    arr[sidx] = 1.0
+            names.append(f"instr={inst}")
+            feats.append(arr)
+
+    if not feats:
+        return np.zeros((n_songs, 0), dtype=np.float32), []
+    return np.column_stack(feats).astype(np.float32), names
+
+
 def _make_feature_matrix(
     user_ids: Sequence[int],
     candidates: Dict[int, List[int]],
     profiles: np.ndarray,
     ae_matrix: np.ndarray,
     interactions_df: pd.DataFrame,
+    track_extra: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Assemble (X, y, qid) arrays for XGBoost DMatrix.
 
-    X   : (N, 2*emb_dim) float32 — [user_profile | track_ae_embedding]
-    y   : (N,)            float32 — log1p(play_count); 0 for unobserved pairs
-    qid : (N,)            int64   — u_idx; rows pre-sorted by qid (XGBoost requirement)
+    X   : (N, F) float32 — [user_profile | track_ae_embedding | track_extra?]
+    y   : (N,)   float32 — log1p(play_count); 0 for unobserved pairs
+    qid : (N,)   int64   — u_idx; rows pre-sorted by qid (XGBoost requirement)
 
-    interactions_df must have columns u_idx, s_idx, play_count.
+    track_extra, when given, is an (n_songs, F_cat) matrix of per-track
+    categorical/content features (one-hot + target-encoded + multi-hot) that is
+    concatenated on the *track* side, so the ranker also sees genre/artist/
+    instrument/key/mode/tempo context. interactions_df must have columns
+    u_idx, s_idx, play_count.
     """
     pairs = [
         (u, s)
@@ -129,7 +263,7 @@ def _make_feature_matrix(
         for s in candidates.get(u, [])
     ]
     if not pairs:
-        w = ae_matrix.shape[1] * 2
+        w = ae_matrix.shape[1] * 2 + (track_extra.shape[1] if track_extra is not None else 0)
         return (
             np.empty((0, w), dtype=np.float32),
             np.empty(0, dtype=np.float32),
@@ -150,7 +284,10 @@ def _make_feature_matrix(
     vu = np.clip(u_arr, 0, profiles.shape[0] - 1)
     vs = np.clip(s_arr, 0, ae_matrix.shape[0] - 1)
 
-    X = np.hstack([profiles[vu], ae_matrix[vs]])                     # (N, 2*D)
+    blocks = [profiles[vu], ae_matrix[vs]]
+    if track_extra is not None:
+        blocks.append(track_extra[vs])
+    X = np.hstack(blocks)                                            # (N, F)
     y = np.log1p(merged["play_count"].to_numpy(dtype=np.float32))
     return X, y, u_arr
 
@@ -181,6 +318,7 @@ def run_xgb_hybrid(
     num_boost_round: int = 100,
     early_stopping_rounds: Optional[int] = None,
     xgb_val_frac: float = 0.1,
+    track_extra: Optional[np.ndarray] = None,
     ks: Sequence[int] = (5, 10, 20, 50, 100),
     results_csv: Optional[Path] = None,
     model_cache: Optional[Path] = None,
@@ -290,6 +428,7 @@ def run_xgb_hybrid(
     print("[xgb] assembling feature table …")
     X_train, y_train, qid_train = _make_feature_matrix(
         tr_users_es, train_candidates, profiles, ae_matrix, train_df,
+        track_extra=track_extra,
     )
     gc.collect()
 
@@ -306,6 +445,7 @@ def run_xgb_hybrid(
     if val_users_es:
         X_val_es, y_val_es, qid_val_es = _make_feature_matrix(
             val_users_es, train_candidates, profiles, ae_matrix, train_df,
+            track_extra=track_extra,
         )
         dval = xgb.DMatrix(data=X_val_es, label=y_val_es, qid=qid_val_es)
         del X_val_es, y_val_es, qid_val_es
@@ -357,6 +497,7 @@ def run_xgb_hybrid(
         X_inf, _, qid_inf = _make_feature_matrix(
             batch, cands, test_profiles, ae_matrix,
             pd.DataFrame(columns=["u_idx", "s_idx", "play_count"]),
+            track_extra=track_extra,
         )
         if X_inf.shape[0] == 0:
             continue
@@ -419,4 +560,4 @@ def run_xgb_hybrid(
     return results_df, model
 
 
-__all__ = ("run_xgb_hybrid",)
+__all__ = ("run_xgb_hybrid", "build_track_categorical_features")

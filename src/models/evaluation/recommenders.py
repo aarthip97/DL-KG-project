@@ -133,11 +133,17 @@ class XGBHybridRecommender:
         ae_matrix: np.ndarray,
         train_seen: Mapping[int, Set[int]],
         n_candidates: int = 200,
+        track_extra: Optional[np.ndarray] = None,
     ):
         self._model = model
         self._ae = np.asarray(ae_matrix, dtype=np.float32)
         self._seen = train_seen
         self._n_cands = n_candidates
+        # Per-track categorical/content block appended on the track side at
+        # ranking time. Must be the *same* matrix used during training so the
+        # feature columns line up. None -> AE-only features.
+        self._track_extra = (None if track_extra is None
+                             else np.asarray(track_extra, dtype=np.float32))
 
     def recommend(
         self,
@@ -180,7 +186,10 @@ class XGBHybridRecommender:
             s_arr = np.asarray(s_list, dtype=np.int64)
             vu = np.clip(u_arr, 0, profiles.shape[0] - 1)
             vs = np.clip(s_arr, 0, self._ae.shape[0] - 1)
-            X = np.hstack([profiles[vu], self._ae[vs]])
+            _blocks = [profiles[vu], self._ae[vs]]
+            if self._track_extra is not None:
+                _blocks.append(self._track_extra[vs])
+            X = np.hstack(_blocks)
 
             scores = self._model.predict(xgb.DMatrix(data=X))
 

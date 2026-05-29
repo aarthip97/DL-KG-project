@@ -207,9 +207,9 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
 
     # KG construction artefacts
     ONTO_BASE        = ONTOLOGY / "knowledge_graph_original.ttl"
-    ONTO_OUT         = ONTOLOGY / "knowledge_graph_full_with_users.ttl"
+    ONTO_OUT         = ONTOLOGY / "knowledge_graph_rich.ttl"
     ONTO_OUT_SIMPLE  = ONTOLOGY / "knowledge_graph_simple.ttl"
-    LISTENING_NT     = ONTOLOGY / "listening_triples.nt"
+    LISTENING_NT     = ONTOLOGY / "listening_triples_rich.nt"
     LISTENING_NT_SIM = ONTOLOGY / "listening_triples_simple.nt"
 
     # DL pipeline artefacts
