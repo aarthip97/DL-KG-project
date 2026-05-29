@@ -327,7 +327,7 @@ def run_knn_sweep(
         }
         # Load neighbour table — support both formats
         cache_path = nbrs_cache if nbrs_cache.exists() else _old_cache
-        if cache_path.suffix == ".pt":
+        if cache_path.suffix in [".pt", ".npz"]:
             saved      = torch.load(cache_path, map_location="cpu", weights_only=True)
             nbrs_t     = saved["nbrs_tensor"]
             all_query  = saved["all_query"].tolist()
