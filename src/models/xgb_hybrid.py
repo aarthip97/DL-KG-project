@@ -255,7 +255,7 @@ def run_xgb_hybrid(
         return results_df, model
 
     # ── Stage 1: load AE embeddings & build user profiles ────────────────────
-    print("[XGB] loading AE embeddings …")
+    print("[xgb] loading AE embeddings …")
     ae_matrix, emb_dim = _load_ae_matrix(ae_embeddings_path, song_id_to_sidx, n_songs)
 
     all_train_users = list(train_seen.keys())
@@ -263,18 +263,18 @@ def run_xgb_hybrid(
     n_sample = min(n_xgb_train_users, len(all_train_users))
     xgb_train_users = rng.choice(all_train_users, size=n_sample, replace=False).tolist()
 
-    print(f"[XGB] building user AE profiles for {n_sample:,} train users …")
+    print(f"[xgb] building user AE profiles for {n_sample:,} train users …")
     profiles = _build_user_profiles(xgb_train_users, train_seen, ae_matrix)
 
     # ── Stage 2: generate candidates (no masking — seen items needed for labels)
-    print(f"[XGB] generating {n_candidates} candidates per train user …")
+    print(f"[xgb] generating {n_candidates} candidates per train user …")
     train_candidates = _candidates_ae(
         xgb_train_users, profiles, ae_matrix,
         n_candidates=n_candidates, seen_dict=None,
     )
 
     # ── Stage 3: build feature table & train XGBoost ─────────────────────────
-    print("[XGB] assembling feature table …")
+    print("[xgb] assembling feature table …")
     X_train, y_train, qid_train = _make_feature_matrix(
         xgb_train_users, train_candidates, profiles, ae_matrix, train_df,
     )
@@ -284,28 +284,30 @@ def run_xgb_hybrid(
     if xgb_params:
         params.update(xgb_params)
 
-    print(f"[XGB] training XGBoost  (rows={len(X_train):,}, "
+    print(f"[xgb] training XGBoost  (rows={len(X_train):,}, "
           f"features={X_train.shape[1]}, rounds={num_boost_round}) …")
     dtrain = xgb.DMatrix(data=X_train, label=y_train, qid=qid_train)
     del X_train, y_train, qid_train
     gc.collect()
 
     t_start = time.time()
+    _evals_result: dict = {}
     model = xgb.train(params, dtrain, num_boost_round=num_boost_round,
+                      evals=[(dtrain, "train")], evals_result=_evals_result,
                       verbose_eval=False)
     t_xgb_elapsed = time.time() - t_start
     del dtrain
     gc.collect()
 
     # ── Stage 4: inference on test users ─────────────────────────────────────
-    print(f"[XGB] scoring test users ({len(test_users):,}) …")
+    print(f"[xgb] scoring test users ({len(test_users):,}) …")
     recs_dict: Dict[int, List[int]] = {}
 
     # Build profiles only for test users (most already in train_seen)
     test_profiles = _build_user_profiles(list(test_users), train_seen, ae_matrix)
 
     for start in tqdm(range(0, len(test_users), infer_batch_users),
-                      desc="[XGB] inference batches"):
+                      desc="[xgb] inference batches"):
         batch = list(test_users[start : start + infer_batch_users])
 
         # Candidates with seen items masked
@@ -342,7 +344,7 @@ def run_xgb_hybrid(
     gc.collect()
 
     # ── Evaluate ──────────────────────────────────────────────────────────────
-    print("[XGB] running multi_k_evaluation …")
+    print("[xgb] running multi_k_evaluation …")
     results_df = multi_k_evaluation(
         recs_dict_max_k=recs_dict,
         ground_truth=test_gt,
@@ -358,10 +360,18 @@ def run_xgb_hybrid(
     if results_csv is not None:
         results_csv.parent.mkdir(parents=True, exist_ok=True)
         results_df.to_csv(results_csv, index=False)
+        # Per-round training metric curve (rank:ndcg eval_metric) for plotting.
+        _tr = _evals_result.get("train", {})
+        if _tr:
+            _mname = next(iter(_tr))
+            _curve = _tr[_mname]
+            pd.DataFrame({"round": range(1, len(_curve) + 1), _mname: _curve}).to_csv(
+                results_csv.with_name("xgb_loss_history.csv"), index=False)
+            print(f"[xgb] training curve saved -> xgb_loss_history.csv ({_mname})")
     if model_cache is not None:
         model_cache.parent.mkdir(parents=True, exist_ok=True)
         model.save_model(str(model_cache))
-        print(f"[XGB] model saved → {model_cache.name}")
+        print(f"[xgb] model saved → {model_cache.name}")
 
     return results_df, model
 

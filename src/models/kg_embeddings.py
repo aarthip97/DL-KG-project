@@ -247,7 +247,7 @@ def train_kge(
         model, entity_dim, epochs, resolved_device,
     )
 
-    t_start = time.time()
+    _t0 = time.perf_counter()
     pykeen_result = pipeline(
         training=tf,
         model=model,
@@ -262,7 +262,8 @@ def train_kge(
         random_seed=seed,
         device=resolved_device,
     )
-    t_elapsed = time.time() - t_start
+    _train_seconds = time.perf_counter() - _t0
+    logger.info("KGE training finished in %.1fs", _train_seconds)
 
     # -- W&B: log per-epoch losses -------------------------------------------
     # pykeen_result.losses is a list of per-epoch mean loss floats
@@ -277,6 +278,7 @@ def train_kge(
                             if isinstance(v, (int, float))}
             _wandb.summary.update(flat_metrics)
 
+        _wandb.summary["train/seconds"] = _train_seconds
         _wandb.finish()
 
     # -- Extract and optionally save embeddings ------------------------------
@@ -289,7 +291,10 @@ def train_kge(
 
     if history_csv_path is not None:
         _save_history(pykeen_result, history_csv_path,
-                      config={**_cfg, "out_dim": out_dim, "training_time_seconds": t_elapsed})
+                      config={**_cfg, "out_dim": out_dim,
+                              "train_seconds": round(_train_seconds, 2),
+                              "train_time_hms": time.strftime("%H:%M:%S",
+                                                              time.gmtime(_train_seconds))})
 
     return KGEResult(
         embeddings=embeddings,

@@ -15,6 +15,7 @@ import pandas as pd
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
+from tqdm.auto import tqdm
 
 # W&B is optional -- guard every call with _WANDB
 try:
@@ -187,7 +188,9 @@ def train_autoencoder(
         history["val_loss"] = []
 
     t_start = time.time()
-    for ep in range(1, epochs + 1):
+    _epoch_bar = tqdm(range(1, epochs + 1), desc="[ae] training",
+                      disable=not verbose, leave=True)
+    for ep in _epoch_bar:
         # -- train ------------------------------------------------------------
         model.train()
         running = 0.0
@@ -219,11 +222,11 @@ def train_autoencoder(
                 log["val/loss"] = val_loss
             _wandb.log(log, step=ep)
 
-        if verbose and (ep == 1 or ep % 5 == 0 or ep == epochs):
-            msg = f"[ae] epoch {ep:3d}/{epochs}  train_mse={train_loss:.6f}"
+        if verbose:
+            _post = {"train_mse": f"{train_loss:.4f}"}
             if val_loss is not None:
-                msg += f"  val_mse={val_loss:.6f}"
-            print(msg)
+                _post["val_mse"] = f"{val_loss:.4f}"
+            _epoch_bar.set_postfix(_post)
 
     if _run is not None:
         _wandb.summary.update({

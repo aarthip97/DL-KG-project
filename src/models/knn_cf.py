@@ -111,7 +111,7 @@ def _matrix_to_tensor(
             free_gb = torch.cuda.mem_get_info(0)[0] / 1e9
             if size_gb > free_gb * 0.80:
                 warnings.warn(
-                    f"[KNN] Matrix is {size_gb:.1f} GB but only "
+                    f"[knn] Matrix is {size_gb:.1f} GB but only "
                     f"{free_gb:.1f} GB VRAM free — falling back to CPU. "
                     f"Pass device='cpu' or dtype=torch.float16 to suppress.",
                     ResourceWarning,
@@ -355,7 +355,7 @@ def run_knn_sweep(
             _avail_gb = 8.0  # conservative assumption
         if _f32_gb > _avail_gb * 0.55:
             print(
-                f"[KNN] float32 matrix ({_f32_gb:.1f} GB) > 55 % of available "
+                f"[knn] float32 matrix ({_f32_gb:.1f} GB) > 55 % of available "
                 f"RAM ({_avail_gb:.1f} GB) — auto-switching to float16 to avoid OOM.\n"
                 f"      Pass matrix_dtype=torch.float32 to override."
             )
@@ -364,12 +364,12 @@ def run_knn_sweep(
     # ── Build neighbour table ─────────────────────────────────────────────────
     _device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     dtype_name = "float16" if matrix_dtype == torch.float16 else "float32"
-    print(f"[KNN] building neighbours on {_device} (matrix dtype={dtype_name})")
+    print(f"[knn] building neighbours on {_device} (matrix dtype={dtype_name})")
 
     t_start = time.time()
-    print(f"[KNN] loading matrix to {_device} (dense {dtype_name}) …")
+    print(f"[knn] loading matrix to {_device} (dense {dtype_name}) …")
     train_t, _device = _matrix_to_tensor(train_matrix_norm, _device, dtype=matrix_dtype)
-    print(f"[KNN] train tensor: {tuple(train_t.shape)}  "
+    print(f"[knn] train tensor: {tuple(train_t.shape)}  "
           f"({train_t.element_size() * train_t.nelement() / 1e9:.2f} GB)  "
           f"device={train_t.device}")
 

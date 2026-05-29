@@ -30,6 +30,7 @@ import torch
 from torch.utils.data import DataLoader
 from torch_geometric.data import HeteroData
 import torch_geometric.transforms as T
+from tqdm.auto import tqdm
 
 from .hgt import RecommenderHGT
 from .loss import compute_log_pop_prior, debiased_listwise_loss, evaluate_top_k
@@ -251,7 +252,9 @@ def train_hgt(
     primary_k = k_list[0]
 
     t_start = time.time()
-    for ep in range(1, epochs + 1):
+    _epoch_bar = tqdm(range(1, epochs + 1), desc="[hgt] training",
+                      disable=not verbose, leave=True)
+    for ep in _epoch_bar:
         model.train()
         opt.zero_grad(set_to_none=True)
 
@@ -331,13 +334,10 @@ def train_hgt(
 
         history.append(log)
 
-        if verbose and (ep == 1 or ep % eval_every == 0 or ep == epochs):
-            extra = "  ".join(
-                f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}"
-                for k, v in log.items()
-                if k != "epoch"
-            )
-            print(f"[hgt ep={ep:04d}]  {extra}")
+        if verbose:
+            _post = {k.split("/")[-1]: (f"{v:.4f}" if isinstance(v, float) else v)
+                     for k, v in log.items() if k != "epoch"}
+            _epoch_bar.set_postfix(_post)
 
         if use_wandb and _WANDB:
             wandb.log(log, step=ep)
