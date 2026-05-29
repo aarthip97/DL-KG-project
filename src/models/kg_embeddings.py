@@ -66,7 +66,8 @@ from typing import Literal
 import numpy as np
 import torch
 from pykeen.pipeline import pipeline
-from pykeen.triples import TriplesFactory
+from pykeen.triples import TriplesFactory, CoreTriplesFactory, get_mapped_triples
+from pykeen.triples.splitting import split
 
 logger = logging.getLogger(__name__)
 
@@ -237,8 +238,14 @@ def train_kge(
         model, entity_dim, epochs, resolved_device,
     )
 
+    mapped_triples = get_mapped_triples(tf)
+    ratios = [0.7, 0.1, 0.2]
+    tf_train, tf_val, tf_test = CoreTriplesFactory(mapped_triples, tf.num_entities, tf.num_relations).split(ratios)
+
     pykeen_result = pipeline(
-        training=tf,
+        training=tf_train,
+        validation=tf_val,
+        testing=tf_test,
         model=model,
         model_kwargs={"embedding_dim": entity_dim},
         training_kwargs={
