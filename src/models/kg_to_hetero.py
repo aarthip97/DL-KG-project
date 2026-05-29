@@ -660,10 +660,18 @@ def build_rich_hetero_graph(
     canon_map: dict = edge_dict.get("canonical_map", {})
 
     def _kge_lookup(uri: str) -> np.ndarray:
-        return rotate_embeddings.get(
-            canon_map.get(uri, uri),
-            np.zeros(kge_dim),
-        )
+        key = canon_map.get(uri, uri)
+        # Bracket-tolerant lookup. KGE embeddings are keyed by whatever entity
+        # labels PyKEEN parsed from the TSV. A SPARQL-TSV export wraps IRIs in
+        # angle brackets (<uri>) while node_mappings stores bare URIs; trying
+        # both forms prevents a format drift from silently zeroing out *every*
+        # node feature (see the CSV-vs-TSV IRI fix in graphdb/exports.py).
+        vec = rotate_embeddings.get(key)
+        if vec is None:
+            vec = rotate_embeddings.get(f"<{key}>")
+        if vec is None and len(key) >= 2 and key[0] == "<" and key[-1] == ">":
+            vec = rotate_embeddings.get(key[1:-1])
+        return vec if vec is not None else np.zeros(kge_dim)
 
     missing_kge = 0
     total_nodes = 0

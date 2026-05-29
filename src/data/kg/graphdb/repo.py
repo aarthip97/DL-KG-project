@@ -128,20 +128,21 @@ class KGRepo:
                 except Exception as e:
                     log.warning("Stats[%s] failed: %s", name, e)
 
-        # 2. PyKEEN triples + node dict + hetero edges
+        # 2. PyKEEN triples (KGE training corpus) + PyG edge_dict.
+        # Both are sourced from GraphDB with the SAME canonicalisation, so the
+        # KGE entity labels and the edge_dict node URIs match exactly. The
+        # edge_dict (node_dict.json) is the structure build_rich_hetero_graph
+        # consumes directly — no separate {type:{uri:id}} dict or hetero_edges
+        # parquet is needed for the notebook's KGE → HGT path.
         if not skip_pykeen:
             triples = exports.export_pykeen_tsv(
                 self.client, cfg.out_dir / "pykeen_triples.tsv"
             )
-            ndict = exports.export_node_dict(
+            ndict = exports.export_edge_dict(
                 self.client, cfg.out_dir / "node_dict.json"
             )
-            edges = exports.export_hetero_edges(
-                triples, ndict, cfg.out_dir / "hetero_edges.parquet"
-            )
-            out["pykeen_tsv"]    = triples
-            out["node_dict"]     = ndict
-            out["hetero_edges"]  = edges
+            out["pykeen_tsv"] = triples
+            out["node_dict"]  = ndict
 
         # 3. Plots
         if not skip_plots and not skip_stats:

@@ -368,6 +368,98 @@ ORDER BY DESC(?n)
 """)
 
 
+# ── Edge-list queries for the PyG edge_dict (build_rich_hetero_graph) ──────
+# These return canonicalisable IRI pairs (+ optional weight/count) per edge
+# type, and TRAVERSE the bnode-mediated structures (listening events, genre
+# associations) that the IRI-only PyKEEN TSV cannot express — so the edge_dict
+# is complete on both the simple and the rich graph. Each query is intentionally
+# tolerant (UNION + OPTIONAL) so the same SPARQL works against either variant:
+# listening as ``mrc:listenedTo`` (simple) or via ``hasListeningInteraction``
+# (rich, with ``listenCount``); genre as ``mrc:hasGenre`` (simple) or via
+# ``hasGenreAssoc`` (rich, with ``weight``).
+# Consumed by exports.export_edge_dict; column ORDER is the contract
+# (subject, object[, weight/count]) — the exporter reads positionally.
+
+QUERY_EDGE_USER_TRACK = _q("""
+SELECT ?user ?track ?count WHERE {
+    { ?user mrc:hasListeningInteraction ?ev .
+      ?ev   mrc:onTrack ?track .
+      OPTIONAL { ?ev mrc:listenCount ?count } }
+    UNION
+    { ?user mrc:listenedTo ?track . }
+}
+""")
+
+QUERY_EDGE_TRACK_ARTIST = _q("""
+SELECT DISTINCT ?track ?artist WHERE {
+    ?perf mrc:hasTrack  ?track ;
+          mo:performer  ?artist .
+}
+""")
+
+QUERY_EDGE_TRACK_KEY = _q("""
+SELECT DISTINCT ?track ?key WHERE {
+    { ?track mrc:hasKey ?key . }
+    UNION
+    { ?perf mrc:hasTrack ?track ; mrc:hasKey ?key . }
+}
+""")
+
+QUERY_EDGE_TRACK_MODE = _q("""
+SELECT DISTINCT ?track ?mode WHERE {
+    { ?track mrc:hasMode ?mode . }
+    UNION
+    { ?perf mrc:hasTrack ?track ; mrc:hasMode ?mode . }
+}
+""")
+
+QUERY_EDGE_TRACK_TEMPO = _q("""
+SELECT DISTINCT ?track ?tempo WHERE {
+    ?perf mrc:hasTrack       ?track ;
+          mrc:hasTempoClass  ?tempo .
+}
+""")
+
+QUERY_EDGE_TRACK_INSTRUMENT = _q("""
+SELECT DISTINCT ?track ?inst WHERE {
+    ?perf mrc:hasTrack    ?track ;
+          mo:instrument   ?inst .
+}
+""")
+
+QUERY_EDGE_TRACK_DECADE = _q("""
+SELECT DISTINCT ?track ?decade WHERE {
+    ?track mrc:inDecade ?decade .
+}
+""")
+
+QUERY_EDGE_ARTIST_GENRE = _q("""
+SELECT DISTINCT ?artist ?genre ?weight WHERE {
+    { ?artist mrc:hasGenre ?genre . }
+    UNION
+    { ?artist mrc:hasGenreAssoc ?assoc .
+      ?assoc  mrc:genre  ?genre .
+      OPTIONAL { ?assoc mrc:weight ?weight } }
+}
+""")
+
+QUERY_EDGE_GENRE_PARENT = _q("""
+SELECT DISTINCT ?child ?parent WHERE {
+    ?child rdfs:subClassOf ?parent .
+    FILTER(STRSTARTS(STR(?child),  "http://purl.org/ontology/mrc/resource/genre/"))
+    FILTER(STRSTARTS(STR(?parent), "http://purl.org/ontology/mrc/resource/genre/"))
+}
+""")
+
+QUERY_EDGE_INSTRUMENT_PARENT = _q("""
+SELECT DISTINCT ?child ?parent WHERE {
+    ?child rdfs:subClassOf ?parent .
+    FILTER(STRSTARTS(STR(?child),  "http://purl.org/ontology/mrc/resource/instrument/"))
+    FILTER(STRSTARTS(STR(?parent), "http://purl.org/ontology/mrc/resource/instrument/"))
+}
+""")
+
+
 # ── Repo-wide health stats (cheap, run them all on every export) ───────
 QUERY_TRIPLE_COUNT = _q("""
 SELECT (COUNT(*) AS ?n) WHERE { ?s ?p ?o }

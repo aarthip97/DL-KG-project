@@ -11,7 +11,7 @@ a small, composable API:
 
     repo.bootstrap()                          # admin user + repository
     repo.upload_kg([ttl_file, nt_file])       # idempotent — checksum-aware
-    repo.export_all(out_dir)                  # writes pykeen TSV + edges + stats
+    repo.export_all(out_dir)                  # writes pykeen TSV + edge_dict + stats
 
 The notebook is meant to **read** the artefacts produced by ``repo.export_all``,
 not to talk to GraphDB directly — that way Colab stays self-contained while the
