@@ -186,7 +186,9 @@ def summarise_comparison(
     pair_df["wilcoxon_significant"] = pair_df["wilcoxon_p"] < alpha
     pair_df["ttest_significant"]    = pair_df["ttest_p"]    < alpha
 
-    global_results: Dict[str, dict] = {
-        m: friedman_nemenyi(per_user_metrics, m, user_col=user_col) for m in metrics
-    }
+    global_results = {}
+    if len(per_user_metrics) > 2:
+        global_results: Dict[str, dict] = {
+            m: friedman_nemenyi(per_user_metrics, m, user_col=user_col) for m in metrics
+        }
     return {"pairwise": pair_df, "global": global_results, "alpha": alpha}

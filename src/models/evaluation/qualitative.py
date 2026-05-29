@@ -144,7 +144,7 @@ def _cosine_to_profile(
     p_norm   = np.linalg.norm(p_sum) + 1e-12
     sv_recs  = song_vectors[top_si]
     dots     = np.asarray(sv_recs.dot(p_sum)).ravel()
-    return dots / (song_norms[top_si] * p_norm + 1e-12)
+    return dots / (song_norms[0][top_si] * p_norm + 1e-12)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
