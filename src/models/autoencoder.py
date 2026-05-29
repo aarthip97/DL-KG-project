@@ -7,6 +7,7 @@ feature table.
 """
 from __future__ import annotations
 
+import copy
 import time
 from typing import Optional
 
@@ -72,6 +73,8 @@ def train_autoencoder(
     lr: float = 1e-3,
     weight_decay: float = 0.0,
     val_split: float = 0.1,
+    patience: Optional[int] = None,
+    min_delta: float = 0.0,
     device: Optional[str] = None,
     verbose: bool = True,
     wandb_project: Optional[str] = None,
@@ -96,6 +99,13 @@ def train_autoencoder(
         L2 regularisation coefficient for Adam.
     val_split:
         Fraction of data held out as a validation set (0 -> no validation).
+    patience:
+        If set, stop early after ``patience`` epochs without an improvement of
+        more than ``min_delta`` in the monitored loss (val loss when
+        ``val_split>0``, otherwise train loss). The best-monitored weights are
+        restored before returning. ``None`` disables early stopping.
+    min_delta:
+        Minimum decrease in the monitored loss to count as an improvement.
     device:
         ``"cuda"`` / ``"cpu"`` / ``None`` (auto-detect).
     verbose:
@@ -187,6 +197,16 @@ def train_autoencoder(
     if X_val is not None:
         history["val_loss"] = []
 
+    # Early-stopping state. Monitors the val loss when a split exists, otherwise
+    # the train (reconstruction) loss -- with val_split=0 this simply stops once
+    # the code has converged rather than to prevent overfitting (a 128-d
+    # bottleneck cannot memorise the input), which matches a pure
+    # dimensionality-reduction objective.
+    _monitor    = "val" if X_val is not None else "train"
+    _best_metric = float("inf")
+    _best_state  = None
+    _no_improve  = 0
+
     t_start = time.time()
     _epoch_bar = tqdm(range(1, epochs + 1), desc="[ae] training",
                       disable=not verbose, leave=True)
@@ -227,6 +247,27 @@ def train_autoencoder(
             if val_loss is not None:
                 _post["val_mse"] = f"{val_loss:.4f}"
             _epoch_bar.set_postfix(_post)
+
+        # -- early stopping ---------------------------------------------------
+        _metric = val_loss if _monitor == "val" else train_loss
+        if _metric < _best_metric - min_delta:
+            _best_metric = _metric
+            _no_improve  = 0
+            if patience is not None:
+                _best_state = copy.deepcopy(model.state_dict())
+        else:
+            _no_improve += 1
+            if patience is not None and _no_improve >= patience:
+                if verbose:
+                    _epoch_bar.write(
+                        f"[ae] early stopping at epoch {ep} "
+                        f"(no {_monitor}-loss improvement for {patience} "
+                        f"epochs; best={_best_metric:.4f})")
+                break
+
+    # Restore the best-monitored weights when early stopping is enabled.
+    if patience is not None and _best_state is not None:
+        model.load_state_dict(_best_state)
 
     if _run is not None:
         _wandb.summary.update({

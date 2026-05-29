@@ -179,6 +179,8 @@ def run_xgb_hybrid(
     n_xgb_train_users: int = 5_000,
     xgb_params: Optional[dict] = None,
     num_boost_round: int = 100,
+    early_stopping_rounds: Optional[int] = None,
+    xgb_val_frac: float = 0.1,
     ks: Sequence[int] = (5, 10, 20, 50, 100),
     results_csv: Optional[Path] = None,
     model_cache: Optional[Path] = None,
@@ -274,9 +276,20 @@ def run_xgb_hybrid(
     )
 
     # ── Stage 3: build feature table & train XGBoost ─────────────────────────
+    # When early stopping is requested, hold out a fraction of the LTR training
+    # *users* (whole query groups, never split within a user) as a validation
+    # set so the booster can stop once val ndcg stops improving.
+    _use_es = early_stopping_rounds is not None and n_sample >= 10
+    if _use_es:
+        n_val_u      = max(1, int(n_sample * xgb_val_frac))
+        val_users_es = xgb_train_users[:n_val_u]
+        tr_users_es  = xgb_train_users[n_val_u:]
+    else:
+        tr_users_es, val_users_es = xgb_train_users, []
+
     print("[xgb] assembling feature table …")
     X_train, y_train, qid_train = _make_feature_matrix(
-        xgb_train_users, train_candidates, profiles, ae_matrix, train_df,
+        tr_users_es, train_candidates, profiles, ae_matrix, train_df,
     )
     gc.collect()
 
@@ -284,19 +297,43 @@ def run_xgb_hybrid(
     if xgb_params:
         params.update(xgb_params)
 
-    print(f"[xgb] training XGBoost  (rows={len(X_train):,}, "
-          f"features={X_train.shape[1]}, rounds={num_boost_round}) …")
     dtrain = xgb.DMatrix(data=X_train, label=y_train, qid=qid_train)
     del X_train, y_train, qid_train
     gc.collect()
 
+    evals = [(dtrain, "train")]
+    dval = None
+    if val_users_es:
+        X_val_es, y_val_es, qid_val_es = _make_feature_matrix(
+            val_users_es, train_candidates, profiles, ae_matrix, train_df,
+        )
+        dval = xgb.DMatrix(data=X_val_es, label=y_val_es, qid=qid_val_es)
+        del X_val_es, y_val_es, qid_val_es
+        gc.collect()
+        evals.append((dval, "val"))
+
+    print(f"[xgb] training XGBoost  (rounds={num_boost_round}, "
+          f"early_stopping={'val' if dval is not None else 'off'}) …")
     t_start = time.time()
     _evals_result: dict = {}
-    model = xgb.train(params, dtrain, num_boost_round=num_boost_round,
-                      evals=[(dtrain, "train")], evals_result=_evals_result,
-                      verbose_eval=False)
+    model = xgb.train(
+        params, dtrain, num_boost_round=num_boost_round,
+        evals=evals, evals_result=_evals_result,
+        early_stopping_rounds=(early_stopping_rounds if dval is not None else None),
+        verbose_eval=False,
+    )
     t_xgb_elapsed = time.time() - t_start
-    del dtrain
+
+    # Slice the booster to the best iteration so every downstream predict()
+    # (here and in XGBHybridRecommender) uses the early-stopped model.
+    if dval is not None and getattr(model, "best_iteration", None) is not None:
+        try:
+            model = model[: model.best_iteration + 1]
+            print(f"[xgb] early-stopped at iteration {model.num_boosted_rounds()}")
+        except Exception:  # noqa: BLE001  (older xgboost without slicing)
+            pass
+
+    del dtrain, dval
     gc.collect()
 
     # ── Stage 4: inference on test users ─────────────────────────────────────
@@ -360,14 +397,20 @@ def run_xgb_hybrid(
     if results_csv is not None:
         results_csv.parent.mkdir(parents=True, exist_ok=True)
         results_df.to_csv(results_csv, index=False)
-        # Per-round training metric curve (rank:ndcg eval_metric) for plotting.
-        _tr = _evals_result.get("train", {})
-        if _tr:
-            _mname = next(iter(_tr))
-            _curve = _tr[_mname]
-            pd.DataFrame({"round": range(1, len(_curve) + 1), _mname: _curve}).to_csv(
+        # Per-round metric curve (rank:ndcg eval_metric) for plotting. Save the
+        # train curve, plus the val curve when early stopping was used.
+        _curve_cols = {}
+        for _split in ("train", "val"):
+            _sp = _evals_result.get(_split, {})
+            if _sp:
+                _mname = next(iter(_sp))
+                _curve_cols[f"{_split}_{_mname}"] = _sp[_mname]
+        if _curve_cols:
+            _n_rounds = len(next(iter(_curve_cols.values())))
+            pd.DataFrame({"round": range(1, _n_rounds + 1), **_curve_cols}).to_csv(
                 results_csv.with_name("xgb_loss_history.csv"), index=False)
-            print(f"[xgb] training curve saved -> xgb_loss_history.csv ({_mname})")
+            print(f"[xgb] training curve saved -> xgb_loss_history.csv "
+                  f"({', '.join(_curve_cols)})")
     if model_cache is not None:
         model_cache.parent.mkdir(parents=True, exist_ok=True)
         model.save_model(str(model_cache))

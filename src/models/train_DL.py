@@ -67,6 +67,7 @@ def train_hgt(
     weight_decay: float = 1e-4,
     user_batch_size: int = 1024,
     eval_every: int = 10,
+    early_stopping_patience: Optional[int] = None,
     k_list: Iterable[int] = (10, 20),
     val_ratio: float = 0.1,
     test_ratio: float = 0.1,
@@ -247,6 +248,7 @@ def train_hgt(
     best_val_recall = -1.0
     best_state: dict | None = None
     best_val: dict = {}
+    _evals_no_improve = 0   # consecutive evaluations without a val-recall gain
 
     k_list = sorted(set(int(k) for k in k_list))
     primary_k = k_list[0]
@@ -331,6 +333,9 @@ def train_hgt(
                 best_val_recall = val_metrics[f"recall@{primary_k}"]
                 best_state = copy.deepcopy(model.state_dict())
                 best_val = dict(val_metrics)
+                _evals_no_improve = 0
+            else:
+                _evals_no_improve += 1
 
         history.append(log)
 
@@ -341,6 +346,17 @@ def train_hgt(
 
         if use_wandb and _WANDB:
             wandb.log(log, step=ep)
+
+        # -- early stopping (counted in evaluation steps) ---------------------
+        if (early_stopping_patience is not None
+                and (ep % eval_every == 0 or ep == epochs)
+                and _evals_no_improve >= early_stopping_patience):
+            if verbose:
+                _epoch_bar.write(
+                    f"[hgt] early stopping at epoch {ep} "
+                    f"(no val recall@{primary_k} gain for "
+                    f"{early_stopping_patience} evals; best={best_val_recall:.4f})")
+            break
 
     if best_state is not None:
         model.load_state_dict(best_state)
