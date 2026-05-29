@@ -42,6 +42,22 @@ except ImportError:
     _WANDB = False
 
 
+def _gt_to_eval_edges(gt, device):
+    """Flatten a ``{user_idx: iterable[item_idx]}`` ground-truth dict into the
+    parallel ``(eval_user_idx, eval_item_idx)`` LongTensors that
+    :func:`evaluate_top_k` expects. Indices must already be in the graph's
+    node-index space.
+    """
+    us: list[int] = []
+    its: list[int] = []
+    for u, items in gt.items():
+        for i in items:
+            us.append(int(u))
+            its.append(int(i))
+    return (torch.tensor(us, dtype=torch.long, device=device),
+            torch.tensor(its, dtype=torch.long, device=device))
+
+
 @dataclass
 class TrainResult:
     model: RecommenderHGT
@@ -72,6 +88,9 @@ def train_hgt(
     val_ratio: float = 0.1,
     test_ratio: float = 0.1,
     disjoint_train_ratio: float = 0.3,
+    val_gt: Optional[dict] = None,
+    test_gt: Optional[dict] = None,
+    train_edge_index: Optional[torch.Tensor] = None,
     lambda_reg: float = 0.2,
     temperature: float = 0.1,
     lr_t0: int = 20,
@@ -114,9 +133,27 @@ def train_hgt(
       user_batch_size         -- users per mini-batch during loss accumulation.
       eval_every              -- evaluate validation metrics every this many epochs.
       k_list                  -- Recall@K and NDCG@K cut-offs.
-      val_ratio               -- fraction of edges held out for validation.
-      test_ratio              -- fraction of edges held out for testing.
-      disjoint_train_ratio    -- fraction of training edges used as supervision labels.
+      val_ratio               -- fraction of edges held out for validation
+                                 (RandomLinkSplit regime only; ignored when
+                                 val_gt is provided).
+      test_ratio              -- fraction of edges held out for testing
+                                 (RandomLinkSplit regime only).
+      disjoint_train_ratio    -- fraction of training edges used as supervision
+                                 labels (RandomLinkSplit regime only).
+      val_gt                  -- optional {user_idx: set(item_idx)} held-out
+                                 validation ground truth, indexed in the graph's
+                                 node-index space. When provided, RandomLinkSplit
+                                 is SKIPPED: the graph is assumed to already hold
+                                 only the training interactions (no leakage), the
+                                 best checkpoint is selected on this val set, and
+                                 the same stratified split used by the baselines
+                                 drives the HGT.
+      test_gt                 -- optional held-out test ground truth (same shape
+                                 as val_gt); defaults to val_gt when omitted.
+      train_edge_index        -- optional (2, E) positive train edges for seen-
+                                 item masking; defaults to the graph's
+                                 user→track edge_index (train-only by
+                                 construction in the explicit-split regime).
       lambda_reg              -- popularity penalty scale in the listwise loss.
       temperature             -- softmax temperature (lower = sharper distribution).
       lr_t0                   -- epoch period for cosine warm restart cycle.
@@ -159,7 +196,8 @@ def train_hgt(
         torch.backends.cuda.matmul.allow_tf32  = True
         torch.backends.cudnn.allow_tf32        = True
 
-    # Edge splits for held-out evaluation
+    # Ensure the reverse user→track relation exists for message passing
+    # (needed in both evaluation regimes below).
     if rev_edge_type not in data.edge_types:
         data = T.ToUndirected(merge=False)(data)
         if rev_edge_type not in data.edge_types:
@@ -168,21 +206,42 @@ def train_hgt(
                 f"{rev_edge_type!r}. Available edge types: {data.edge_types}"
             )
 
-    transform = T.RandomLinkSplit(
-        num_val=val_ratio,
-        num_test=test_ratio,
-        disjoint_train_ratio=disjoint_train_ratio,
-        neg_sampling_ratio=0.0,
-        add_negative_train_samples=False,
-        edge_types=[edge_type],
-        rev_edge_types=[rev_edge_type],
-    )
-    train_data, val_data, test_data = transform(data)
-    # train_data stays on GPU permanently (accessed every epoch).
-    # val_data / test_data stay on CPU and are moved to GPU only inside the
-    # evaluation windows, then the GPU copy is deleted immediately.
-    # For a 285 K-user graph this keeps ~2 GB VRAM free for activations.
-    train_data = train_data.to(dev)
+    # Two evaluation regimes:
+    #   • EXPLICIT stratified split (val_gt provided): the graph already holds
+    #     ONLY the training interactions (built upstream from the stratified
+    #     train split), so message passing AND the listwise target are
+    #     leak-free. Validation/test use the caller's held-out ground-truth
+    #     dicts, keyed in the SAME node-index space as the graph. This makes the
+    #     HGT share the exact split used by the baselines.
+    #   • RandomLinkSplit (default): legacy behaviour for callers that pass the
+    #     full interaction graph and want an internal random split (e.g. the
+    #     ablation cells).
+    _explicit_split = val_gt is not None
+    val_data = test_data = None
+    val_eval = test_eval = None
+    if _explicit_split:
+        train_data = data.to(dev)
+        _tp = (train_edge_index if train_edge_index is not None
+               else data[edge_type].edge_index)
+        train_pos = _tp.to(dev)
+        val_eval  = _gt_to_eval_edges(val_gt, dev)
+        test_eval = _gt_to_eval_edges(test_gt, dev) if test_gt else val_eval
+    else:
+        transform = T.RandomLinkSplit(
+            num_val=val_ratio,
+            num_test=test_ratio,
+            disjoint_train_ratio=disjoint_train_ratio,
+            neg_sampling_ratio=0.0,
+            add_negative_train_samples=False,
+            edge_types=[edge_type],
+            rev_edge_types=[rev_edge_type],
+        )
+        train_data, val_data, test_data = transform(data)
+        # train_data stays on GPU permanently (accessed every epoch).
+        # val_data / test_data stay on CPU and are moved to GPU only inside the
+        # evaluation windows, then the GPU copy is deleted immediately.
+        train_data = train_data.to(dev)
+        train_pos = train_data[edge_type].edge_label_index
 
     src_t, _, dst_t = edge_type
     n_users = data[src_t].num_nodes
@@ -243,7 +302,6 @@ def train_hgt(
         )
         wandb.watch(model, log="gradients", log_freq=100)
 
-    train_pos = train_data[edge_type].edge_label_index
     history: list[dict] = []
     best_val_recall = -1.0
     best_state: dict | None = None
@@ -312,18 +370,23 @@ def train_hgt(
             with torch.inference_mode():
                 out_eval = model(train_data.x_dict, train_data.edge_index_dict)
 
-            # Move val graph to GPU only for this evaluation window.
-            _val_dev = val_data.to(dev)
-            val_eli  = _val_dev[edge_type].edge_label_index
+            if _explicit_split:
+                _vu, _vi = val_eval
+            else:
+                # Move val graph to GPU only for this evaluation window.
+                _val_dev = val_data.to(dev)
+                _veli = _val_dev[edge_type].edge_label_index
+                _vu, _vi = _veli[0], _veli[1]
             val_metrics = evaluate_top_k(
                 user_emb=out_eval[src_t],
                 item_emb=out_eval[dst_t],
-                eval_user_idx=val_eli[0],
-                eval_item_idx=val_eli[1],
+                eval_user_idx=_vu,
+                eval_item_idx=_vi,
                 train_edge_index=train_pos,
                 k_list=k_list,
             )
-            del _val_dev
+            if not _explicit_split:
+                del _val_dev
             if dev.startswith("cuda"):
                 torch.cuda.empty_cache()
 
@@ -362,20 +425,26 @@ def train_hgt(
         model.load_state_dict(best_state)
 
     model.eval()
-    _test_dev = test_data.to(dev)
-    with torch.inference_mode():
-        out_test = model(_test_dev.x_dict, _test_dev.edge_index_dict)
-
-    test_eli     = _test_dev[edge_type].edge_label_index
+    if _explicit_split:
+        with torch.inference_mode():
+            out_test = model(train_data.x_dict, train_data.edge_index_dict)
+        _tu, _ti = test_eval
+    else:
+        _test_dev = test_data.to(dev)
+        with torch.inference_mode():
+            out_test = model(_test_dev.x_dict, _test_dev.edge_index_dict)
+        _teli = _test_dev[edge_type].edge_label_index
+        _tu, _ti = _teli[0], _teli[1]
     test_metrics = evaluate_top_k(
         user_emb=out_test[src_t],
         item_emb=out_test[dst_t],
-        eval_user_idx=test_eli[0],
-        eval_item_idx=test_eli[1],
+        eval_user_idx=_tu,
+        eval_item_idx=_ti,
         train_edge_index=train_pos,
         k_list=k_list,
     )
-    del _test_dev
+    if not _explicit_split:
+        del _test_dev
     if dev.startswith("cuda"):
         torch.cuda.empty_cache()
 
