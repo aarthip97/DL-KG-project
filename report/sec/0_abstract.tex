@@ -11,11 +11,15 @@ complementary models: a symbolic-feature autoencoder that compresses raw
 descriptors into dense track embeddings, two knowledge-graph embedding
 models (RotatE and ComplEx) that encode the relational structure, and a
 Heterogeneous Graph Transformer (HGT) trained with a popularity-debiased
-listwise objective that serves as our main recommender. We compare against
-three baselines (a popularity prior, user--user KNN collaborative filtering,
-and a two-stage gradient-boosted content/CF hybrid) on a shared, stratified
-user-level split, reporting Recall, NDCG, Hit-Rate, MRR, catalogue coverage
-and popularity bias at multiple cut-offs, together with learning curves and
-qualitative latent-space and per-user analyses. \TODO{Summarise the headline
-quantitative finding once final HGT/hybrid numbers are available.}
+listwise objective that serves as our main recommender. We compare against three baselines---a popularity prior, user--user KNN
+collaborative filtering ($k$=6), and a two-stage gradient-boosted
+content/CF hybrid---on a shared stratified user-level split of 284{,}864
+users and 6{,}054 tracks (1.94M training interactions). Results at $K$=10
+show that KNN-CF achieves NDCG of 0.106 and 91.5\% catalogue coverage with
+a composite Overall score of 0.420, tripling the popularity baseline (0.134)
+through diversity gains rather than raw accuracy improvements. The XGBoost
+hybrid reduces popularity bias to 0.032 (lowest of any model) but at a large
+accuracy cost (NDCG 0.015), highlighting the limits of content-only candidate
+generation without collaborative signals.
+\TODO{Summarise the HGT headline result once training is complete.}
 \end{abstract}

@@ -79,13 +79,17 @@ and the same evaluation split (\cref{sec:eval-protocol}).
 The full 1{,}526-dimensional jSymbolic vector of each track is standardised and
 passed through a fully connected autoencoder with encoder
 $1526\!\rightarrow\!512\!\rightarrow\!256\!\rightarrow\!128$ and a symmetric
-decoder, trained for 30 epochs with Adam (learning rate $10^{-3}$, batch
-size~256) to minimise the mean-squared reconstruction error. The
-128-dimensional bottleneck is exported as a dense \emph{content} embedding for
-every track and is used both to initialise the \texttt{track} node features of
-the graph models and as the item representation of the hybrid baseline. As the
-task is pure reconstruction, no test split is required; a 10\% validation
-partition is held out only to monitor over-fitting.
+decoder ($128\!\rightarrow\!256\!\rightarrow\!512\!\rightarrow\!1526$), each
+layer followed by ReLU activation and dropout~0.2. Training uses Adam
+(learning rate $10^{-3}$, batch size~256) to minimise mean-squared
+reconstruction error, with up to 200 epochs and early stopping once the
+training loss fails to improve by more than $10^{-4}$ for 15 consecutive
+epochs. Because the task is pure transductive compression of a fixed catalogue,
+no held-out ranking split is required; the model converged in 155 epochs
+(best MSE~0.616). The 128-dimensional bottleneck is exported as a dense
+\emph{content} embedding for every track and is used both to initialise the
+\texttt{track} node features of the graph models and as the item representation
+of the hybrid baseline.
 
 \paragraph{Knowledge-graph embeddings (structural/reasoning view).}
 To encode the multi-relational structure of the enriched graph independently of
@@ -96,10 +100,13 @@ PyKEEN: \textbf{RotatE}~\cite{Alpher02} and \textbf{ComplEx}~\cite{Alpher03}.
 the training corpus (a \emph{semantic} scope), so that held-out interactions
 cannot leak into the entity embeddings. Each entity is represented by a
 128-dimensional complex vector, i.e.\ a 256-dimensional real vector
-$[\Re\,\Vert\,\Im]$ after flattening, and the models are trained for 100 epochs
-with Adam. The entity embeddings provide a structure-only view of the catalogue
-that is used to seed node features and to support the qualitative latent-space
-analysis in \cref{sec:results}.
+$[\Re\,\Vert\,\Im]$ after flattening, and both models are trained for 200
+epochs with Adam (learning rate $10^{-2}$, batch size~1024) on the full triple
+set. Because the goal is to obtain embeddings for every entity in the graph
+rather than to predict held-out links, all triples are used for training. The
+entity embeddings provide a structure-only view of the catalogue that is used
+to seed node features and to support the qualitative latent-space analysis in
+\cref{sec:results}.
 
 \paragraph{Heterogeneous Graph Transformer (main model).}
 Our principal recommender is a \textbf{Heterogeneous Graph Transformer
@@ -123,14 +130,21 @@ Three baselines contextualise the graph models.
 \textbf{(ii)~KNN-CF} is a user--user collaborative filter computed on the
 $\ell_2$-normalised interaction matrix (cosine similarity); the neighbourhood
 size~$k$ is selected by a sweep that maximises the composite validation score.
-\textbf{(iii)~XGBoost two-stage hybrid} first retrieves a pool of candidate
-tracks per user via the dot product between a mean autoencoder \emph{user
-profile} and the track content embeddings, then re-ranks the pool with a
-gradient-boosted learning-to-rank model (\texttt{rank:ndcg}) over the
-concatenated $[\text{user-profile}\,\Vert\,\text{track-embedding}]$ features.
-The hybrid therefore fuses content (autoencoder) and behaviour (candidate
-generation) without using the graph structure, isolating the contribution of
-the GNN.
+\textbf{(iii)~XGBoost two-stage hybrid} first retrieves the top-200 candidate
+tracks per user via the cosine product between a mean-pooled autoencoder
+\emph{user profile} and every track's 128-dimensional content embedding. These
+candidates are then re-ranked with a gradient-boosted learning-to-rank model
+(\texttt{rank:ndcg@10}, up to 300 rounds with early stopping after 30 rounds
+without validation improvement) trained on 3{,}000 randomly sampled users. The
+feature vector for each (user, track) pair concatenates the
+128-dimensional user-profile embedding, the 128-dimensional track-AE embedding,
+and 44 categorical/content track features: one-hot musical key (12), mode (2),
+and tempo class (9) encodings; smoothed target-encoded primary genre and artist
+name (2, fitted on training users only); and a multi-hot indicator of the
+top-20 most frequent instruments (20). The total feature dimension is thus
+$128+128+44=300$. The hybrid therefore fuses content (autoencoder) and
+behaviour (candidate generation) without using the graph structure, directly
+isolating the contribution of the GNN.
 
 \subsection{Reasoning and Semantic Inspection}
 
@@ -166,7 +180,10 @@ catalogue \emph{Coverage} and mean \emph{Popularity-Bias@$K$}, and a composite
                    + 0.2\cdot(1-\mathrm{PopularityBias@}K),
 \]
 which rewards models that are accurate \emph{and} surface diverse, less
-popular content. Every model is scored with the same recommendation lists
-sliced at $K\in\{5,10,20,50,100\}$, and pairwise differences are assessed with
-the paired Wilcoxon signed-rank test (with Cohen's~$d_z$ effect sizes) and an
-omnibus Friedman test across all models.
+popular content. Every model is scored with the same recommendation lists sliced at
+$K\in\{5,10,20,50,100\}$. Pairwise differences are assessed with the
+paired Wilcoxon signed-rank test (with Cohen's~$d_z$ effect sizes) and an
+omnibus Friedman test. Because full inference over all 284{,}864 test users
+is computationally prohibitive for the XGBoost model, pairwise and omnibus
+tests are conducted on a shared random subsample of 5{,}000 users across all
+models, ensuring a balanced, paired comparison.
