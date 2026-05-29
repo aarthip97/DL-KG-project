@@ -23,6 +23,7 @@ an inverted popularity bias to reward recommenders that surface diverse content.
 """
 from __future__ import annotations
 
+import re
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set
 
 import numpy as np
@@ -440,6 +441,9 @@ def multi_k_evaluation(
         m = evaluate_recs(recs_dict_max_k, ground_truth, seen_dict, n_songs, pop_norm, k=k)
         m["Overall_Score"] = overall_score(m, k=k)
         for metric_name, value in m.items():
+            # Strip the embedded "@K" suffix (e.g. "Mean_Recall@5" → "Mean_Recall")
+            # so the long-format "metric" column is K-agnostic; cutoff lives in "K".
+            clean_name = re.sub(r"@\d+$", "", metric_name)
             rows.append({"model": model_name, "K": k,
-                         "metric": metric_name, "value": float(value)})
+                         "metric": clean_name, "value": float(value)})
     return pd.DataFrame(rows)
