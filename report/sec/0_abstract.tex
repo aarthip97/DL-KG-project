@@ -1,0 +1,21 @@
+%% Abstract
+\begin{abstract}
+We present a content- and preference-aware music recommendation system that
+couples a music knowledge graph (KG) with graph representation learning. We
+integrate the Lakh MIDI Dataset and the Million Song Dataset, extract
+1{,}526 symbolic descriptors per track with jSymbolic, and construct an
+RDF/OWL knowledge graph that links users, tracks, artists, genres,
+instruments, keys, modes, tempo classes and release decades, with the upper
+ontology grounded in Wikidata. On top of this graph we train a stack of
+complementary models: a symbolic-feature autoencoder that compresses raw
+descriptors into dense track embeddings, two knowledge-graph embedding
+models (RotatE and ComplEx) that encode the relational structure, and a
+Heterogeneous Graph Transformer (HGT) trained with a popularity-debiased
+listwise objective that serves as our main recommender. We compare against
+three baselines (a popularity prior, user--user KNN collaborative filtering,
+and a two-stage gradient-boosted content/CF hybrid) on a shared, stratified
+user-level split, reporting Recall, NDCG, Hit-Rate, MRR, catalogue coverage
+and popularity bias at multiple cut-offs, together with learning curves and
+qualitative latent-space and per-user analyses. \TODO{Summarise the headline
+quantitative finding once final HGT/hybrid numbers are available.}
+\end{abstract}

@@ -1,9 +1,144 @@
-\section{Expected Results}
+\section{Experiments and Results}
+\label{sec:results}
 
-The expected results of this project include an improvement in recommendation quality achieved by the proposed model compared to the baseline collaborative filtering approach. In particular, the integration of the knowledge graph and musical features is expected to enhance the model’s ability to capture complex relationships between users, songs, and their characteristics, leading to higher performance in terms of evaluation metrics such as Recall and NDCG.
+\subsection{Experimental Setup}
 
-Furthermore, it is anticipated that the proposed approach will provide more diverse recommendations, as the inclusion of content-based features reduces the model’s reliance on popularity-driven patterns commonly observed in standard collaborative filtering methods. This is expected to be reflected in improved coverage and a broader range of recommended items.
+After cold-start filtering (at least 5 interactions per user and 3 users per
+song) the modelling dataset contains \TODO{$N_\text{users}$} users
+($\approx$284{,}864) and \TODO{$N_\text{songs}$} tracks ($\approx$7{,}050) with
+their full jSymbolic feature vectors and knowledge-graph context. Interactions
+are partitioned with the user-level stratified split of
+\cref{sec:eval-protocol} (\TODO{report the train/val/test interaction counts}).
+All models are trained on identical training interactions and evaluated on the
+held-out test interactions; reproducibility is fixed with seed~42. Hyper\-
+parameters are those listed in \cref{sec:methodology} and were selected on the
+validation split only.
 
-Lastly, the expected outcome is better handling of data sparsity and cold-start scenarios, where limited user interaction data is available. \cite{liu2024kgmusic} By incorporating musical features derived from both audio and symbolic representations, the model should be able to recommend relevant items even for users with fewer interactions or for less popular songs. 
+\subsection{Quantitative Comparison}
 
-Overall, the results are expected to demonstrate that combining knowledge graph structure with rich musical feature representations provides added value to traditional interaction-based recommendation methods.
+\cref{tab:main-results} reports every model at $K=10$ on the test set. The
+popularity prior is, as expected, a strong accuracy baseline but collapses on
+diversity (it reaches only 0.6\% catalogue coverage and the highest popularity
+bias). KNN-CF trades a modest amount of ranking accuracy for a dramatic gain in
+coverage and a large drop in popularity bias, and consequently wins on the
+composite \emph{Overall} score. \TODO{Update the XGBoost-Hybrid and HGT rows
+with final numbers once the autoencoder embeddings have been regenerated;
+state which model achieves the best Overall score and by how much.}
+
+\begin{table}[t]
+\centering
+\caption{Top-10 test-set performance. Higher is better except
+PopBias@10 ($\downarrow$). Baseline rows are measured; graph/hybrid rows are
+pending the regenerated embeddings.}
+\label{tab:main-results}
+\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{l S[table-format=1.4] S[table-format=1.4] S[table-format=1.4] S[table-format=1.4] S[table-format=1.4]}
+\toprule
+\textbf{Model} & {Recall} & {NDCG} & {HitRate} & {Cov.} & {Overall} \\
+\midrule
+MostPopular           & 0.1285 & 0.1143 & 0.2002 & 0.0064 & 0.1477 \\
+KNN-CF ($k$=\TODO{5}) & 0.0923 & 0.0971 & 0.1540 & 0.9176 & 0.4185 \\
+XGBoost-Hybrid        & \TODO{} & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
+HGT (ours)            & \TODO{} & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Behaviour across list length.}
+\cref{fig:multik} sweeps the recommendation-list length $K\in\{5,\dots,100\}$
+for Recall@$K$, NDCG@$K$ and the composite Overall score, exposing the
+``sweet-spot'' list length for each model. \TODO{Insert the multi-$K$
+comparison figure produced by the baseline-comparison cell and comment on where
+each model peaks.}
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox[c][3.2cm][c]{0.92\linewidth}{\centering
+  \TODO{Insert \texttt{Recall@K / NDCG@K / Overall} vs.\ $K$ line plots
+  (baseline-comparison cell).}}}
+\caption{Metric vs.\ recommendation-list length $K$ for all models.}
+\label{fig:multik}
+\end{figure}
+
+\paragraph{Statistical significance.}
+Pairwise paired Wilcoxon signed-rank tests over all
+$\approx$284{,}864 test users find the accuracy differences between models to be
+statistically significant ($p<0.05$), but with small Cohen's~$d_z$ effect sizes
+($\approx$0.03--0.11), confirming that the practically meaningful separation
+lies in coverage and popularity bias rather than raw ranking accuracy. An
+omnibus Friedman test across all models is reported in \cref{tab:friedman}.
+\TODO{Populate \cref{tab:friedman} (and the pairwise table) from the comparison
+cell once all four models are final.}
+
+\begin{table}[t]
+\centering
+\caption{Friedman omnibus test and best-ranked model per metric.}
+\label{tab:friedman}
+\footnotesize
+\begin{tabular}{l c c l}
+\toprule
+\textbf{Metric} & \textbf{$\chi^2$} & \textbf{$p$} & \textbf{Best model} \\
+\midrule
+Recall@$K$  & \TODO{} & \TODO{} & \TODO{} \\
+NDCG@$K$    & \TODO{} & \TODO{} & \TODO{} \\
+HitRate@$K$ & \TODO{} & \TODO{} & \TODO{} \\
+MRR         & \TODO{} & \TODO{} & \TODO{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Learning Curves}
+
+\cref{fig:curves} collects the training-time diagnostics for the trained
+models: autoencoder reconstruction MSE (train/val), the RotatE/ComplEx KGE
+training loss, the HGT debiased-listwise loss together with validation Recall
+and NDCG, and the XGBoost per-round \texttt{ndcg@10}. \TODO{Drop in the four
+PNGs exported to \texttt{data/final/} (\texttt{ae\_loss\_curve.png},
+\texttt{kge\_loss\_curve.png}, \texttt{hgt\_training\_curves.png},
+\texttt{xgb\_loss\_curve.png}); comment on convergence and any over-fitting.}
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox[c][4cm][c]{0.92\linewidth}{\centering
+  \TODO{Insert learning curves: AE (MSE), KGE (loss), HGT (loss + val
+  Recall/NDCG), XGBoost (ndcg@10 per round).}}}
+\caption{Training and validation learning curves for the trained models.}
+\label{fig:curves}
+\end{figure}
+
+\subsection{Qualitative Analysis}
+
+We complement the metrics with three qualitative views.
+\textbf{(i)~Population level:} per-model distributions of cosine-to-profile
+similarity and Jensen--Shannon divergence between the genre/mode/tempo/decade
+profiles of a user's training history and their recommendations, plus
+dominant-attribute match rates (\cref{fig:qual}).
+\textbf{(ii)~Per-user case studies:} successful users across different
+training-history sizes (light/medium/heavy), failure cases, and ``mixed'' users
+where models disagree, each shown with a cross-model metric table and
+train-vs-recommendation attribute distributions.
+\textbf{(iii)~Latent space:} a UMAP/GMM projection of the learned node
+embeddings used to inspect cluster structure.
+\TODO{Insert the population-summary mosaic, one or two representative per-user
+case figures, and the latent-space projection; summarise where each model is
+strong or weak (e.g.\ popularity vs.\ niche taste, cold vs.\ rich profiles).}
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox[c][3.6cm][c]{0.92\linewidth}{\centering
+  \TODO{Insert population-qualitative mosaic and a per-user case study.}}}
+\caption{Qualitative comparison of recommendation behaviour across models.}
+\label{fig:qual}
+\end{figure}
+
+\subsection{Discussion}
+
+The measured baselines already illustrate the central tension of the task:
+popularity maximises short-list accuracy while almost entirely ignoring the
+catalogue, whereas content/structure-aware models spread recommendations far
+more widely at a small accuracy cost. \TODO{Once the HGT and hybrid numbers are
+in, state explicitly whether adding the knowledge graph and musical features
+improves the accuracy/diversity trade-off over the interaction-only baselines,
+and connect back to the cold-start and popularity-bias motivation of
+\cref{sec:intro}.}

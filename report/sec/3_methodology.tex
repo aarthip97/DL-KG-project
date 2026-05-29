@@ -1,4 +1,5 @@
 \section{Methodology}
+\label{sec:methodology}
 
 \subsection{Knowledge Graph Design and Construction}
 
@@ -14,7 +15,7 @@ Similarly, out of the 1,525 jSymbolic features extracted per track, only 30, wer
 
 In the knowledge graph, each row of the merged dataset translates into a connected cluster of nodes representing the entities associated with that recording. Categorical and relational concepts such as genres, instruments, musical keys, modes, and tempo classes were encoded as named individual nodes reused across tracks, enabling the graph to capture shared structure between recordings. Continuous scalar measurements, unique to each track such as tempo, note density, or loudness were, on the other hand, encoded as datatype literals attached to the corresponding track or performance node. 
 
-In our knowledge graph, a Track node represents the song itself and carries basic descriptive attributes (title, song identifier, album, release year) as well as 11 jSymbolic datatype properties such as note density, chromatic motion, or chord duration. An Artist node represents the performer with name and MusicBrainz identifier. The two are linked through a Performance node, which acts as a bridge and stores the mean tempo value, following the design of the Music Ontology. Key (one of the twelve chromatic keys (e.g. C# or D)) and mode (one of the two modes (Major or Minor)) are attached directly to the Track node, each pointing to a controlled-vocabulary named individual, a fixed set of predefined, standardized values that were instantiated once and are shared across all tracks, rather than literal values. Each Performance node is additionally linked to one of nine TempoClass individuals derived from the mean tempo value (e.g. Andante or Allegro), and one or more Instrument nodes extracted directly from the MIDI files. Genre nodes are attached at the artist level rather than the track level, reflecting MSD's artist-level tagging. Additionally, each unique genre label was created once and reused across all artists associated with it, ensuring consistency, reducing redundancy, and enabling more effective querying and reasoning over musical properties.
+In our knowledge graph, a Track node represents the song itself and carries basic descriptive attributes (title, song identifier, album, release year) as well as 11 jSymbolic datatype properties such as note density, chromatic motion, or chord duration. An Artist node represents the performer with name and MusicBrainz identifier. The two are linked through a Performance node, which acts as a bridge and stores the mean tempo value, following the design of the Music Ontology. Key (one of the twelve chromatic keys (e.g. C\# or D)) and mode (one of the two modes (Major or Minor)) are attached directly to the Track node, each pointing to a controlled-vocabulary named individual, a fixed set of predefined, standardized values that were instantiated once and are shared across all tracks, rather than literal values. Each Performance node is additionally linked to one of nine TempoClass individuals derived from the mean tempo value (e.g. Andante or Allegro), and one or more Instrument nodes extracted directly from the MIDI files. Genre nodes are attached at the artist level rather than the track level, reflecting MSD's artist-level tagging. Additionally, each unique genre label was created once and reused across all artists associated with it, ensuring consistency, reducing redundancy, and enabling more effective querying and reasoning over musical properties.
 
 This proposed design ensures that the graph captures both the relational structure between entities (artists, tracks, performances, genres, and instruments) and the musical properties of each track in a form that is directly exploitable by graph neural networks, where shared nodes such as genre or tempo class create meaningful connections between otherwise unrelated tracks and artists, enabling the downstream model to learn from structural proximity rather than feature similarity alone.
 
@@ -52,28 +53,120 @@ Figure~\ref{fig:KG} shows the prototype of the knowledge graph linking users, so
 
 The graph will be populated by integrating the filtered user interaction data with the Lakh/MSD dataset and the extracted musical features, using shared identifiers such as song ID and MIDI file mappings. This unified representation will enable the combination of relational, contextual, and musical information, forming the foundation for subsequent graph-based learning and recommendation models.
 
-\subsection{Modeling}
+\subsection{From Knowledge Graph to Learnable Tensors}
 
-The main model utilized for this project will be a \textbf{Convolutional Graph Neural Network}, a recommendation model that uses the previously constructed knowledge graph to predict which new songs a user is likely to enjoy. It should be noted, however, that the knowledge graph will not be directly used in its raw form, but will require transformation into a graph representation suitable for neural processing, including the incorporation of node attributes and interaction information. This additional modeling step will allow for the integration of both relational structure and numerical feature representations, making the approach more flexible and expressive.
+Before any neural model can consume the graph, the RDF triples are converted
+into a typed tensor representation. A dedicated extraction routine streams the
+graph into (i)~a consolidated triple table and an edge dictionary, and
+(ii)~a heterogeneous \texttt{PyTorch~Geometric} graph in which every ontology
+class becomes a distinct node type (\texttt{user}, \texttt{track},
+\texttt{artist}, \texttt{genre}, \texttt{instrument}, \texttt{key},
+\texttt{mode}, \texttt{tempoClass}, \texttt{decade}) and every predicate a
+typed relation. Track nodes are initialised with the content embeddings
+produced by the autoencoder described below; the remaining node types receive
+either knowledge-graph-embedding features or learnable lookup vectors. Because
+the listening layer of the simple graph encodes each interaction as a direct
+\texttt{user\,$\rightarrow$\,track} edge, message passing can reach items in a
+single hop, which is the configuration used to train the main recommender.
 
-Additionally, a simple \textbf{KNN} or \textbf{Collaborative Filtering Model} will be created to serve as a baseline. This model will rely solely on user interaction data and will be based on standard approaches such as Matrix Factorization and its neural extensions (Neural Collaborative Filtering). It will help us evaluate whether the proposed approach, which integrates the knowledge graph and musical features, performs better and therefore brings value to the recommendation system by improving prediction accuracy and personalization beyond traditional interaction-based methods.
+\subsection{Representation Learning and Recommendation Models}
 
-\subsection{Evaluation}
+Our system combines three trained representation/recommendation components
+with three baselines. All models share the same preprocessed interaction data
+and the same evaluation split (\cref{sec:eval-protocol}).
 
-The evaluation process will be conducted using two complementary approaches. First, standard evaluation metrics will be used to assess how well each model performs in predicting user preferences. The dataset will be split into training and test sets at the level of user–song interactions after preprocessing. Only the interaction data will be divided, while all song-related features and metadata will remain available to both sets. The models will be trained using the training interactions, together with the full set of musical features, whereas the test interactions will be used exclusively for evaluation in order to avoid information leakage. Second, the performance of the proposed model will be compared against a baseline collaborative filtering model to determine whether the inclusion of the knowledge graph and musical features leads to improved recommendation quality.
+\paragraph{Symbolic-feature autoencoder.}
+The full 1{,}526-dimensional jSymbolic vector of each track is standardised and
+passed through a fully connected autoencoder with encoder
+$1526\!\rightarrow\!512\!\rightarrow\!256\!\rightarrow\!128$ and a symmetric
+decoder, trained for 30 epochs with Adam (learning rate $10^{-3}$, batch
+size~256) to minimise the mean-squared reconstruction error. The
+128-dimensional bottleneck is exported as a dense \emph{content} embedding for
+every track and is used both to initialise the \texttt{track} node features of
+the graph models and as the item representation of the hybrid baseline. As the
+task is pure reconstruction, no test split is required; a 10\% validation
+partition is held out only to monitor over-fitting.
 
-In terms of evaluation metrics, both unoptimized and optimized measures will be considered. Hit Rate will be used as a standard, unoptimized metric, as it provides a straightforward indication of whether relevant items appear in the recommendation list. In addition, a weighted combination of metrics such as Accuracy, Recall, NDCG (Normalized Discounted Cumulative Gain), and Coverage will be used as optimized evaluation criteria. The use of both unoptimized and optimized metrics will allow us for a more comprehensive evaluation, providing us with intuitive baseline understanding of performance, as well as a more nuanced assessment that balances accuracy, ranking quality, and diversity of recommendations.
+\paragraph{Knowledge-graph embeddings (structural/reasoning view).}
+To encode the multi-relational structure of the enriched graph independently of
+any audio content, we train two knowledge-graph embedding (KGE) models with
+PyKEEN: \textbf{RotatE}~\cite{Alpher02} and \textbf{ComplEx}~\cite{Alpher03}.
+\TODO{Replace these citation keys with the real RotatE/ComplEx references in
+\texttt{main.bib}.} Triples are exported with the listening events removed from
+the training corpus (a \emph{semantic} scope), so that held-out interactions
+cannot leak into the entity embeddings. Each entity is represented by a
+128-dimensional complex vector, i.e.\ a 256-dimensional real vector
+$[\Re\,\Vert\,\Im]$ after flattening, and the models are trained for 100 epochs
+with Adam. The entity embeddings provide a structure-only view of the catalogue
+that is used to seed node features and to support the qualitative latent-space
+analysis in \cref{sec:results}.
 
-\subsection{Methodology Pipeline}
-\begin{figure}[t]
-    \centering
-    \includegraphics[width=0.75\linewidth]{sec/figures/methodology.png}
-    \caption{Graphical overview of the proposed methodology.}
-    \label{fig:methodology}
-\end{figure}
+\paragraph{Heterogeneous Graph Transformer (main model).}
+Our principal recommender is a \textbf{Heterogeneous Graph Transformer
+(HGT)}~\cite{Alpher04} operating on the typed graph. \TODO{Confirm/replace the
+HGT citation key.} Each layer performs type-aware, attention-based message
+passing so that musical context propagates across the shared genre, key,
+tempo-class and decade nodes that bridge otherwise disconnected tracks. We use
+a hidden dimension of 128, 4 attention heads, 2 layers and dropout~0.1, and
+train for 100 epochs with Adam (learning rate $10^{-3}$, weight
+decay~$10^{-4}$). Recommendations are scored as the inner product between the
+final user and track embeddings, with training-seen items masked. To counter
+the popularity bias that dominates interaction-only methods, the model is
+trained with a \emph{popularity-debiased listwise} objective: a softmax
+cross-entropy over sampled items in which a log-popularity prior is subtracted
+from the logits (regularisation strength $\lambda=0.2$, temperature~$0.1$).
+The checkpoint with the best validation Recall is retained for testing.
 
-To better illustrate the overall approach adopted in this project, a visual representation of the methodology is provided in Figure~\ref{fig:methodology}. The figure summarizes the key stages of the proposed pipeline, including data processing, knowledge graph construction, model development, and evaluation. 
+\paragraph{Baselines.}
+Three baselines contextualise the graph models.
+\textbf{(i)~MostPopular} ranks unseen items by global play frequency.
+\textbf{(ii)~KNN-CF} is a user--user collaborative filter computed on the
+$\ell_2$-normalised interaction matrix (cosine similarity); the neighbourhood
+size~$k$ is selected by a sweep that maximises the composite validation score.
+\textbf{(iii)~XGBoost two-stage hybrid} first retrieves a pool of candidate
+tracks per user via the dot product between a mean autoencoder \emph{user
+profile} and the track content embeddings, then re-ranks the pool with a
+gradient-boosted learning-to-rank model (\texttt{rank:ndcg}) over the
+concatenated $[\text{user-profile}\,\Vert\,\text{track-embedding}]$ features.
+The hybrid therefore fuses content (autoencoder) and behaviour (candidate
+generation) without using the graph structure, isolating the contribution of
+the GNN.
 
-This project is currently in the Data Processing and Knowledge Graph Design step, which include feature selection and feature engineering, constituting for a crucial component of the overall design. One of the expected, future key challenges will be determining which musical attributes should be explicitly represented as nodes within the knowledge graph, and which should instead be modeled in a different form, having in mind that it will directly affect both the interpretability and the scalability of the graph. 
+\subsection{Reasoning and Semantic Inspection}
 
-The subsequent significant difficulty we expect to encounter will be transforming the knowledge graph into a graph representation suitable for neural processing, where both the relational structure and selected feature information are incorporated. This will have to be performed directly before the modeling step, and will constitute an important part of the methodology, as it determines how effectively the model can leverage both structural and musical information for recommendation tasks.
+Beyond representation learning, the OWL layer supports light-weight reasoning
+and transparent inspection. Aligning \texttt{mrc:Genre}, \texttt{mo:Instrument}
+and \texttt{mrc:Key} to their Wikidata super-classes and chaining release
+decades with \texttt{follows}/\texttt{followed by} lets a reasoner infer
+shared super-concepts and temporal adjacency that are not stated explicitly,
+which in turn densifies the bridges exploited by message passing. The enriched
+graph is loaded into a GraphDB triple store and queried with SPARQL to produce
+the qualitative evidence reported in \cref{sec:results} (e.g.\ genre rankings
+and per-entity neighbourhoods).
+
+\subsection{Evaluation Protocol}
+\label{sec:eval-protocol}
+
+All recommenders are evaluated on a single, shared \emph{user-level stratified}
+split of the interaction data (training / validation / test), stratified by
+song-level attributes (genre and release decade) so that the popularity and
+content distributions are preserved across folds; song features and graph
+structure are visible to every split, and only the interactions are
+partitioned, preventing leakage. Knowledge-graph embeddings and the autoencoder
+are unsupervised and therefore fit on the training data without a held-out
+ranking split.
+
+We report a standard top-$K$ suite---Recall@$K$, Precision@$K$, NDCG@$K$,
+Hit-Rate@$K$ and MRR---together with two diversity-oriented measures,
+catalogue \emph{Coverage} and mean \emph{Popularity-Bias@$K$}, and a composite
+\emph{Overall Score}
+\[
+  \mathrm{Overall} = 0.6\cdot\mathrm{NDCG@}K
+                   + 0.2\cdot\mathrm{Coverage}
+                   + 0.2\cdot(1-\mathrm{PopularityBias@}K),
+\]
+which rewards models that are accurate \emph{and} surface diverse, less
+popular content. Every model is scored with the same recommendation lists
+sliced at $K\in\{5,10,20,50,100\}$, and pairwise differences are assessed with
+the paired Wilcoxon signed-rank test (with Cohen's~$d_z$ effect sizes) and an
+omnibus Friedman test across all models.
