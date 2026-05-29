@@ -166,6 +166,15 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
         if _gdrive_jsym.exists():
             _ensure_symlink(_gdrive_jsym, ROOT / "jSymbolic")
 
+        # Persist trained model weights to Drive as well. data/ already lives on
+        # Drive via the symlink above, but models/ did not — so on Colab the VM
+        # recycling silently dropped every trained weight file. Mirroring it to
+        # Drive makes Colab behave like a local checkout (weights survive runs).
+        if gdrive_proj.exists():
+            _gdrive_models = gdrive_proj / "models"
+            _gdrive_models.mkdir(parents=True, exist_ok=True)
+            _ensure_symlink(_gdrive_models, ROOT / "models")
+
         # ── W&B auth ──────────────────────────────────────────────────────────
         _wandb_key = _resolve_secret("WANDB_API_KEY")
         if _wandb_key:
@@ -288,6 +297,15 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
     # ── GraphDB flag ──────────────────────────────────────────────────────────
     USE_GRAPHDB: bool = (not ON_COLAB) and bool(os.environ.get("GRAPHDB_URL"))
 
+    # ── W&B run config ──────────────────────────────────────────────────────────
+    # Resolved from Colab Secret → env var → project default, so every notebook
+    # cell can use WANDB_PROJECT/ENTITY/GROUP as globals without each contributor
+    # hardcoding (or forgetting) them. The API *key* is never read here — it stays
+    # a Colab Secret / netrc entry and is consumed by the wandb.login() above.
+    WANDB_PROJECT = _resolve_secret("WANDB_PROJECT", default="kgdl2526musicrecs")
+    WANDB_ENTITY  = _resolve_secret("WANDB_ENTITY",  default="kgdlmusicrecs-fcul")
+    WANDB_GROUP   = _resolve_secret("WANDB_GROUP",   default="devel")
+
     # ── Sanity print ──────────────────────────────────────────────────────────
     def _rel(p: Path) -> str:
         """Show path relative to ROOT, or just the name if it escapes ROOT."""
@@ -309,6 +327,8 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
     return {
         "ROOT": ROOT, "ON_COLAB": ON_COLAB, "SEED": SEED, "DEVICE": DEVICE,
         "USE_GRAPHDB": USE_GRAPHDB,
+        "WANDB_PROJECT": WANDB_PROJECT, "WANDB_ENTITY": WANDB_ENTITY,
+        "WANDB_GROUP": WANDB_GROUP,
         "_DATA": _DATA, "RAW": RAW, "INTERIM": INTERIM, "PROCESSED": PROCESSED,
         "FINAL": FINAL, "ONTOLOGY": ONTOLOGY,
         "LAKH_PQ": LAKH_PQ, "PER_SONG_CSV": PER_SONG_CSV,
