@@ -23,7 +23,7 @@ except ImportError:
     _WANDB = False
 
 
-class jSymbolicAutoencoder(nn.Module):
+class musicFeaturesAutoencoder(nn.Module):
     def __init__(self, input_dim: int, hidden_dims: list[int] = [512, 256], bottleneck: int = 128, dropout: float = 0.2):
         super().__init__()
         self.encoder = nn.Sequential(
@@ -62,7 +62,7 @@ def _to_tensor(X) -> torch.Tensor:
 
 
 def train_autoencoder(
-    model: jSymbolicAutoencoder,
+    model: musicFeaturesAutoencoder,
     X,
     *,
     epochs: int = 50,
@@ -75,13 +75,13 @@ def train_autoencoder(
     wandb_project: Optional[str] = None,
     wandb_run_name: Optional[str] = None,
     wandb_config_extra: Optional[dict] = None,
-) -> tuple[jSymbolicAutoencoder, dict[str, list[float]]]:
+) -> tuple[musicFeaturesAutoencoder, dict[str, list[float]]]:
     """Standard reconstruction training loop.
 
     Parameters
     ----------
     model:
-        An already-instantiated :class:`jSymbolicAutoencoder`.
+        An already-instantiated :class:`musicFeaturesAutoencoder`.
     X:
         Feature matrix (numpy array, DataFrame, or Tensor).  Shape ``(N, input_dim)``.
     epochs:
@@ -137,7 +137,7 @@ def train_autoencoder(
             bottleneck = model.encoder[-1].out_features
             run_name = wandb_run_name or f"ae_dim{bottleneck}_ep{epochs}"
             cfg = {
-                "model":        "jSymbolicAutoencoder",
+                "model":        "musicFeaturesAutoencoder",
                 "input_dim":    int(X_t.shape[1]),
                 "bottleneck":   bottleneck,
                 "epochs":       epochs,
@@ -238,7 +238,7 @@ def train_autoencoder(
 
 @torch.no_grad()
 def extract_embeddings(
-    model: jSymbolicAutoencoder,
+    model: musicFeaturesAutoencoder,
     X,
     *,
     device: Optional[str] = None,
@@ -262,4 +262,4 @@ def extract_embeddings(
     return emb
 
 
-__all__ = ("jSymbolicAutoencoder", "train_autoencoder", "extract_embeddings")
+__all__ = ("musicFeaturesAutoencoder", "train_autoencoder", "extract_embeddings")

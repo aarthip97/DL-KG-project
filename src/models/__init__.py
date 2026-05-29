@@ -7,7 +7,7 @@ KG → graph
     :func:`build_rich_hetero_graph`     — edge dict + embeddings → HeteroData.
 
 Audio autoencoder
-    :class:`jSymbolicAutoencoder`       — dense jSymbolic feature compressor.
+    :class:`musicFeaturesAutoencoder`       — dense jSymbolic feature compressor.
     :func:`train_autoencoder`           — AE training loop.
     :func:`extract_embeddings`          — encode a feature matrix with a trained AE.
 
@@ -57,7 +57,7 @@ from .kg_to_hetero import (
 
 # ── Audio autoencoder ─────────────────────────────────────────────────────────
 from .autoencoder import (
-    jSymbolicAutoencoder,
+    musicFeaturesAutoencoder,
     train_autoencoder,
     extract_embeddings,
 )
@@ -114,7 +114,7 @@ __all__ = [
     "extract_dl_artifacts",
     "build_rich_hetero_graph",
     # Autoencoder
-    "jSymbolicAutoencoder",
+    "musicFeaturesAutoencoder",
     "train_autoencoder",
     "extract_embeddings",
     # KG embeddings
