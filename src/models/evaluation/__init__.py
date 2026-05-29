@@ -28,6 +28,7 @@ from .recommenders import (
     PopularityRecommender,
     KNNRecommender,
     HGTRecommender,
+    XGBHybridRecommender,
 )
 from .qualitative import analyze_user, analyze_population, AttributeArrays
 from .comparison import (
@@ -42,6 +43,7 @@ __all__ = [
     "overall_score", "precision_at_k", "multi_k_evaluation",
     # recommenders
     "Recommender", "PopularityRecommender", "KNNRecommender", "HGTRecommender",
+    "XGBHybridRecommender",
     # qualitative
     "analyze_user", "analyze_population", "AttributeArrays",
     # comparison

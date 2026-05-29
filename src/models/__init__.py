@@ -88,6 +88,9 @@ from .knn_cf import (
     _build_recs_torch,
 )
 
+# ── XGBoost LTR hybrid baseline ───────────────────────────────────────────────
+from .xgb_hybrid import run_xgb_hybrid
+
 # ── Train / val / test splits ─────────────────────────────────────────────────
 from .train_val_test_split import (
     make_stratified_splits,
@@ -134,6 +137,8 @@ __all__ = [
     "_matrix_to_tensor",
     "_find_neighbors_torch",
     "_build_recs_torch",
+    # XGBoost LTR hybrid baseline
+    "run_xgb_hybrid",
     # Splits
     "make_stratified_splits",
     "build_song_strata",

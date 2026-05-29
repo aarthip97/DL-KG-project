@@ -106,7 +106,100 @@ class KNNRecommender:
         return out
 
 
-# ─── 3. HGT recommender ───────────────────────────────────────────────────────
+# ─── 3. XGBoost hybrid recommender ───────────────────────────────────────────
+
+class XGBHybridRecommender:
+    """Re-rank AE-based candidates with a trained XGBoost LTR model.
+
+    Parameters
+    ----------
+    model:
+        Trained ``xgboost.Booster`` (``rank:ndcg`` objective).
+    ae_matrix:
+        (n_songs, emb_dim) float32 array of track AE embeddings.
+    train_seen:
+        ``{u_idx: {s_idx, …}}`` — training interactions per user (for masking
+        and user-profile construction).
+    n_candidates:
+        Candidate pool size retrieved by the AE dot-product stage before XGBoost
+        re-ranking.  Should be ≥ the largest top_n you will request.
+    """
+
+    name = "XGBoost-Hybrid"
+
+    def __init__(
+        self,
+        model: "xgboost.Booster",  # type: ignore[name-defined]
+        ae_matrix: np.ndarray,
+        train_seen: Mapping[int, Set[int]],
+        n_candidates: int = 200,
+    ):
+        self._model = model
+        self._ae = np.asarray(ae_matrix, dtype=np.float32)
+        self._seen = train_seen
+        self._n_cands = n_candidates
+
+    def recommend(
+        self,
+        users: Sequence[int],
+        top_n: int,
+        batch_size: int = 512,
+    ) -> Dict[int, List[int]]:
+        """Return top_n recommendations per user, processed in batches.
+
+        batch_size controls peak memory: 512 users × 200 candidates × 256 features
+        ≈ 105 MB per batch — safe on a 16 GB machine.
+        """
+        import xgboost as xgb
+        from models.xgb_hybrid import _build_user_profiles, _candidates_ae
+
+        users = list(users)
+        n_cands = max(self._n_cands, top_n)
+        # Build profiles once for all users so batches share the same array
+        profiles = _build_user_profiles(users, self._seen, self._ae)
+        out: Dict[int, List[int]] = {}
+
+        for start in range(0, len(users), batch_size):
+            batch = users[start : start + batch_size]
+            cands = _candidates_ae(batch, profiles, self._ae,
+                                   n_candidates=n_cands, seen_dict=self._seen)
+
+            u_list: List[int] = []
+            s_list: List[int] = []
+            for u in sorted(batch):
+                for s in cands.get(u, []):
+                    u_list.append(u)
+                    s_list.append(s)
+
+            if not u_list:
+                for u in batch:
+                    out[u] = []
+                continue
+
+            u_arr = np.asarray(u_list, dtype=np.int64)
+            s_arr = np.asarray(s_list, dtype=np.int64)
+            vu = np.clip(u_arr, 0, profiles.shape[0] - 1)
+            vs = np.clip(s_arr, 0, self._ae.shape[0] - 1)
+            X = np.hstack([profiles[vu], self._ae[vs]])
+
+            scores = self._model.predict(xgb.DMatrix(data=X))
+
+            pos = 0
+            for u in sorted(batch):
+                n = len(cands.get(u, []))
+                if n == 0:
+                    out[u] = []
+                    pos += n
+                    continue
+                u_scores = scores[pos : pos + n]
+                order = np.argsort(u_scores)[::-1]
+                out[u] = np.asarray(cands[u])[order[:top_n]].tolist()
+                pos += n
+
+        return out
+
+
+# ─── 4. HGT recommender ───────────────────────────────────────────────────────
 
 class HGTRecommender:
     """Score user × track inner-products from frozen HGT embeddings.

@@ -36,3 +36,5 @@ dotenv
 # ── Experiment tracking (optional — code guards the import) ──────────────────
 wandb>=0.16
 pykeen
+xgboost
+shap

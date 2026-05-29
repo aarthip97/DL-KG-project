@@ -226,6 +226,8 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
     KNN_POP_JSON     = FINAL / "knn_pop_baseline_summary.json"
     HGT_RESULT_PATH  = FINAL / "hgt_results.json"
     AE_EMBEDDINGS_PQ = FINAL / "ae_embeddings.parquet"
+    XGB_RESULTS_CSV  = FINAL / "xgb_hybrid_results.csv"
+    XGB_MODEL_CACHE  = FINAL_MODELS_DIR / "xgb_hybrid.ubj"
 
     # Model directories (lives in ROOT/models/ — gitignored)
     FINAL_MODELS_DIR = FINAL / "models"
@@ -331,6 +333,7 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
         "KNN_VAL_PLOT_PNG": KNN_VAL_PLOT_PNG,
         "KNN_POP_CSV": KNN_POP_CSV, "KNN_POP_JSON": KNN_POP_JSON,
         "HGT_RESULT_PATH": HGT_RESULT_PATH, "AE_EMBEDDINGS_PQ": AE_EMBEDDINGS_PQ,
+        "XGB_RESULTS_CSV": XGB_RESULTS_CSV, "XGB_MODEL_CACHE": XGB_MODEL_CACHE,
         "KNN_RESULTS_DIR": KNN_RESULTS_DIR, "HGT_RESULTS_DIR": HGT_RESULTS_DIR,
         "AE_RESULTS_DIR": AE_RESULTS_DIR,
         "MODELS_DIR": MODELS_DIR, "AE_WEIGHTS_DIR": AE_WEIGHTS_DIR,
