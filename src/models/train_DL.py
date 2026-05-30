@@ -254,6 +254,17 @@ def train_hgt(
         range(n_users), batch_size=user_batch_size, shuffle=True
     )
 
+    # Gradient checkpointing is incompatible with the per-batch retain_graph
+    # loop below: retaining the graph across user batches would trigger a full
+    # forward recompute on *every* batch's backward (num_batches× slower). The
+    # per-batch backward already bounds activation memory, so AMP alone covers
+    # VRAM and checkpointing is force-disabled here.
+    if use_checkpoint:
+        if verbose:
+            print("[hgt] use_checkpoint=True is incompatible with the per-batch "
+                  "backward loop; disabling it (AMP still active for VRAM).")
+        use_checkpoint = False
+
     # Model
     model = RecommenderHGT(
         metadata=data.metadata(),
@@ -300,7 +311,10 @@ def train_hgt(
                 **(wandb_config or {}),
             },
         )
-        wandb.watch(model, log="gradients", log_freq=100)
+        # NOTE: wandb.watch(..., log="gradients") is intentionally NOT used.
+        # On Colab it hooks every parameter and serialises gradient histograms
+        # each step, which routinely hangs the run before the first epoch ever
+        # logs. Skipping it costs only gradient telemetry, not training.
 
     history: list[dict] = []
     best_val_recall = -1.0
@@ -318,19 +332,40 @@ def train_hgt(
         model.train()
         opt.zero_grad(set_to_none=True)
 
-        # Full-graph forward + listwise loss — wrapped in autocast when AMP is on.
+        # ── Full-graph forward ONCE per epoch ────────────────────────────────
+        # Every user batch below shares these globally-consistent embeddings.
         # AMP halves VRAM for the HGT forward pass and speeds up matmuls on
         # Tensor-core GPUs (T4, A100).  Sensitive ops (softmax, log) are
         # automatically upcast to float32 by PyTorch inside the context.
         with torch.cuda.amp.autocast(enabled=_amp_enabled):
             out = model(train_data.x_dict, train_data.edge_index_dict)
             all_track_embs = out[dst_t]  # (I, D)
+            all_user_embs  = out[src_t]  # (U, D)
 
-            # Accumulate listwise loss across user mini-batches, then back-prop once
-            total_loss: torch.Tensor | None = None
-            for user_batch_indices in user_loader:
-                user_batch_indices = user_batch_indices.to(dev)
-                batch_u_embs = out[src_t][user_batch_indices]
+        # ── Mini-batch listwise loss with PER-BATCH backward ─────────────────
+        # The previous design summed every user batch's loss into a single
+        # scalar and back-propagated once. That keeps the (user_batch × n_items)
+        # logit graph of *all* ~U/user_batch_size batches alive simultaneously —
+        # O(num_batches × user_batch × n_items) activations, i.e. tens of GB for
+        # 285k users / 14k tracks — which silently hangs / OOMs the first epoch's
+        # backward (the "never-ending training" symptom).
+        #
+        # Instead we back-propagate each batch immediately so its logit graph is
+        # freed before the next batch is built, and keep only the shared forward
+        # graph alive via retain_graph. Summing the per-batch gradients is
+        # mathematically identical to the old single-backward sum because the
+        # per-batch losses carry the same (batch_size / n_users) weights.
+        #
+        # NB: this requires the forward graph to be materialised (use_checkpoint
+        # =False). With gradient checkpointing on, retain_graph would force a
+        # full-graph recompute on every batch's backward (very slow) — prefer
+        # AMP over checkpointing here.
+        n_batches = len(user_loader)
+        epoch_loss_scalar = 0.0
+        for bi, user_batch_indices in enumerate(user_loader):
+            user_batch_indices = user_batch_indices.to(dev)
+            with torch.cuda.amp.autocast(enabled=_amp_enabled):
+                batch_u_embs = all_user_embs[user_batch_indices]
                 batch_loss = debiased_listwise_loss(
                     batch_u_embs,
                     all_track_embs,
@@ -340,21 +375,18 @@ def train_hgt(
                     lambda_reg=lambda_reg,
                     temperature=temperature,
                 )
-                # Scale so accumulated loss equals the full-batch mean
+                # Scale so the summed per-batch grads equal the full-batch mean.
                 scaled = batch_loss * (user_batch_indices.numel() / n_users)
-                total_loss = scaled if total_loss is None else total_loss + scaled
+            # Retain the shared forward graph for every batch but the last.
+            scaler.scale(scaled).backward(retain_graph=(bi < n_batches - 1))
+            epoch_loss_scalar += scaled.item()
 
-        if total_loss is not None:
-            epoch_loss_scalar = total_loss.item()
-            scaler.scale(total_loss).backward()
-            # Unscale before clipping so the norm threshold is in the original scale
-            scaler.unscale_(opt)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
-            scaler.step(opt)
-            scaler.update()
-        else:
-            epoch_loss_scalar = 0.0
-            opt.step()
+        # Unscale once before clipping so the norm threshold is in the original
+        # scale, then take a single optimiser step on the accumulated gradients.
+        scaler.unscale_(opt)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
+        scaler.step(opt)
+        scaler.update()
 
         scheduler.step()
 

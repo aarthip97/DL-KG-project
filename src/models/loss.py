@@ -96,7 +96,23 @@ def debiased_listwise_loss(
     logits = torch.matmul(u_norm, i_norm.t()) / temperature
     adjusted_logits = logits + lambda_reg * log_track_pop
 
-    raw_targets = raw_counts_matrix[user_indices].to(logits.device).float()
+    # Gather this batch's relevance rows. raw_counts_matrix may be a dense
+    # tensor OR a memory-light sparse tensor (CSR/COO) — densify only the small
+    # (B, I) slice for the batch so the full (U, I) matrix never has to live as
+    # a dense ~16 GB array in RAM.
+    if raw_counts_matrix.layout == torch.strided:
+        raw_targets = raw_counts_matrix[user_indices]
+    else:
+        idx_cpu = user_indices.detach().to(raw_counts_matrix.device)
+        try:
+            raw_targets = raw_counts_matrix.index_select(0, idx_cpu).to_dense()
+        except (RuntimeError, NotImplementedError):
+            # Some sparse layouts (e.g. CSR) lack index_select on dim 0;
+            # fall back to COO which always supports row gathering.
+            raw_targets = raw_counts_matrix.to_sparse_coo().index_select(
+                0, idx_cpu
+            ).to_dense()
+    raw_targets = raw_targets.to(logits.device).float()
     weighted_targets = torch.log1p(raw_targets)
     target_probs = weighted_targets / weighted_targets.sum(dim=1, keepdim=True).clamp(min=1e-9)
 

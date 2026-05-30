@@ -68,6 +68,14 @@ either knowledge-graph-embedding features or learnable lookup vectors. Because
 the listening layer of the simple graph encodes each interaction as a direct
 \texttt{user\,$\rightarrow$\,track} edge, message passing can reach items in a
 single hop, which is the configuration used to train the main recommender.
+Crucially, the graph fed to the HGT is materialised from the \emph{training}
+interactions only, so neither message passing nor the training objective can
+observe held-out edges. Validation and test scores are then computed against
+the held-out interactions of the \emph{same} user-level stratified split that
+drives the baselines (\cref{sec:eval-protocol}), rather than an independent
+random edge split internal to the model. This makes the HGT directly and
+fairly comparable to the popularity, KNN-CF and hybrid baselines on identical
+folds.
 
 \subsection{Representation Learning and Recommendation Models}
 
@@ -122,7 +130,8 @@ the popularity bias that dominates interaction-only methods, the model is
 trained with a \emph{popularity-debiased listwise} objective: a softmax
 cross-entropy over sampled items in which a log-popularity prior is subtracted
 from the logits (regularisation strength $\lambda=0.2$, temperature~$0.1$).
-The checkpoint with the best validation Recall is retained for testing.
+The checkpoint with the best validation Recall---measured on the shared
+stratified validation ground truth described above---is retained for testing.
 
 \paragraph{Baselines.}
 Three baselines contextualise the graph models.

@@ -17,8 +17,10 @@ Usage (notebook cell 4):
     FINAL_SPLITS_DIR
     KNN_VAL_CSV, KNN_TEST_CSV, KNN_VAL_PLOT_PNG
     KNN_POP_CSV, KNN_POP_JSON, HGT_RESULT_PATH, AE_EMBEDDINGS_PQ
-    MODELS_DIR, AE_WEIGHTS_DIR, HGT_WEIGHTS_DIR, KNN_CACHE_DIR
+    MODELS_DIR, AE_WEIGHTS_DIR, HGT_WEIGHTS_DIR, KNN_CACHE_DIR, KGE_WEIGHTS_DIR
     KNN_NBRS_CACHE, HGT_MODEL_PATH, AE_MODEL_PATH
+    KGE_ROTATE_PATH, KGE_COMPLEX_PATH
+    QUALITATIVE_DIR
     KNN_RESULTS_DIR, HGT_RESULTS_DIR, AE_RESULTS_DIR
     JSYMBOLIC_JAR, GDRIVE_DATA_ROOT
 """
@@ -252,13 +254,19 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
     KGE_LOSS_PNG     = FINAL / "kge_loss_curve.png"
 
     # Model weight directories (lives in ROOT/models/ — gitignored)
-    MODELS_DIR      = ROOT / "models"
-    AE_WEIGHTS_DIR  = MODELS_DIR / "autoencoder"
-    HGT_WEIGHTS_DIR = MODELS_DIR / "hgt"
-    KNN_CACHE_DIR   = MODELS_DIR / "knn"
-    KNN_NBRS_CACHE  = KNN_CACHE_DIR / "neighbours.npz"
-    HGT_MODEL_PATH  = HGT_WEIGHTS_DIR / "model.pt"
-    AE_MODEL_PATH   = AE_WEIGHTS_DIR / "model.pt"
+    MODELS_DIR       = ROOT / "models"
+    AE_WEIGHTS_DIR   = MODELS_DIR / "autoencoder"
+    HGT_WEIGHTS_DIR  = MODELS_DIR / "hgt"
+    KNN_CACHE_DIR    = MODELS_DIR / "knn"
+    KGE_WEIGHTS_DIR  = MODELS_DIR / "kge"
+    KNN_NBRS_CACHE   = KNN_CACHE_DIR / "neighbours.npz"
+    HGT_MODEL_PATH   = HGT_WEIGHTS_DIR / "model.pt"
+    AE_MODEL_PATH    = AE_WEIGHTS_DIR / "model.pt"
+    KGE_ROTATE_PATH  = KGE_WEIGHTS_DIR / "kge_rotate_embeddings.pt"
+    KGE_COMPLEX_PATH = KGE_WEIGHTS_DIR / "kge_complex_embeddings.pt"
+
+    # Qualitative analysis outputs (population-level CSVs + plots)
+    QUALITATIVE_DIR = FINAL / "qualitative"
 
     # Wikidata enrichment artefacts
     WD_INSTR_PQ        = INTERIM / "wikidata_instruments.json"
@@ -289,8 +297,8 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
     for _p in [
         INTERIM, PROCESSED, FINAL,
         KG_GRAPHDB_DIR, KG_STATS_DIR, KG_PLOTS_DIR,
-        FINAL_SPLITS_DIR,
-        MODELS_DIR, AE_WEIGHTS_DIR, HGT_WEIGHTS_DIR, KNN_CACHE_DIR,
+        FINAL_SPLITS_DIR, QUALITATIVE_DIR,
+        MODELS_DIR, AE_WEIGHTS_DIR, HGT_WEIGHTS_DIR, KNN_CACHE_DIR, KGE_WEIGHTS_DIR,
     ]:
         _p.mkdir(parents=True, exist_ok=True)
 
@@ -378,8 +386,11 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
         "KGE_HISTORY_CSV": KGE_HISTORY_CSV, "KGE_LOSS_PNG": KGE_LOSS_PNG,
         "MODELS_DIR": MODELS_DIR, "AE_WEIGHTS_DIR": AE_WEIGHTS_DIR,
         "HGT_WEIGHTS_DIR": HGT_WEIGHTS_DIR, "KNN_CACHE_DIR": KNN_CACHE_DIR,
+        "KGE_WEIGHTS_DIR": KGE_WEIGHTS_DIR,
         "KNN_NBRS_CACHE": KNN_NBRS_CACHE,
         "HGT_MODEL_PATH": HGT_MODEL_PATH, "AE_MODEL_PATH": AE_MODEL_PATH,
+        "KGE_ROTATE_PATH": KGE_ROTATE_PATH, "KGE_COMPLEX_PATH": KGE_COMPLEX_PATH,
+        "QUALITATIVE_DIR": QUALITATIVE_DIR,
         "JSYMBOLIC_JAR": JSYMBOLIC_JAR, "GDRIVE_DATA_ROOT": GDRIVE_DATA_ROOT,
         "WD_INSTR_PQ": WD_INSTR_PQ, "WD_INSTR_CHAINS_PQ": WD_INSTR_CHAINS_PQ,
         "WD_GENRE_PQ": WD_GENRE_PQ, "WD_GENRE_CHAINS_PQ": WD_GENRE_CHAINS_PQ,
