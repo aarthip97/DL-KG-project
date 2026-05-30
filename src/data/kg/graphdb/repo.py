@@ -80,17 +80,27 @@ class KGRepo:
         """Upload RDF files; skip those whose SHA-256 hasn't changed.
 
         Returns the list of files actually sent to the server.
+
+        The dedup state is keyed by *filename* (not full path) so uploads
+        from different machines or OS path conventions (e.g. Windows vs
+        Linux) correctly recognise already-uploaded files.
         """
-        state = {} if force else self._load_state()
+        raw_state = {} if force else self._load_state()
+        # Normalise any legacy full-path keys to just the filename so old
+        # state files produced on Windows / another machine stay valid.
+        state: Dict[str, str] = {}
+        for k, v in raw_state.items():
+            state[Path(k).name] = v
+
         sent: List[Path] = []
         for i, raw in enumerate(paths):
             p = Path(raw)
             digest = _sha256(p)
-            if state.get(str(p)) == digest:
+            if state.get(p.name) == digest:
                 log.info("Skipping %s (already uploaded, hash matches)", p.name)
                 continue
             self.client.upload_rdf(p, replace=replace_first and i == 0 and not sent)
-            state[str(p)] = digest
+            state[p.name] = digest
             sent.append(p)
         if sent:
             self._save_state(state)

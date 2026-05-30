@@ -399,7 +399,8 @@ SELECT DISTINCT ?track ?artist WHERE {
 
 QUERY_EDGE_TRACK_KEY = _q("""
 SELECT DISTINCT ?track ?key WHERE {
-    { ?track mrc:hasKey ?key . }
+    { ?track mrc:hasKey ?key .
+      FILTER(STRSTARTS(STR(?track), "http://purl.org/ontology/mrc/resource/track/")) }
     UNION
     { ?perf mrc:hasTrack ?track ; mrc:hasKey ?key . }
 }
@@ -407,7 +408,8 @@ SELECT DISTINCT ?track ?key WHERE {
 
 QUERY_EDGE_TRACK_MODE = _q("""
 SELECT DISTINCT ?track ?mode WHERE {
-    { ?track mrc:hasMode ?mode . }
+    { ?track mrc:hasMode ?mode .
+      FILTER(STRSTARTS(STR(?track), "http://purl.org/ontology/mrc/resource/track/")) }
     UNION
     { ?perf mrc:hasTrack ?track ; mrc:hasMode ?mode . }
 }
@@ -445,17 +447,23 @@ SELECT DISTINCT ?artist ?genre ?weight WHERE {
 
 QUERY_EDGE_GENRE_PARENT = _q("""
 SELECT DISTINCT ?child ?parent WHERE {
-    ?child rdfs:subClassOf ?parent .
+    ?child  owl:sameAs ?wd_child .
+    ?parent owl:sameAs ?wd_parent .
+    ?wd_child (rdfs:subClassOf)+ ?wd_parent .
     FILTER(STRSTARTS(STR(?child),  "http://purl.org/ontology/mrc/resource/genre/"))
     FILTER(STRSTARTS(STR(?parent), "http://purl.org/ontology/mrc/resource/genre/"))
+    FILTER(?child != ?parent)
 }
 """)
 
 QUERY_EDGE_INSTRUMENT_PARENT = _q("""
 SELECT DISTINCT ?child ?parent WHERE {
-    ?child rdfs:subClassOf ?parent .
+    ?child  owl:sameAs ?wd_child .
+    ?parent owl:sameAs ?wd_parent .
+    ?wd_child (rdfs:subClassOf)+ ?wd_parent .
     FILTER(STRSTARTS(STR(?child),  "http://purl.org/ontology/mrc/resource/instrument/"))
     FILTER(STRSTARTS(STR(?parent), "http://purl.org/ontology/mrc/resource/instrument/"))
+    FILTER(?child != ?parent)
 }
 """)
 
