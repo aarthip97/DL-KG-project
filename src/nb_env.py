@@ -292,13 +292,31 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
     GDRIVE_DATA_ROOT = (ROOT / "data") if ON_COLAB else None
 
     # ── Create directories ────────────────────────────────────────────────────
-    for _p in [
+    # On Colab, data/ and models/ are Drive symlinks: sequential mkdir calls
+    # go through FUSE and can each take 5-30 s on first access per session.
+    # Run them in parallel with a timeout so a slow Drive never blocks setup.
+    _dirs_to_create = [
         INTERIM, PROCESSED, FINAL,
         KG_GRAPHDB_DIR, KG_STATS_DIR, KG_PLOTS_DIR,
         FINAL_SPLITS_DIR, QUALITATIVE_DIR,
         MODELS_DIR, AE_WEIGHTS_DIR, HGT_WEIGHTS_DIR, KNN_CACHE_DIR, KGE_WEIGHTS_DIR,
-    ]:
-        _p.mkdir(parents=True, exist_ok=True)
+    ]
+    if ON_COLAB:
+        import concurrent.futures as _cf
+        def _safe_mkdir(_p):
+            try:
+                _p.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+        with _cf.ThreadPoolExecutor(max_workers=len(_dirs_to_create)) as _ex:
+            _futs = [_ex.submit(_safe_mkdir, _p) for _p in _dirs_to_create]
+            try:
+                _cf.wait(_futs, timeout=30)
+            except Exception:
+                pass
+    else:
+        for _p in _dirs_to_create:
+            _p.mkdir(parents=True, exist_ok=True)
 
     # ── Reproducibility ───────────────────────────────────────────────────────
     import numpy as np  # noqa: PLC0415
