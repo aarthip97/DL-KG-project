@@ -284,6 +284,61 @@ def rebuild_hgt_recommender_from_disk(
     }
 
 
+def load_index_bridges_from_disk(
+    *,
+    edge_dict_path,
+    kg_input_path,
+    splits_dir,
+) -> dict:
+    """Rebuild the ``u_idx``/``s_idx`` ↔ KG-node bridges **without** the model.
+
+    The bridge part of :func:`rebuild_hgt_recommender_from_disk`, isolated so the
+    persona / latent cells can resolve KG track nodes → songs after a restart
+    cheaply — it reads only ``node_dict.json`` (URI ordering), the split parquets
+    (the ``u_idx``/``s_idx`` maps) and ``kg_input.parquet`` (``song_id → track_id``).
+    No KGE checkpoint, AE parquet, graph build or weight load.
+
+    Returns ``{edge_dict, idx2song, user_to_kg, song2kg, track_kg_to_song}``.
+    """
+    import json as _json
+
+    import pandas as pd
+
+    splits_dir = Path(splits_dir)
+    merged = pd.read_parquet(kg_input_path, columns=["song_id", "track_id"])
+    sid2tid = (merged.drop_duplicates("song_id")
+               .set_index("song_id")["track_id"].to_dict())
+    sp = pd.concat([
+        pd.read_parquet(splits_dir / f"{s}.parquet",
+                        columns=["song_id", "s_idx", "user_id", "u_idx"])
+        for s in ("train", "val", "test")
+    ])
+    idx2song = {int(k): v for k, v in
+                sp.drop_duplicates("s_idx").set_index("s_idx")["song_id"].to_dict().items()}
+    u2user = sp.drop_duplicates("u_idx").set_index("u_idx")["user_id"].to_dict()
+
+    edge_dict = _json.load(open(edge_dict_path))
+    user_uri2kg = {uri: i for i, uri in enumerate(edge_dict["node_mappings"]["user"])}
+    track_uri2kg = {uri: i for i, uri in enumerate(edge_dict["node_mappings"]["track"])}
+
+    user_to_kg = {}
+    for u_idx, uid in u2user.items():
+        kg = user_uri2kg.get(_USER_URI_TPL.format(uid=uid))
+        if kg is not None:
+            user_to_kg[int(u_idx)] = kg
+    song2kg, track_kg_to_song = {}, {}
+    for s_idx, sid in idx2song.items():
+        tid = sid2tid.get(sid)
+        if tid is None:
+            continue
+        kg = track_uri2kg.get(_TRACK_URI_TPL.format(tid=tid))
+        if kg is not None:
+            song2kg[int(s_idx)] = kg
+            track_kg_to_song[kg] = int(s_idx)
+    return {"edge_dict": edge_dict, "idx2song": idx2song, "user_to_kg": user_to_kg,
+            "song2kg": song2kg, "track_kg_to_song": track_kg_to_song}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Lightweight split / metadata globals (for the qualitative + explainability cells)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -324,6 +379,7 @@ def load_eval_ground_truth(splits_dir):
 __all__ = (
     "rebuild_baselines_from_disk",
     "rebuild_hgt_recommender_from_disk",
+    "load_index_bridges_from_disk",
     "load_song_meta",
     "load_eval_ground_truth",
 )

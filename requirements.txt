@@ -28,6 +28,7 @@ seaborn>=0.13
 ipykernel>=6.29
 jupyterlab>=4.0
 plotly>=5.15
+ipywidgets>=7.7         
 
 # ── Dev utilities ─────────────────────────────────────────────────────────────
 scikit-learn>=1.4       # PCA, cosine similarity helpers

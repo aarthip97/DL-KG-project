@@ -46,6 +46,7 @@ from .explainability import (
 from .rehydrate import (
     rebuild_baselines_from_disk,
     rebuild_hgt_recommender_from_disk,
+    load_index_bridges_from_disk,
     load_song_meta,
     load_eval_ground_truth,
 )
@@ -66,5 +67,5 @@ __all__ = [
     "capture_hgt_attention",
     # rehydration
     "rebuild_baselines_from_disk", "rebuild_hgt_recommender_from_disk",
-    "load_song_meta", "load_eval_ground_truth",
+    "load_index_bridges_from_disk", "load_song_meta", "load_eval_ground_truth",
 ]

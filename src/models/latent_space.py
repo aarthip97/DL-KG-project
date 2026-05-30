@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import itertools
 import math
+import pickle
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
@@ -530,3 +532,113 @@ def plot_latent_2d(
 
     fig.tight_layout()
     return fig
+
+
+# ─── 9. Persisting the analysis (so a restart needs no forward pass) ───────────
+
+def assign_nearest_cluster(emb: np.ndarray, centroids: np.ndarray) -> np.ndarray:
+    """Hard-assign every embedding to its nearest GMM centroid (squared L2).
+
+    A cheap MAP proxy for *all* nodes — the GMM is fit on a balanced subsample,
+    so this extends its cluster identification to the full node set in the same
+    (Euclidean) geometry the mixture was estimated in.
+    """
+    emb = np.asarray(emb, dtype=np.float32)
+    C = np.asarray(centroids, dtype=np.float32)
+    d2 = (emb ** 2).sum(1, keepdims=True) - 2.0 * emb @ C.T + (C ** 2).sum(1)[None, :]
+    return d2.argmin(1).astype(np.int64)
+
+
+def save_latent_analysis(
+    out_dir,
+    *,
+    emb_df: pd.DataFrame,
+    gmm: "GMMResult",
+    centers_2d: Optional[np.ndarray] = None,
+    subsample: Optional[pd.DataFrame] = None,
+    composition: Optional[pd.DataFrame] = None,
+    k_range: Optional[Iterable[int]] = None,
+) -> Path:
+    """Persist a full latent-space analysis under ``out_dir``.
+
+    Writes, all reload-able without the model or a forward pass:
+
+    * ``node_embeddings.npz`` — every node's 64-d embedding + ``Node_ID`` /
+      ``Node_Type`` (the heavy, reusable artefact).
+    * ``gmm.pkl`` — the :class:`GMMResult` (params, BIC metrics, centroids, hard
+      labels) plus the UMAP-projected ``centers_2d`` and the swept ``k_range``.
+    * ``gmm_bic.csv`` — tidy ``(covariance_type, n_components, bic)`` metrics.
+    * ``nodes_clustered.parquet`` — every node's nearest-centroid ``Cluster``
+      (cluster identification for the full node set).
+    * ``subsample_umap.parquet`` — the plotted subsample with its exact GMM
+      ``Cluster_ID`` + 2-D UMAP ``X``/``Y``.
+    * ``cluster_composition.csv`` — the ``cluster × Node_Type`` count table.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    emb = np.vstack(emb_df["Embedding"].to_numpy()).astype(np.float32)
+    np.savez_compressed(
+        out_dir / "node_embeddings.npz",
+        node_id=emb_df["Node_ID"].to_numpy().astype(str),
+        node_type=emb_df["Node_Type"].to_numpy().astype(str),
+        emb=emb,
+    )
+
+    krange = list(k_range) if k_range is not None else list(gmm.n_components_range)
+    with open(out_dir / "gmm.pkl", "wb") as f:
+        pickle.dump({"gmm": gmm,
+                     "centers_2d": None if centers_2d is None else np.asarray(centers_2d),
+                     "k_range": krange}, f)
+
+    bic_rows = [
+        {"covariance_type": cv, "n_components": k, "bic": float(b)}
+        for cv, bics in gmm.bic_matrix.items()
+        for k, b in zip(krange, bics)
+    ]
+    pd.DataFrame(bic_rows).to_csv(out_dir / "gmm_bic.csv", index=False)
+
+    pd.DataFrame({
+        "Node_ID": emb_df["Node_ID"].to_numpy(),
+        "Node_Type": emb_df["Node_Type"].to_numpy(),
+        "Cluster": assign_nearest_cluster(emb, gmm.means),
+    }).to_parquet(out_dir / "nodes_clustered.parquet", index=False)
+
+    if subsample is not None:
+        cols = [c for c in ("Node_ID", "Node_Type", "Cluster_ID", "X", "Y")
+                if c in subsample.columns]
+        subsample[cols].to_parquet(out_dir / "subsample_umap.parquet", index=False)
+    if composition is not None:
+        composition.to_csv(out_dir / "cluster_composition.csv")
+    return out_dir
+
+
+def load_latent_analysis(out_dir) -> dict:
+    """Reload what :func:`save_latent_analysis` wrote.
+
+    Returns a dict with ``emb_df`` (full embeddings), ``gmm`` (:class:`GMMResult`),
+    ``centers_2d``, ``k_range`` and — when present — ``subsample``,
+    ``composition`` and ``nodes_clustered``.
+    """
+    out_dir = Path(out_dir)
+    npz = np.load(out_dir / "node_embeddings.npz", allow_pickle=False)
+    emb_df = pd.DataFrame({
+        "Node_ID": npz["node_id"].astype(str),
+        "Node_Type": npz["node_type"].astype(str),
+        "Embedding": list(npz["emb"].astype(np.float32)),
+    })
+    with open(out_dir / "gmm.pkl", "rb") as f:
+        blob = pickle.load(f)
+    out = {"emb_df": emb_df, "gmm": blob["gmm"],
+           "centers_2d": blob.get("centers_2d"), "k_range": blob.get("k_range")}
+    for key, fname, kw in (
+        ("subsample", "subsample_umap.parquet", {}),
+        ("nodes_clustered", "nodes_clustered.parquet", {}),
+    ):
+        p = out_dir / fname
+        if p.exists():
+            out[key] = pd.read_parquet(p, **kw)
+    p = out_dir / "cluster_composition.csv"
+    if p.exists():
+        out["composition"] = pd.read_csv(p, index_col=0)
+    return out
