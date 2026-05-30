@@ -104,12 +104,15 @@ def detect_hardware() -> Hardware:
 # VRAM tier -> (ae_batch_size, ae_infer_batch, hgt_user_batch_size).
 # Tiers, by total VRAM: cpu (no GPU); t4 (<=20 GB, Colab T4); mid (<=48 GB,
 # L4/A100-40); big (>48 GB, A100-80/H100/RTX PRO 6000).
+# hgt_user_batch_size: with the two-stage backward in train_DL.py, larger
+# values only affect stage-1 (cheap float32 loss loop) — they no longer
+# keep the HGT graph alive across batches — so we can use large values safely.
 _VRAM_TIERS = (
     #  max_gb,  label,  ae_batch, ae_infer, hgt_user_batch
     (0.0,   "cpu",   128,   256,    512),
     (20.0,  "t4",    256,   512,   1024),
-    (48.0,  "mid",  1024,  2048,   4096),
-    (1e9,   "big",  2048,  4096,  16384),
+    (48.0,  "mid",  1024,  2048,   8192),
+    (1e9,   "big",  2048,  4096,  65536),
 )
 
 # RAM tier -> (xgb_n_candidates, xgb_n_train_users, xgb_infer_batch_users).

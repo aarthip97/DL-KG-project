@@ -151,6 +151,7 @@ def train_kge(
     entity_dim: int = 128,
     epochs: int = 500,
     batch_size: int = 512,
+    num_negs_per_pos: int = 1,
     lr: float = 1e-3,
     device: str | None = None,
     seed: int = 42,
@@ -176,7 +177,13 @@ def train_kge(
     epochs
         Number of training epochs.
     batch_size
-        Positive triples per mini-batch.
+        Positive triples per mini-batch.  On a strong GPU (A100/H100) use
+        32_768–65_536; the default 512 starves the GPU between Python steps.
+    num_negs_per_pos
+        Negatives sampled per positive triple.  Higher values give more GPU
+        work per batch (closer to full negative-sampling coverage) and are
+        the main lever for GPU utilisation alongside batch_size.  The RotatE
+        paper uses 256; 128–512 is reasonable on modern hardware.
     lr
         Adam learning rate.
     device
@@ -219,16 +226,17 @@ def train_kge(
 
     # -- Run config (shared by W&B and the on-disk metadata sidecar) ---------
     _cfg = {
-        "model":       model,
-        "entity_dim":  entity_dim,
-        "epochs":      epochs,
-        "batch_size":  batch_size,
-        "lr":          lr,
-        "device":      resolved_device,
-        "seed":        seed,
-        "n_triples":   tf.num_triples,
-        "n_entities":  tf.num_entities,
-        "n_relations": tf.num_relations,
+        "model":            model,
+        "entity_dim":       entity_dim,
+        "epochs":           epochs,
+        "batch_size":       batch_size,
+        "num_negs_per_pos": num_negs_per_pos,
+        "lr":               lr,
+        "device":           resolved_device,
+        "seed":             seed,
+        "n_triples":        tf.num_triples,
+        "n_entities":       tf.num_entities,
+        "n_relations":      tf.num_relations,
     }
 
     # -- W&B initialisation (optional; never fatal) --------------------------
@@ -261,6 +269,7 @@ def train_kge(
             "batch_size": batch_size,
             "use_tqdm_batch": True,
         },
+        negative_sampler_kwargs={"num_negs_per_pos": num_negs_per_pos},
         optimizer="Adam",
         optimizer_kwargs={"lr": lr},
         random_seed=seed,

@@ -1,13 +1,22 @@
 """End-to-end training orchestration for the HGT recommender.
 
-Training strategy: Full-Graph Forward with Mini-Batch Listwise Loss.
+Training strategy: Full-Graph Forward with Two-Stage Mini-Batch Listwise Loss.
 
-The HGT graph is forwarded in full once per epoch. Every node therefore
-receives an embedding that reflects its complete neighbourhood context, with
-no sampling noise from subgraph methods. The listwise loss is then accumulated
-in small user chunks (user_batch_size users at a time) so that the full
-(num_users x num_tracks) logit matrix is never materialised in GPU memory.
-A single backward pass over the accumulated scalar closes the epoch.
+The HGT graph is forwarded in full once per epoch so every node embedding
+reflects its complete neighbourhood context. The listwise loss is computed in
+user-batch chunks, but instead of retaining the full HGT computation graph
+across every chunk's backward (O(n_batches) HGT backward passes), we use a
+two-stage backward:
+
+  Stage 1 — cheap: detach HGT outputs into float32 leaves; accumulate
+  d_loss/d_user_embs and d_loss/d_track_embs across all user batches with no
+  retain_graph (just the small loss sub-graph each time).
+
+  Stage 2 — one single HGT backward: feed the accumulated output-gradients
+  from stage 1 into torch.autograd.backward([user_embs, track_embs], ...).
+
+This is mathematically identical to the old retain_graph approach but requires
+exactly ONE pass through the HGT backward per epoch regardless of batch size.
 
 Loss: Intensity-Weighted Listwise cross-entropy with Logit Adjustment
 (see bpr.debiased_listwise_loss). Raw listen counts serve as graded relevance
@@ -17,7 +26,8 @@ recommendations on already-popular tracks.
 Evaluation: full-ranking Recall@K and NDCG@K on held-out edges produced by
 RandomLinkSplit, computed once every eval_every epochs and at the final epoch.
 
-Extras: cosine LR warm restarts, gradient clipping, optional W&B logging.
+Extras: cosine LR decay (single cycle, no restarts), gradient clipping,
+optional W&B logging, torch.compile.
 """
 from __future__ import annotations
 
@@ -156,7 +166,12 @@ def train_hgt(
                                  construction in the explicit-split regime).
       lambda_reg              -- popularity penalty scale in the listwise loss.
       temperature             -- softmax temperature (lower = sharper distribution).
-      lr_t0                   -- epoch period for cosine warm restart cycle.
+      lr_t0                   -- cosine decay period in epochs (T_max for
+                                 CosineAnnealingLR). Defaults to ``epochs`` so
+                                 the LR does exactly one smooth decay over the
+                                 full run.  Pass a smaller value for shorter
+                                 cycles (no warm restarts — use a custom
+                                 scheduler externally if you need them).
       lr_eta_min              -- minimum learning rate at the cosine trough.
       clip_grad_norm          -- maximum L2 norm for gradient clipping.
       device                  -- target device; defaults to cuda when available.
@@ -180,9 +195,10 @@ def train_hgt(
     torch.manual_seed(seed)
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Keep the (U, I) interaction matrix on CPU — debiased_listwise_loss calls
-    # .to(device) per batch, so it never needs to live in VRAM all at once.
-    user_interaction_matrix = user_interaction_matrix.cpu()
+    # The (U, I) interaction matrix can live on CPU or GPU. debiased_listwise_loss
+    # slices [user_batch] rows per call; if already on GPU those slices are free
+    # (no PCIe transfer). On a small GPU keep it on CPU to save VRAM; on a large
+    # GPU (e.g. A100/H100) pass it pre-moved to device for slightly faster batches.
 
     _amp_enabled = use_amp and dev.startswith("cuda")
     scaler = torch.cuda.amp.GradScaler(enabled=_amp_enabled)
@@ -286,8 +302,9 @@ def train_hgt(
         model = torch.compile(model)
 
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        opt, T_0=lr_t0, eta_min=lr_eta_min
+    _t_max = lr_t0 if (0 < lr_t0 < epochs) else epochs
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        opt, T_max=_t_max, eta_min=lr_eta_min
     )
 
     if use_wandb and _WANDB:
@@ -332,57 +349,52 @@ def train_hgt(
         model.train()
         opt.zero_grad(set_to_none=True)
 
-        # ── Full-graph forward ONCE per epoch ────────────────────────────────
-        # Every user batch below shares these globally-consistent embeddings.
+        # ── Stage 1: full-graph forward; accumulate output grads cheaply ───────
         # AMP halves VRAM for the HGT forward pass and speeds up matmuls on
-        # Tensor-core GPUs (T4, A100).  Sensitive ops (softmax, log) are
-        # automatically upcast to float32 by PyTorch inside the context.
+        # Tensor-core GPUs (T4, A100).
         with torch.cuda.amp.autocast(enabled=_amp_enabled):
             out = model(train_data.x_dict, train_data.edge_index_dict)
-            all_track_embs = out[dst_t]  # (I, D)
-            all_user_embs  = out[src_t]  # (U, D)
+            all_track_embs = out[dst_t]  # (I, D) — still in HGT comp graph
+            all_user_embs  = out[src_t]  # (U, D) — still in HGT comp graph
 
-        # ── Mini-batch listwise loss with PER-BATCH backward ─────────────────
-        # The previous design summed every user batch's loss into a single
-        # scalar and back-propagated once. That keeps the (user_batch × n_items)
-        # logit graph of *all* ~U/user_batch_size batches alive simultaneously —
-        # O(num_batches × user_batch × n_items) activations, i.e. tens of GB for
-        # 285k users / 14k tracks — which silently hangs / OOMs the first epoch's
-        # backward (the "never-ending training" symptom).
-        #
-        # Instead we back-propagate each batch immediately so its logit graph is
-        # freed before the next batch is built, and keep only the shared forward
-        # graph alive via retain_graph. Summing the per-batch gradients is
-        # mathematically identical to the old single-backward sum because the
-        # per-batch losses carry the same (batch_size / n_users) weights.
-        #
-        # NB: this requires the forward graph to be materialised (use_checkpoint
-        # =False). With gradient checkpointing on, retain_graph would force a
-        # full-graph recompute on every batch's backward (very slow) — prefer
-        # AMP over checkpointing here.
-        n_batches = len(user_loader)
+        # Detach into float32 leaves so stage-1 backward never touches the HGT.
+        # float32 avoids AMP underflow in the loss function (softmax, log).
+        u_det = all_user_embs.detach().float().requires_grad_(True)   # (U, D)
+        t_det = all_track_embs.detach().float().requires_grad_(True)  # (I, D)
+
         epoch_loss_scalar = 0.0
-        for bi, user_batch_indices in enumerate(user_loader):
+        for user_batch_indices in user_loader:
             user_batch_indices = user_batch_indices.to(dev)
-            with torch.cuda.amp.autocast(enabled=_amp_enabled):
-                batch_u_embs = all_user_embs[user_batch_indices]
-                batch_loss = debiased_listwise_loss(
-                    batch_u_embs,
-                    all_track_embs,
-                    user_batch_indices,
-                    user_interaction_matrix,
-                    log_track_pop,
-                    lambda_reg=lambda_reg,
-                    temperature=temperature,
-                )
-                # Scale so the summed per-batch grads equal the full-batch mean.
-                scaled = batch_loss * (user_batch_indices.numel() / n_users)
-            # Retain the shared forward graph for every batch but the last.
-            scaler.scale(scaled).backward(retain_graph=(bi < n_batches - 1))
+            # Pure float32 loss — no AMP context, no retain_graph, no scaler.
+            # Backward only flows through the cheap float32 leaf sub-graph.
+            batch_loss = debiased_listwise_loss(
+                u_det[user_batch_indices],
+                t_det,
+                user_batch_indices,
+                user_interaction_matrix,
+                log_track_pop,
+                lambda_reg=lambda_reg,
+                temperature=temperature,
+            )
+            scaled = batch_loss * (user_batch_indices.numel() / n_users)
+            scaled.backward()   # accumulates into u_det.grad and t_det.grad
             epoch_loss_scalar += scaled.item()
 
-        # Unscale once before clipping so the norm threshold is in the original
-        # scale, then take a single optimiser step on the accumulated gradients.
+        # ── Stage 2: single backward through the HGT ─────────────────────────
+        # u_det.grad / t_det.grad now hold d_total_loss / d_{user,track}_embs.
+        # Multiply by the AMP loss-scale so the HGT parameter gradients stay in
+        # the same numerical regime as scaler.scale(loss).backward(); then
+        # scaler.unscale_(opt) restores normal magnitude before clipping.
+        u_g = u_det.grad  # (U, D) float32
+        t_g = t_det.grad  # (I, D) float32
+        if _amp_enabled and u_g is not None:
+            _s = scaler.get_scale()
+            u_g = (u_g * _s).to(all_user_embs.dtype)
+            t_g = (t_g * _s).to(all_track_embs.dtype) if t_g is not None else None
+        torch.autograd.backward(
+            [all_user_embs, all_track_embs],
+            grad_tensors=[u_g, t_g],
+        )
         scaler.unscale_(opt)
         torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
         scaler.step(opt)
