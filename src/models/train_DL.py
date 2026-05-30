@@ -202,6 +202,14 @@ def train_hgt(
 
     _amp_enabled = use_amp and dev.startswith("cuda")
     scaler = torch.cuda.amp.GradScaler(enabled=_amp_enabled)
+    # The two-stage backward below injects gradients directly via
+    # torch.autograd.backward(...) and never calls scaler.scale(loss).backward(),
+    # so the scaler's internal _scale tensor is never created lazily. Touch
+    # scale() once on a throwaway tensor to force that initialisation now;
+    # otherwise scaler.unscale_(opt) asserts "Attempted unscale_ but _scale is
+    # None." on the very first epoch.
+    if _amp_enabled:
+        scaler.scale(torch.zeros((), device=dev))
 
     if dev.startswith("cuda"):
         # cuDNN selects the fastest convolution algorithm for fixed input shapes.
