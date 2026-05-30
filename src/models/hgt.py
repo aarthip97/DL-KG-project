@@ -97,7 +97,6 @@ class RecommenderHGT(nn.Module):
                 out_channels=hidden_channels,
                 metadata=metadata,
                 heads=num_heads,
-                group="sum",
             )
             for _ in range(num_layers)
         ])

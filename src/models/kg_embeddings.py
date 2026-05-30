@@ -313,7 +313,7 @@ def load_kge_checkpoint(path: str | pathlib.Path) -> dict[str, np.ndarray]:
     Returns a dict {uri_string -> float32 numpy array} compatible with
     build_rich_hetero_graph() without needing to retrain.
     """
-    cp = torch.load(path, map_location="cpu", weights_only=True)
+    cp = torch.load(path, map_location="cpu", weights_only=False)
     uris: list[str] = cp["uris"]
     vecs: np.ndarray = cp["vecs"]   # (n_entities, out_dim) float32
     return {uri: vecs[i] for i, uri in enumerate(uris)}
