@@ -182,9 +182,18 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
         if _wandb_key:
             try:
                 import wandb  # type: ignore[import]
-                # timeout=30 prevents wandb from blocking on the Colab-native
-                # interactive auth flow when a key is already supplied.
-                wandb.login(key=_wandb_key, relogin=True, timeout=30)
+                # Hide google.colab from wandb so it skips the Colab-native
+                # interactive auth flow and uses the key directly. Without this
+                # wandb tries to open a browser/prompt even when a key is
+                # supplied, hanging the cell. timeout=30 is a fallback guard.
+                sys.modules["google.colab2"] = sys.modules.get("google.colab")
+                del sys.modules["google.colab"]
+                try:
+                    wandb.login(key=_wandb_key, relogin=True, timeout=30)
+                finally:
+                    if sys.modules.get("google.colab2") is not None:
+                        sys.modules["google.colab"] = sys.modules["google.colab2"]
+                    sys.modules.pop("google.colab2", None)
                 print("W&B authenticated.")
             except Exception as e:
                 print(f"  [WARN] W&B login failed: {e}")
