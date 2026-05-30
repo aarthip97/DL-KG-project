@@ -15,7 +15,7 @@ Recall@K and NDCG@K are aggregated over all evaluated users.
 """
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Iterable, Optional
 
 import numpy as np
 import torch
@@ -135,16 +135,35 @@ def evaluate_top_k(
     *,
     k_list: Iterable[int] = (10, 20),
     batch_users: int = 1024,
+    pop_norm: Optional[torch.Tensor] = None,   # (I,) popularity in [0, 1] per item
 ) -> dict[str, float]:
     """Return ``{'recall@k': ..., 'ndcg@k': ...}`` over distinct eval users.
 
     For each unique user in ``eval_user_idx``, scores all items, masks
     items already seen during training, and aggregates the held-out
     positives that fall in the top-K.
+
+    When ``pop_norm`` (a length-``I`` tensor of per-item popularity normalised
+    to ``[0, 1]``) is supplied, two extra keys are added per cut-off:
+
+      * ``coverage@k`` — fraction of the catalogue that appears in *any* user's
+        top-K list (catalogue diversity; a global ratio, not a per-user mean).
+      * ``pop_bias@k`` — mean popularity of the recommended items, averaged over
+        users (lower = less popularity-biased).
+
+    Both reuse the top-K already computed for Recall/NDCG, so the extra cost is
+    negligible. These feed :func:`models.evaluation.metrics.overall_score`.
     """
     device = user_emb.device
     k_list = sorted(set(int(k) for k in k_list))
     k_max = max(k_list)
+    _extra = pop_norm is not None
+    if _extra:
+        pop_norm = pop_norm.to(device).float()
+        n_items = item_emb.size(0)
+        # One boolean catalogue mask per k, OR-accumulated across user chunks.
+        cov_mask = {k: torch.zeros(n_items, dtype=torch.bool, device=device)
+                    for k in k_list}
 
     # Build per-user training history (set of item ids) and held-out positives.
     train_by_user: dict[int, list[int]] = {}
@@ -155,12 +174,17 @@ def evaluate_top_k(
     for u, i in zip(eval_user_idx.tolist(), eval_item_idx.tolist()):
         eval_by_user.setdefault(int(u), []).append(int(i))
 
+    _metric_names = ("recall", "ndcg") + (("coverage", "pop_bias") if _extra else ())
+
     users = torch.tensor(sorted(eval_by_user.keys()), device=device)
     if users.numel() == 0:
-        return {f"{m}@{k}": 0.0 for m in ("recall", "ndcg") for k in k_list}
+        return {f"{m}@{k}": 0.0 for m in _metric_names for k in k_list}
 
     metrics = {f"recall@{k}": 0.0 for k in k_list}
     metrics |= {f"ndcg@{k}": 0.0 for k in k_list}
+    if _extra:
+        metrics |= {f"coverage@{k}": 0.0 for k in k_list}
+        metrics |= {f"pop_bias@{k}":  0.0 for k in k_list}
 
     n_users = users.numel()
     for start in range(0, n_users, batch_users):
@@ -204,8 +228,20 @@ def evaluate_top_k(
             metrics[f"recall@{k}"] += recall_k
             metrics[f"ndcg@{k}"]   += ndcg_k
 
+        if _extra:
+            for k in k_list:
+                tk = topk[:, :k]                          # (B, k) recommended items
+                cov_mask[k][tk.reshape(-1)] = True        # union into catalogue mask
+                metrics[f"pop_bias@{k}"] += pop_norm[tk].mean(dim=-1).sum().item()
+
+    # recall/ndcg/pop_bias are per-user means; coverage is a global catalogue
+    # ratio, so set it from the accumulated mask instead of dividing by n_users.
     for key in metrics:
-        metrics[key] /= n_users
+        if not key.startswith("coverage@"):
+            metrics[key] /= n_users
+    if _extra:
+        for k in k_list:
+            metrics[f"coverage@{k}"] = cov_mask[k].sum().item() / n_items
     return metrics
 
 

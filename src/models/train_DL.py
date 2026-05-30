@@ -95,6 +95,7 @@ def train_hgt(
     eval_every: int = 10,
     early_stopping_patience: Optional[int] = None,
     k_list: Iterable[int] = (10, 20),
+    monitor: str = "overall_score",
     val_ratio: float = 0.1,
     test_ratio: float = 0.1,
     disjoint_train_ratio: float = 0.3,
@@ -103,7 +104,7 @@ def train_hgt(
     train_edge_index: Optional[torch.Tensor] = None,
     lambda_reg: float = 0.2,
     temperature: float = 0.1,
-    lr_t0: int = 20,
+    lr_t0: int = 0,
     lr_eta_min: float = 1e-5,
     clip_grad_norm: float = 1.0,
     device: Optional[str] = None,
@@ -143,6 +144,14 @@ def train_hgt(
       user_batch_size         -- users per mini-batch during loss accumulation.
       eval_every              -- evaluate validation metrics every this many epochs.
       k_list                  -- Recall@K and NDCG@K cut-offs.
+      monitor                 -- scalar used for best-checkpoint selection AND
+                                 early stopping. "overall_score" (default) uses
+                                 models.evaluation.metrics.overall_score at the
+                                 smallest cut-off (0.6*NDCG + 0.2*Coverage +
+                                 0.2*(1-PopularityBias)); coverage/pop-bias are
+                                 computed cheaply from the top-K already ranked
+                                 for Recall/NDCG. Any other value is read as a
+                                 single metric key, e.g. "ndcg@10" or "recall@20".
       val_ratio               -- fraction of edges held out for validation
                                  (RandomLinkSplit regime only; ignored when
                                  val_gt is provided).
@@ -166,12 +175,15 @@ def train_hgt(
                                  construction in the explicit-split regime).
       lambda_reg              -- popularity penalty scale in the listwise loss.
       temperature             -- softmax temperature (lower = sharper distribution).
-      lr_t0                   -- cosine decay period in epochs (T_max for
-                                 CosineAnnealingLR). Defaults to ``epochs`` so
-                                 the LR does exactly one smooth decay over the
-                                 full run.  Pass a smaller value for shorter
-                                 cycles (no warm restarts — use a custom
-                                 scheduler externally if you need them).
+      lr_t0                   -- cosine half-period in epochs (T_max for
+                                 CosineAnnealingLR). 0 (default) or any value
+                                 >= epochs means a single smooth decay from lr
+                                 to lr_eta_min over the whole run. A smaller
+                                 positive value makes the LR cycle: plain
+                                 CosineAnnealingLR ramps back UP to lr after each
+                                 trough (period 2*lr_t0), so e.g. lr_t0=20 over
+                                 200 epochs gives 5 down-up cycles. Use
+                                 CosineAnnealingWarmRestarts for proper SGDR.
       lr_eta_min              -- minimum learning rate at the cosine trough.
       clip_grad_norm          -- maximum L2 norm for gradient clipping.
       device                  -- target device; defaults to cuda when available.
@@ -273,6 +285,13 @@ def train_hgt(
     # Pre-compute log-popularity prior once; reused every epoch
     log_track_pop = compute_log_pop_prior(track_listen_counts, device=dev)
 
+    # Per-track popularity normalised to [0, 1] (same max-normalisation the
+    # notebook uses for the final eval), aligned with the track-node order of
+    # item_emb. Fed to evaluate_top_k so it can also report coverage / pop-bias,
+    # which the overall_score monitor needs.
+    _pop = track_listen_counts.detach().float()
+    pop_norm = (_pop / (_pop.max() + 1e-9)).to(dev)
+
     # DataLoader over user indices for mini-batch loss accumulation
     user_loader = DataLoader(
         range(n_users), batch_size=user_batch_size, shuffle=True
@@ -349,6 +368,7 @@ def train_hgt(
                 "lambda_reg":      lambda_reg,
                 "temperature":     temperature,
                 "lr_t0":           lr_t0,
+                "monitor":         monitor,
                 "val_ratio":       val_ratio,
                 "test_ratio":      test_ratio,
                 **(wandb_config or {}),
@@ -360,13 +380,48 @@ def train_hgt(
         # logs. Skipping it costs only gradient telemetry, not training.
 
     history: list[dict] = []
-    best_val_recall = -1.0
+    best_monitor = -float("inf")
     best_state: dict | None = None
     best_val: dict = {}
-    _evals_no_improve = 0   # consecutive evaluations without a val-recall gain
+    _evals_no_improve = 0   # consecutive evals without a monitor-score gain
 
     k_list = sorted(set(int(k) for k in k_list))
     primary_k = k_list[0]
+
+    # ── Selection / early-stopping criterion ─────────────────────────────────
+    # `monitor` is either "overall_score" (the metrics.overall_score composite
+    # evaluated at primary_k) or a single metric key like "ndcg@10". overall_score
+    # is imported lazily so single-metric monitors never pull in the evaluation/kg
+    # import stack (recommenders -> kg_to_hetero -> data.kg, plus scipy).
+    _overall_fn = None
+    if monitor == "overall_score":
+        try:
+            from .evaluation.metrics import overall_score as _overall_fn
+        except Exception as _e:
+            raise ImportError(
+                "monitor='overall_score' requires "
+                "models.evaluation.metrics.overall_score, which failed to import "
+                f"({_e.__class__.__name__}: {_e}). Pass monitor='ndcg@10' (or "
+                "another recall@k / ndcg@k key) to select on a single metric."
+            ) from _e
+    else:
+        _valid = {f"{m}@{k}" for m in ("recall", "ndcg", "coverage", "pop_bias")
+                  for k in k_list}
+        if monitor not in _valid:
+            raise ValueError(
+                f"monitor={monitor!r} must be 'overall_score' or one of "
+                f"{sorted(_valid)}")
+
+    def _monitor_score(vm: dict[str, float]) -> float:
+        """Scalar that best-checkpoint selection and early stopping maximise."""
+        if _overall_fn is not None:
+            return _overall_fn(
+                {f"NDCG@{primary_k}":           vm[f"ndcg@{primary_k}"],
+                 f"PopularityBias@{primary_k}": vm.get(f"pop_bias@{primary_k}", 0.0),
+                 "Coverage":                    vm.get(f"coverage@{primary_k}", 0.0)},
+                k=primary_k,
+            )
+        return float(vm[monitor])
 
     t_start = time.time()
     _epoch_bar = tqdm(range(1, epochs + 1), desc="[hgt] training",
@@ -454,16 +509,19 @@ def train_hgt(
                 eval_item_idx=_vi,
                 train_edge_index=train_pos,
                 k_list=k_list,
+                pop_norm=pop_norm,   # enables coverage@k / pop_bias@k for overall_score
             )
             if not _explicit_split:
                 del _val_dev
             if dev.startswith("cuda"):
                 torch.cuda.empty_cache()
 
+            monitor_score = _monitor_score(val_metrics)
             log.update({f"val/{k}": v for k, v in val_metrics.items()})
+            log["val/monitor_score"] = monitor_score
 
-            if val_metrics[f"recall@{primary_k}"] > best_val_recall:
-                best_val_recall = val_metrics[f"recall@{primary_k}"]
+            if monitor_score > best_monitor:
+                best_monitor = monitor_score
                 best_state = copy.deepcopy(model.state_dict())
                 best_val = dict(val_metrics)
                 _evals_no_improve = 0
@@ -487,8 +545,8 @@ def train_hgt(
             if verbose:
                 _epoch_bar.write(
                     f"[hgt] early stopping at epoch {ep} "
-                    f"(no val recall@{primary_k} gain for "
-                    f"{early_stopping_patience} evals; best={best_val_recall:.4f})")
+                    f"(no val {monitor} gain for "
+                    f"{early_stopping_patience} evals; best={best_monitor:.4f})")
             break
 
     if best_state is not None:
@@ -512,6 +570,7 @@ def train_hgt(
         eval_item_idx=_ti,
         train_edge_index=train_pos,
         k_list=k_list,
+        pop_norm=pop_norm,   # test metrics also carry coverage@k / pop_bias@k
     )
     if not _explicit_split:
         del _test_dev

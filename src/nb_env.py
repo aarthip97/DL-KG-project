@@ -239,7 +239,7 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
     KNN_VAL_PLOT_PNG = FINAL / "knn_val_curve.png"
     KNN_POP_CSV      = FINAL / "knn_pop_baseline.csv"
     KNN_POP_JSON     = FINAL / "knn_pop_baseline_summary.json"
-    HGT_RESULT_PATH  = FINAL / "hgt_results.json"
+    HGT_RESULT_PATH  = FINAL / "hgt_results.pkl"   # pickle (embeds the live model), NOT json
     AE_EMBEDDINGS_PQ = FINAL / "ae_embeddings.parquet"
     XGB_RESULTS_CSV  = FINAL / "xgb_hybrid_results.csv"
     XGB_MODEL_CACHE  = FINAL / "xgb_hybrid.ubj"
