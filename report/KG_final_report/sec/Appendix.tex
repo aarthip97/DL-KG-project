@@ -1,0 +1,179 @@
+\clearpage
+\onecolumn
+
+\appendix
+\section*{Appendix}
+\addcontentsline{toc}{section}{Appendix}
+
+% ─────────────────────────────────────────────
+\section{Exploratory Overview of MSD Features}
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{output1.png}
+\captionof{figure}{Exploratory overview of MSD feature distributions.}
+\label{fig:msd_eda}
+\end{center}
+
+% ─────────────────────────────────────────────
+\section{User Taste Profile Diagnostics}
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{user_diagnostics.png}
+\captionof{figure}{Play-count distribution, songs per user, users per song, and top-20 most-played tracks in the filtered Echo Nest Taste Profile.}
+\label{fig:user_diag}
+\end{center}
+
+% ─────────────────────────────────────────────
+\section{KG Entity and Relation Statistics}
+
+\begin{center}
+\includegraphics[width=0.65\linewidth]{node_type_histogram.png}
+\captionof{figure}{Node type histogram for the simple KG (excluding blank nodes from the rich variant).}
+\label{fig:node_hist}
+\end{center}
+
+% ─────────────────────────────────────────────
+\section{Simple vs.\ Rich KG: Structural Differences}
+
+\begin{center}
+\footnotesize
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{p{0.20\textwidth} p{0.32\textwidth} p{0.42\textwidth}}
+\toprule
+\textbf{Feature} & \textbf{Simple KG} & \textbf{Rich KG}\\
+\midrule
+Genre association
+& Direct edge: \texttt{artist\;mrc:hasGenre\;genre}
+& Blank node: \texttt{artist\;mrc:hasGenreAssoc\;[a mrc:GenreAssociation; mrc:genre g; mrc:weight w]}\\
+\midrule
+\texttt{artist\_terms\_weight} & Not stored & \texttt{mrc:weight} on GenreAssociation\\
+\midrule
+Key / Mode & Named node on Track & Named node on Performance + confidence scores\\
+\midrule
+\texttt{play\_count} & Not stored & \texttt{mrc:listenCount} on ListeningEvent blank node\\
+\midrule
+User$\to$Track & \texttt{user\;mrc:listenedTo\;track} & \texttt{user\;mrc:hasListeningInteraction\;[a mrc:ListeningEvent; mrc:onTrack track; mrc:listenCount n]}\\
+\bottomrule
+\end{tabular}
+\captionof{table}{Structural differences between simple and rich KG variants.}
+\label{tab:simple_vs_rich}
+\end{center}
+
+% ─────────────────────────────────────────────
+\section{Music Feature RDF Mapping (Simple KG)}
+
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.1}
+
+\begin{longtable}{
+>{\ttfamily\bfseries\RaggedRight\arraybackslash}p{0.19\textwidth}
+>{\RaggedRight\arraybackslash}p{0.31\textwidth}
+>{\RaggedRight\arraybackslash}p{0.07\textwidth}
+>{\ttfamily\RaggedRight\arraybackslash}p{0.23\textwidth}
+>{\RaggedRight\arraybackslash}p{0.18\textwidth}
+}
+\caption{Selected MSD and jSymbolic features mapped to RDF representation.}
+\label{tab:kg_features}\\
+\toprule
+\textbf{Feature} & \textbf{Description} & \textbf{Origin} & \textbf{RDF Term} & \textbf{Storage}\\
+\midrule
+\endfirsthead
+\toprule
+\textbf{Feature} & \textbf{Description} & \textbf{Origin} & \textbf{RDF Term} & \textbf{Storage}\\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+key & Musical key (C, C\#, \ldots, B) & MSD & mrc:hasKey & Named Node\\
+mode & Modality (Major/Minor) & MSD & mrc:hasMode & Named Node\\
+primary\_genre & Highest-weight genre tag & MSD & mrc:hasGenre & Named Node\\
+midi\_instruments & MIDI instrument names & MIDI/LMD & mo:instrument & Named Node\\
+tempo & Mean BPM & jSymbolic / MSD & mo:tempo & Literal (xsd:double)\\
+Tempo\_class & Categorical tempo marking & Derived & mrc:hasTempoClass & Named Node\\
+Mean\_Tempo & jSymbolic mean BPM & jSymbolic & mrc:meanTempo & Literal (xsd:double)\\
+Note\_Density & Average notes per second & jSymbolic & mrc:noteDensity & Literal (xsd:double)\\
+Amount\_of\_Staccato & Fraction of staccato notes & jSymbolic & mrc:amountOfStaccato & Literal (xsd:double)\\
+Chromatic\_Motion & Fraction of semitone intervals & jSymbolic & mrc:chromaticMotion & Literal (xsd:double)\\
+Chord\_Duration & Mean chord duration & jSymbolic & mrc:chordDuration & Literal (xsd:double)\\
+Avg\_Indep\_Voices & Mean simultaneous voices & jSymbolic & mrc:averageNumberOfIndependentVoices & Literal (xsd:double)\\
+\end{longtable}
+
+% ─────────────────────────────────────────────
+\section{GraphDB Track Node Inspection}
+
+\begin{center}
+\includegraphics[width=0.38\linewidth]{1.png}
+\captionof{figure}{Selected properties of track TRAYEGN128F9361233 (\textit{When She Dances}) in GraphDB (part 1).}
+\label{fig:gdb1}
+\end{center}
+
+\begin{center}
+\includegraphics[width=0.38\linewidth]{2.png}
+\captionof{figure}{Additional jSymbolic properties of the same track (part 2).}
+\label{fig:gdb2}
+\end{center}
+
+% ─────────────────────────────────────────────
+\section{Selected SPARQL Queries and Results}
+\label{sec:sparql}
+
+All queries share the following prefix block (omitted from individual listings):
+\begin{footnotesize}
+\begin{verbatim}
+PREFIX mrc: <http://purl.org/ontology/mrc/>
+PREFIX mo:  <http://purl.org/ontology/mo/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+PREFIX dct: <http://purl.org/dc/terms/>
+\end{verbatim}
+\end{footnotesize}
+
+\subsection*{Q1 — Genre Ranking (Simple KG)}
+\begin{footnotesize}
+\begin{verbatim}
+SELECT ?genreLabel (COUNT(DISTINCT ?artist) AS ?n)
+WHERE { ?artist mrc:hasGenre ?g .
+        ?g rdfs:label ?genreLabel .
+        FILTER(LANG(?genreLabel) = "en") }
+GROUP BY ?genreLabel  ORDER BY DESC(?n)  LIMIT 30
+\end{verbatim}
+\end{footnotesize}
+
+\begin{table}[H]\centering\footnotesize
+\caption{Top 5 genres by artist count (Simple KG).}
+\begin{tabular}{lr}\toprule Genre & \#Artists\\\midrule
+rock & 2,117 \\ pop & 1,062 \\ electronic & 1,037 \\ pop rock & 814 \\ hip hop & 381\\\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{Q2 — Genre Weights (Rich KG)}
+\begin{footnotesize}
+\begin{verbatim}
+SELECT ?genreLabel (COUNT(DISTINCT ?artist) AS ?n)
+  (ROUND(AVG(?w)*1000)/1000 AS ?avg_weight)
+WHERE { ?artist mrc:hasGenreAssoc ?a .
+        ?a mrc:genre ?g; mrc:weight ?w .
+        ?g rdfs:label ?genreLabel .
+        FILTER(LANG(?genreLabel) = "en") }
+GROUP BY ?genreLabel  ORDER BY DESC(?avg_weight)  LIMIT 10
+\end{verbatim}
+\end{footnotesize}
+
+\noindent Top by average weight: dance pop (0.810), trance (0.795), ballad (0.779), rock (0.759).
+
+\subsection*{Q3 — High-Confidence Key Distribution (Rich KG)}
+\begin{footnotesize}
+\begin{verbatim}
+SELECT ?keyLabel (COUNT(*) AS ?n)
+WHERE { ?p a mo:Performance; mrc:hasKey ?k;
+           mrc:keyConfidence ?kc .
+        FILTER(?kc >= 0.8)
+        ?k rdfs:label ?keyLabel .
+        FILTER(LANG(?keyLabel) = "en") }
+GROUP BY ?keyLabel  ORDER BY DESC(?n)
+\end{verbatim}
+\end{footnotesize}
+
+\noindent Top keys at $\geq$0.8 confidence: C\,(211), G\,(196), D\,(150), A\,(103), F\,(98).

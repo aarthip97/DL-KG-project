@@ -1,0 +1,45 @@
+\documentclass[10pt,twocolumn,letterpaper]{article}
+
+\usepackage[pagenumbers]{cvpr}
+
+\input{preamble}
+
+\definecolor{cvprblue}{rgb}{0.21,0.49,0.74}
+\usepackage[pagebackref,breaklinks,colorlinks,allcolors=cvprblue]{hyperref}
+
+\def\paperID{*****}
+\def\confName{KG-DL}
+\def\confYear{2026}
+
+\title{Content and User Preference Based Music Recommendation\\
+       Using Knowledge Graphs and Graph Neural Networks}
+
+\author{Group 7\\
+\and
+Pedro Fanica (54346)\\
+\and
+Aarthi Perumpillichira (66404)\\
+\and
+Maja Skwaroń (66083)\\
+}
+
+\begin{document}
+\maketitle
+
+\input{sec/0_abstract}
+\input{sec/1_intro}
+\input{sec/2_data}
+\input{sec/3_methodology}
+\input{sec/4_results}
+\input{sec/5_conclusions}
+
+{
+  \small
+  \bibliographystyle{unsrtnat}
+  \bibliography{main}
+}
+
+\appendix
+\input{sec/Appendix}
+
+\end{document}

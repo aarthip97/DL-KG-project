@@ -1,0 +1,79 @@
+\section{Results}
+\label{sec:results}
+
+\subsection{Knowledge Graph Statistics and Inspection}
+
+The enriched KG contains 12.9 million triples. The entity composition confirms expected counts: 285,037 listeners, 7,013 tracks, 7,013 performances, 3,668 artists, 645 genres, 129 instruments, 12 keys, 9 tempo classes, and 7 decades. Hierarchy traversal queries confirmed that all genre and instrument nodes link correctly to their Wikidata super-classes.
+
+SPARQL genre ranking shows \textit{rock} as the most frequent genre (2,117 artists), while average-weight ranking reveals that focused genres such as \textit{dance pop} (0.81) and \textit{trance} (0.795) rank above \textit{rock} (0.759) — reflecting that broadly tagged artists accumulate many low-weight associations. High-confidence key queries ($\mathit{keyConf}\geq 0.8$) recover the expected Western-music prevalence of C (211 tracks), G (196), and D (150).
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.9\linewidth]{genres_simple.png}
+  \caption{Top 20 genres by artist count (simple KG).}
+  \label{fig:genres}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.9\linewidth]{confident_keys_rich.png}
+  \caption{Musical key distribution filtered to high-confidence detections ($\mathit{keyConf}\geq 0.8$, rich KG).}
+  \label{fig:keys}
+\end{figure}
+
+\subsection{Autoencoder}
+
+The autoencoder trained for the full 200 epochs (early stopping never triggered), with MSE falling from 0.964 at epoch~1 to 0.616 at epoch~200. The steepest descent occurs in the first 75 epochs, followed by a gradual flattening, indicating continued but diminishing compression improvement throughout training.
+
+\subsection{Model Comparison}
+
+Table~\ref{tab:benchmark} reports all models at $K{=}10$ over all 284,864 test users. KNN-CF achieves the highest Overall Score (0.421), combining competitive NDCG@10 (0.106) with excellent catalogue coverage (91.6\%) and low popularity bias (0.130). MostPopular attains the highest per-user NDCG@10 (0.114) but recommends from a catalogue of only 0.6\% of items (Coverage: 0.006) and exhibits a high popularity bias (0.611), giving an Overall Score of only 0.148. XGBoost achieves 66.7\% coverage and a low popularity bias (0.118) but suffers from a retrieval bottleneck limiting NDCG@10 to 0.044. All pairwise Wilcoxon and $t$-test comparisons on Recall and NDCG are statistically significant ($p<0.001$).
+
+\begin{table}[h]
+\centering\footnotesize
+\caption{Test benchmark at $K{=}10$ (all 284,864 test users). Coverage and Popularity Bias (PB) are catalogue-level metrics. Overall Score weights NDCG, Coverage, and $(1-\mathrm{PB})$ as $0.6{:}0.2{:}0.2$.}
+\label{tab:benchmark}
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{lccccccc}
+\toprule
+\textbf{Model} & \textbf{Rec.} & \textbf{NDCG} & \textbf{HR} & \textbf{MRR} & \textbf{Cov.} & \textbf{PB} & \textbf{Overall}\\
+\midrule
+MostPopular    & 0.129 & 0.114 & 0.200 & 0.090 & 0.006 & 0.611 & 0.148\\
+KNN-CF         & 0.103 & 0.106 & 0.169 & 0.087 & 0.916 & 0.130 & \textbf{0.421}\\
+XGBoost        & 0.038 & 0.044 & 0.072 & 0.035 & 0.667 & 0.118 & 0.336\\
+HGT$^\dagger$  & 0.001 & 0.001 & 0.002 & 0.000 & 0.046 & 0.006 & 0.209\\
+\bottomrule
+\multicolumn{8}{l}{$^\dagger$See Section~\ref{sec:hgt_analysis} for HGT evaluation discussion.}
+\end{tabular}
+\end{table}
+
+\subsection{HGT Analysis}
+\label{sec:hgt_analysis}
+
+\paragraph{Consistent self-evaluation.} Evaluated immediately after training under identical undirected-graph inference conditions, the HGT (RotatE initialisation) achieves Recall@10 of 0.111, NDCG@10 of 0.071, Coverage@10 of 39.9\%, and Popularity Bias of 0.070. These figures are substantially better than the final benchmark in Table~\ref{tab:benchmark}, where HGT is evaluated in a directed-edge setting (edges present only in one direction), while the model was trained with undirected message passing. This protocol mismatch prevents the HGT from reaching user nodes during inference, collapsing ranking performance. We report the consistent self-evaluation for comparison and note that retraining with directed edges is a direct path to resolving this.
+
+\paragraph{Node initialisation.} A 200-epoch comparison of RotatE and random initialisations shows that random initialisation slightly outperforms RotatE: Recall@10 0.118 vs.\ 0.111 and NDCG@10 0.076 vs.\ 0.071. This suggests that the KGE-derived features, learned on a static relational structure, do not meaningfully aid the HGT, which learns its own structural representations through message passing.
+
+\paragraph{Logit-adjustment ablation.} Table~\ref{tab:lambda} shows a 30-epoch ablation over the debiasing strength~$\lambda$. Ranking quality (NDCG, Recall) decreases monotonically with $\lambda$, while coverage increases. At $\lambda{=}0$ the model ignores popularity structure and achieves Recall@10~0.125 but Coverage@10 of only 0.6\%; at $\lambda{=}0.5$ coverage grows to 8.8\% but Recall@10 drops to 0.077. The selected full-training configuration balances these objectives via checkpoint selection on the composite Overall Score.
+
+\begin{table}[h]
+\centering\footnotesize
+\caption{HGT lambda ablation (30 epochs, RotatE init). Coverage@10 in (\%).}
+\label{tab:lambda}
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{ccccc}
+\toprule
+$\lambda$ & Recall@10 & NDCG@10 & Cov@10 & PB@10\\
+\midrule
+0.00 & 0.125 & 0.081 & 0.6\% & 0.321\\
+0.05 & 0.124 & 0.079 & 0.6\% & 0.319\\
+0.10 & 0.118 & 0.073 & 0.7\% & 0.305\\
+0.20 & 0.110 & 0.068 & 1.5\% & 0.280\\
+0.50 & 0.077 & 0.048 & 8.8\% & 0.123\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Explainability.} Unlike purely collaborative methods, HGT attention weights can be inspected per edge type to identify which neighbouring entity types (shared genres, co-instrumented tracks, shared tempo class) most influenced a given recommendation, providing a basis for human-interpretable explanations without additional modelling overhead.
