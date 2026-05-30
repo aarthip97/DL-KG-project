@@ -43,7 +43,12 @@ from .explainability import (
     EdgeAttention,
     capture_hgt_attention,
 )
-from .rehydrate import rebuild_baselines_from_disk
+from .rehydrate import (
+    rebuild_baselines_from_disk,
+    rebuild_hgt_recommender_from_disk,
+    load_song_meta,
+    load_eval_ground_truth,
+)
 
 __all__ = [
     # metrics
@@ -60,5 +65,6 @@ __all__ = [
     "HGTExplainer", "Explanation", "Reason", "EdgeAttention",
     "capture_hgt_attention",
     # rehydration
-    "rebuild_baselines_from_disk",
+    "rebuild_baselines_from_disk", "rebuild_hgt_recommender_from_disk",
+    "load_song_meta", "load_eval_ground_truth",
 ]
