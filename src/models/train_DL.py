@@ -306,7 +306,25 @@ def train_hgt(
 
     # torch.compile fuses kernel launches via Triton JIT — ~30 s startup cost,
     # then 20-40 % faster per epoch.  Silently skipped on PyTorch < 2.0.
+    #
+    # Robustness: Inductor lowers to Triton and shells out to `ptxas` to build
+    # the GPU kernels. On GPU architectures the bundled Triton/ptxas can't
+    # target yet (e.g. Blackwell sm_120a) this fails *lazily* on the first
+    # compiled forward with an InductorError / NoTritonConfigsError / PTXASError,
+    # which would otherwise abort the whole run mid-epoch. We therefore:
+    #   • capture_scalar_outputs=True — lets dynamo trace through HGTConv's
+    #     grouped-Linear `.item()` loop instead of breaking the graph there;
+    #   • suppress_errors=True — any remaining Inductor/ptxas failure degrades
+    #     to eager for that graph (with a warning) rather than crashing.
+    # Note these only matter when the eager fallback is actually exercised; on a
+    # supported GPU compilation proceeds normally.
     if compile_model and hasattr(torch, "compile"):
+        try:
+            import torch._dynamo as _dynamo
+            _dynamo.config.capture_scalar_outputs = True
+            _dynamo.config.suppress_errors = True
+        except Exception:
+            pass
         model = torch.compile(model)
 
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)

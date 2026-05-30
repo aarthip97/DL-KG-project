@@ -1,7 +1,14 @@
+\backcite {sun2019rotate}{{1}{(document)}{Doc-Start}}
+\backcite {trouillon2016complex}{{1}{(document)}{Doc-Start}}
+\backcite {hu2020hgt}{{1}{(document)}{Doc-Start}}
 \backcite {raffel2016lakh}{{1}{2.1}{subsection.2.1}}
 \backcite {msd2011}{{1}{2.1}{subsection.2.1}}
 \backcite {echonest2011}{{1}{2.1}{subsection.2.1}}
 \backcite {mckay2018jsymbolic}{{2}{2.2}{figure.caption.1}}
 \backcite {music21docs}{{2}{2.2}{figure.caption.1}}
-\backcite {he2020lightgcn}{{9}{5}{section.5}}
-\backcite {wang2019kgcn}{{9}{5}{section.5}}
+\backcite {raimond2007musicontology}{{2}{3.1}{subsection.3.1}}
+\backcite {sun2019rotate}{{5}{3.4.2}{subsubsection.3.4.2}}
+\backcite {trouillon2016complex}{{5}{3.4.2}{subsubsection.3.4.2}}
+\backcite {hu2020hgt}{{5}{3.4.3}{subsubsection.3.4.3}}
+\backcite {he2020lightgcn}{{8}{5}{section.5}}
+\backcite {wang2019kgcn}{{8}{5}{section.5}}

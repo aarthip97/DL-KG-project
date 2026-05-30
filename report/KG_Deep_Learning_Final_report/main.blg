@@ -1,48 +1,46 @@
 This is BibTeX, Version 0.99e (TeX Live 2026/Arch Linux)
 Capacity: max_strings=200000, hash_size=200000, hash_prime=170003
 The top-level auxiliary file: main.aux
-The style file: ieeenat_fullname.bst
+The style file: unsrtnat.bst
 Database file #1: main.bib
-Warning--I didn't find a database entry for "TODO"
-You've used 7 entries,
-            2708 wiz_defined-function locations,
-            706 strings with 6935 characters,
-and the built_in function-call counts, 3564 in all, are:
-= -- 319
-> -- 215
-< -- 6
-+ -- 73
-- -- 66
-* -- 267
-:= -- 535
-add.period$ -- 22
-call.type$ -- 7
-change.case$ -- 42
-chr.to.int$ -- 7
-cite$ -- 14
-duplicate$ -- 169
-empty$ -- 271
-format.name$ -- 75
-if$ -- 758
+You've used 11 entries,
+            2481 wiz_defined-function locations,
+            698 strings with 7708 characters,
+and the built_in function-call counts, 4905 in all, are:
+= -- 418
+> -- 263
+< -- 8
++ -- 100
+- -- 78
+* -- 351
+:= -- 748
+add.period$ -- 41
+call.type$ -- 11
+change.case$ -- 21
+chr.to.int$ -- 11
+cite$ -- 11
+duplicate$ -- 254
+empty$ -- 431
+format.name$ -- 91
+if$ -- 1078
 int.to.chr$ -- 1
-int.to.str$ -- 1
-missing$ -- 4
-newline$ -- 44
-num.names$ -- 28
-pop$ -- 94
+int.to.str$ -- 12
+missing$ -- 6
+newline$ -- 71
+num.names$ -- 33
+pop$ -- 114
 preamble$ -- 1
-purify$ -- 36
+purify$ -- 11
 quote$ -- 0
-skip$ -- 142
+skip$ -- 181
 stack$ -- 0
-substring$ -- 118
-swap$ -- 41
-text.length$ -- 3
+substring$ -- 198
+swap$ -- 79
+text.length$ -- 5
 text.prefix$ -- 0
 top$ -- 0
 type$ -- 77
 warning$ -- 0
-while$ -- 30
+while$ -- 37
 width$ -- 0
-write$ -- 98
-(There was 1 warning)
+write$ -- 164
