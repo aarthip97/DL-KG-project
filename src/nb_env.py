@@ -180,7 +180,11 @@ def setup(ROOT: Path, ON_COLAB: bool) -> dict[str, Any]:  # noqa: N803
         if _wandb_key:
             try:
                 import wandb  # type: ignore[import]
+                #Temporary hack to prevent colab from hanging
+                sys.modules["google.colab2"] = sys.modules["google.colab"]
+                del sys.modules["google.colab"]
                 wandb.login(key=_wandb_key, relogin=True)
+                sys.modules["google.colab"] = sys.modules["google.colab2"]
                 print("W&B authenticated.")
             except Exception as e:
                 print(f"  [WARN] W&B login failed: {e}")
