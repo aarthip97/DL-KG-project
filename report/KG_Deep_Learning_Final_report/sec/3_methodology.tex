@@ -89,7 +89,7 @@ Two KG embedding models were trained on triples exported from the enriched KG. R
 
 Both models were chosen because our KG is rich in \emph{asymmetric} relations: a user listens to a track but not the reverse; a track belongs to a genre but a genre does not belong to a track; an artist performs a piece but a piece does not perform an artist. Real-valued models such as TransE cannot represent asymmetry, since they place head and tail in the same vector space with a single additive offset that is the same in both directions. Complex-valued representations break this symmetry naturally: in RotatE, a relation $r$ rotates the head entity $h$ to reach the tail $t$ in complex space ($h \circ r \approx t$, element-wise), but the inverse rotation $\bar{r}$ is a distinct transformation, so the model can simultaneously encode $r$ and its asymmetric inverse without conflict. ComplEx achieves asymmetry through the Hermitian dot product $\mathrm{Re}(\langle h, r, \bar{t}\rangle)$, where conjugating $t$ but not $h$ breaks the symmetry of the score.
 
-Despite sharing the complex-space inductive bias, RotatE is expected to be the stronger embedding for this KG due to its ability to model \emph{compositional} relation patterns in addition to symmetry and antisymmetry. Composition arises naturally in our graph: the chain \textit{track~$\xrightarrow{\text{hasTempoClass}}$~Allegro~$\xrightarrow{\text{followedBy}}$~decade} or genre-hierarchy traversals are all compositional paths. A rotation composed with another rotation is still a rotation, so RotatE can represent such chains geometrically; ComplEx has no analogous closure property and therefore struggles to encode compositional structure. For these reasons RotatE was used as the primary initialiser for the HGT node features, with ComplEx retained for comparison.
+Despite sharing the complex-space inductive bias, RotatE is expected to be stronger here because it additionally models \emph{compositional} relation patterns, which arise naturally in our graph (e.g.\ the chain \textit{track~$\xrightarrow{\text{hasTempoClass}}$~Allegro~$\xrightarrow{\text{followedBy}}$~decade} or genre-hierarchy traversals). A rotation composed with another rotation is still a rotation, so RotatE represents such chains geometrically, whereas ComplEx has no analogous closure property. RotatE was therefore used as the primary initialiser for the HGT node features, with ComplEx retained for comparison.
 
 Both KG embeddings were trained with entity\_dim=128, producing 256-dimensional output vectors per entity, over 100 epochs with Adam optimizer, and with listening events deliberately excluded from the training corpus. The embedding dimension was set to 128 to match the autoencoder bottleneck, ensuring that audio and structural features contribute comparably to the final track representation. Listening interactions, on the other hand, were excluded from the training corpus to avoid leaking the target signal into the node features.
 
@@ -97,14 +97,19 @@ The resulting 256-dimensional embedding for every entity in the graph, were subs
 
 \subsubsection{Heterogeneous Graph Transformer (The main model).}
 
-The primary recommendation model used in this project was a Heterogeneous Graph Transformer (HGT)~\cite{hu2020hgt}, selected for its ability to natively operate on graphs containing multiple node and edge types. This was particularly important for our KG since it comprises tracks, artists, users, genres, instruments, keys, modes, tempos, and decades, each representing distinct semantic entities and relationships. Many standard graph neural network architectures aggregate information from neighbouring nodes without explicitly modelling these type differences, potentially obscuring important structural information. In contrast, HGT learns type-specific transformation and attention parameters for each node and edge type combination, enabling it to preserve the heterogeneous structure of the graph throughout the message-passing process and capture more nuanced relationships for recommendation, making it a natural fit for this task. 
+The primary recommendation model was a Heterogeneous Graph Transformer (HGT)~\cite{hu2020hgt}, chosen for its ability to operate natively on graphs with multiple node and edge types---essential for our KG of tracks, artists, users, genres, instruments, keys, modes, tempos, and decades. Unlike standard GNNs that aggregate over neighbours without modelling type differences, HGT learns type-specific transformation and attention parameters for each node- and edge-type combination, preserving the graph's heterogeneous structure throughout message passing and capturing more nuanced relationships for recommendation.
 
 The HGT stack was configured with two message-passing layers, 4 attention heads, a hidden dimension of 128, and dropout of 0.1. A per-node-type MLP head projects the hidden representations to a 64-dimensional output space, which is L2-normalised to enable cosine similarity scoring, a standard output design for dot-product recommenders. Track nodes were initialised with a 384-dimensional feature vector, the concatenation of the 128-dim autoencoder embedding and the 256-dim KGE embedding, giving the model access to both audio content and relational context. All other node types (artists, genres, instruments, keys, modes, tempos, decades) were initialised from their 256-dim KGE features alone.
 
 The model was trained for 100 epochs using the Adam optimiser
-($lr = 10^{-3}$, weight decay $=10^{-4}$) with a cosine
-warm-restart learning-rate schedule that periodically reset the
-learning rate to escape local minima. The checkpoint achieving the best validation Recall@20 was retained for final evaluation.
+($lr = 10^{-3}$, weight decay $=10^{-4}$) with a single-cycle
+cosine-annealing schedule that decays the learning rate smoothly to
+near zero over the full training run. Model selection and early
+stopping were both driven by the composite validation \emph{Overall
+Score} at $K{=}10$ (Eq.~\ref{eq:overall}) rather than a single accuracy
+metric: the checkpoint maximising this score was retained for final
+evaluation, so that selection rewards ranking quality, catalogue
+coverage, and popularity debiasing jointly.
 
 To address the popularity bias inherent in implicit-feedback data, we adopt an \textit{Intensity-Weighted Listwise Loss with Logit Adjustment}. Given $L_2$-normalised user embedding $\hat{\mathbf{u}}$ and track embeddings $\hat{\mathbf{t}}_i$, the adjusted logit for track $i$ is
 \begin{equation}
@@ -130,26 +135,43 @@ The third baseline, an XGBoost two-stage hybrid, incorporates content features w
 
 \subsubsection{Evaluation Protocol}
 
-All recommenders were evaluated on a single, shared \emph{user-level stratified}
-split of the interaction data (training / validation / test), stratified by
-song-level attributes (genre and release decade) so that the popularity and
-content distributions were preserved across folds; song features and graph
-structure were visible to every split, and only the interactions were
-partitioned, preventing leakage. Knowledge-graph embeddings and the autoencoder
-are unsupervised and therefore fit on the training data without a held-out
-ranking split.
+All recommenders were evaluated on a single, shared \emph{user-level
+stratified} split of the interaction data (train/validation/test),
+stratified by song-level attributes (genre and release decade) so that
+popularity and content distributions are preserved across folds. Song
+features and graph structure are visible to every split and only the
+interactions are partitioned, preventing leakage. The unsupervised KG
+embeddings and autoencoder are fit on the training split only.
 
-We report a standard top-$K$ suite---Recall@$K$, Precision@$K$, NDCG@$K$, Hit-Rate@$K$ and MRR---together with two catalogue \emph{Coverage} and mean \emph{Popularity-Bias@$K$}, and a composite \emph{Overall Score}
-\begin{multline}
-\mathrm{Overall} = 0.6\cdot\mathrm{NDCG@}K + 0.2\cdot\mathrm{Coverage} \\
-+ 0.2\cdot(1-\mathrm{PopularityBias@}K),
-\end{multline}
+For an evaluated user $u$ with held-out ground-truth set $\mathcal{G}_u$
+and ranked top-$K$ list $R_u=(r_1,\dots,r_K)$, let
+$g_i=\mathbf{1}[r_i\in\mathcal{G}_u]$ indicate whether the $i$-th
+recommendation is relevant. We report a standard top-$K$ suite, each
+metric averaged over evaluated users: precision
+$\mathrm{P@}K=\tfrac{1}{K}\sum_{i\le K} g_i$; recall
+$\mathrm{R@}K=\bigl(\sum_{i\le K} g_i\bigr)/\min(K,|\mathcal{G}_u|)$;
+hit-rate $\mathrm{HR@}K=\mathbf{1}\!\left[\sum_{i\le K} g_i>0\right]$;
+and the reciprocal rank $\mathrm{MRR}=1/\min\{i:g_i{=}1\}$ (zero when no
+recommendation is relevant). Ranking quality is the normalised
+discounted cumulative gain
+$\mathrm{NDCG@}K=\mathrm{DCG@}K/\mathrm{IDCG@}K$, with
+$\mathrm{DCG@}K=\sum_{i\le K} g_i/\log_2(i+1)$ and $\mathrm{IDCG@}K$ the
+DCG of the ideal ranking. Two catalogue-level metrics capture diversity:
+coverage $\mathrm{Cov}=\bigl|\bigcup_u R_u\bigr|/|\mathcal{I}|$, the
+fraction of the catalogue $\mathcal{I}$ ever recommended, and mean
+popularity-bias $\mathrm{PB@}K=\tfrac{1}{K}\sum_{i\le K}\pi(r_i)$, the
+average normalised popularity $\pi(\cdot)\in[0,1]$ of the recommended
+items. These are fused into a single composite \emph{Overall Score}
+\begin{equation}\label{eq:overall}
+\mathrm{Overall@}K = 0.6\,\mathrm{NDCG@}K + 0.2\,\mathrm{Cov}
++ 0.2\,\bigl(1-\mathrm{PB@}K\bigr),
+\end{equation}
 which rewards models that are accurate \emph{and} surface diverse, less
-popular content. Every model was scored with the same recommendation lists sliced at
-$K\in\{5,10,20,50,100\}$. Pairwise differences were assessed with the
-paired Wilcoxon signed-rank test (with Cohen's~$d_z$ effect sizes) and an
-omnibus Friedman test. Because full inference over all 284{,}864 test users
-is computationally prohibitive for the XGBoost model, pairwise and omnibus
-tests were conducted on a shared random subsample of 5{,}000 users across all
-models, ensuring a balanced, paired comparison.
+popular content; it is also the criterion used to select the HGT
+checkpoint during training. Every model was scored on the same lists at
+$K\in\{5,10,20,50,100\}$, and pairwise differences were assessed with the
+paired Wilcoxon signed-rank test (Cohen's~$d_z$ effect sizes) and an
+omnibus Friedman test on a shared random subsample of 5{,}000 users,
+since full inference over all 284{,}864 test users is computationally
+prohibitive for the XGBoost model.
 

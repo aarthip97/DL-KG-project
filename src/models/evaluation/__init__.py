@@ -36,6 +36,13 @@ from .comparison import (
     friedman_nemenyi,
     summarise_comparison,
 )
+from .explainability import (
+    HGTExplainer,
+    Explanation,
+    Reason,
+    EdgeAttention,
+    capture_hgt_attention,
+)
 
 __all__ = [
     # metrics
@@ -48,4 +55,7 @@ __all__ = [
     "analyze_user", "analyze_population", "AttributeArrays",
     # comparison
     "pairwise_significance", "friedman_nemenyi", "summarise_comparison",
+    # explainability
+    "HGTExplainer", "Explanation", "Reason", "EdgeAttention",
+    "capture_hgt_attention",
 ]
