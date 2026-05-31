@@ -11,7 +11,7 @@
 \def\confName{KG-DL}
 \def\confYear{2026}
 
-\title{Milestone Supplement: Training, Experiments, Results, and Contributions}
+\title{Deep Learning Milestone 2: Training, Experiments, Results, and Contributions}
 
 \author{Group 7 \quad Pedro Fanica (54346) \quad Aarthi Perumpillichira (66404) \quad Maja Skwaroń (66083)}
 
@@ -23,12 +23,12 @@
 \label{sec:training}
 
 \paragraph{Autoencoder.}
-A fully connected autoencoder compresses the 1,525-dimensional jSymbolic/music21 feature vector of each track to a 128-dimensional bottleneck via encoder layers $1526\!\to\!512\!\to\!256\!\to\!128$ (symmetric decoder), ReLU + dropout~0.2. Trained with Adam ($lr{=}10^{-3}$, batch 256) to minimise MSE for up to 200 epochs; early stopping triggered if $\Delta{<}10^{-4}$ over 15 epochs.
+A fully connected autoencoder compresses the 1,525-dimensional jSymbolic~\cite{mckay2018jsymbolic}/music21~\cite{music21docs} feature vector of each track to a 128-dimensional bottleneck via encoder layers $1526\!\to\!512\!\to\!256\!\to\!128$ (symmetric decoder), ReLU + dropout~0.2. Trained with Adam ($lr{=}10^{-3}$, batch 256) to minimise MSE for up to 200 epochs; early stopping triggered if $\Delta{<}10^{-4}$ over 15 epochs.
 
-\paragraph{KGE (RotatE / ComplEx).}
+\paragraph{KGE (RotatE~\cite{sun2019rotate} / ComplEx~\cite{trouillon2016complex}).}
 Both models are trained for 100 epochs on 807,955 triples (listening edges excluded). Adam optimiser, entity\_dim=128, batch 32,768, 256 negatives per positive. Output: 256-dimensional vectors for all 304,110 entities.
 
-\paragraph{HGT.}
+\paragraph{HGT~\cite{hu2020hgt}.}
 2 message-passing layers, 4 attention heads, hidden dim 128, dropout 0.1. Track nodes: 384-dim input (128-dim AE $\Vert$ 256-dim RotatE); other types: 256-dim KGE. Per-type MLP head → 64-dim $\ell_2$-normalised output. Trained 200 epochs, Adam ($lr{=}10^{-3}$, wd $10^{-4}$) with cosine-annealing. Checkpoint selected by composite Overall Score at $K{=}10$ on validation.
 
 \textit{Loss}: logit-adjusted listwise cross-entropy with soft engagement targets $\tilde{p}_{ui}\propto\log(1+c_{ui})$:
@@ -54,6 +54,13 @@ where $\tau{=}0.1$ and $p_i$ is the Laplace-smoothed marginal listen probability
   \item \textbf{Multi-$K$ evaluation}: all models at $K\in\{5,10,20,50,100\}$; Wilcoxon + Friedman tests on a shared 5,000-user subsample.
 \end{itemize}
 
+\paragraph{Evaluation protocol.}
+A stratified 70/10/20 train/val/test split by genre and decade preserves popularity and content distributions across folds; song features and KG structure are visible to all splits. Per-user metrics (Precision, Recall, HR, MRR, NDCG) are supplemented by two catalogue-level diversity metrics: coverage $\mathrm{Cov}{=}|\bigcup_u R_u|/|\mathcal{I}|$ and popularity bias PB@$K$. These are fused into a composite score
+\begin{equation*}
+  \mathrm{Overall@}K = 0.6\,\mathrm{NDCG@}K + 0.2\,\mathrm{Cov} + 0.2(1-\mathrm{PB@}K),
+\end{equation*}
+which also serves as the HGT checkpoint criterion. Statistical significance uses paired Wilcoxon signed-rank and Friedman omnibus tests on a shared 5,000-user subsample.
+
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Results and Learning Curves}
 \label{sec:results}
@@ -71,19 +78,19 @@ where $\tau{=}0.1$ and $p_i$ is the Laplace-smoothed marginal listen probability
 \label{tab:bench}
 \setlength{\tabcolsep}{3.5pt}
 \renewcommand{\arraystretch}{1.1}
-\begin{tabular}{lcccccc}
+\begin{tabular}{lccccccc}
 \toprule
-\textbf{Model} & \textbf{Rec.} & \textbf{NDCG} & \textbf{HR} & \textbf{Cov.} & \textbf{PB} & \textbf{Ovrl.}\\
+\textbf{Model} & \textbf{Rec.} & \textbf{NDCG} & \textbf{HR} & \textbf{MRR} & \textbf{Cov.} & \textbf{PB} & \textbf{Ovrl.}\\
 \midrule
-MostPopular   & \textbf{.129} & \textbf{.114} & \textbf{.200} & .006 & .611 & .148\\
-KNN-CF        & .103 & .106 & .169 & \textbf{.916} & .130 & \textbf{.421}\\
-XGBoost       & .038 & .044 & .072 & .667 & \textbf{.118} & .336\\
-HGT$^\dagger$ & .001 & .001 & .002 & .046 & .006 & .209\\
+MostPopular   & \textbf{.129} & \textbf{.114} & \textbf{.200} & \textbf{.090} & .006 & .611 & .148\\
+KNN-CF        & .103 & .106 & .169 & .087 & \textbf{.916} & .130 & \textbf{.421}\\
+XGBoost       & .038 & .044 & .072 & .035 & .667 & \textbf{.118} & .336\\
+HGT$^\dagger$ & .001 & .001 & .002 & .000 & .046 & .006 & .209\\
 \midrule
-HGT (self)$^*$& .111 & .071 & --- & .399 & .070 & ---\\
+HGT (self)$^*$& .111 & .071 & --- & --- & .399 & .070 & ---\\
 \bottomrule
-\multicolumn{7}{l}{\tiny $^\dagger$Directed-eval mismatch (trained undirected, eval directed).}\\
-\multicolumn{7}{l}{\tiny $^*$Consistent self-eval (undirected inference, same as training).}
+\multicolumn{8}{l}{\tiny $^\dagger$Directed-eval mismatch (trained undirected, eval directed).}\\
+\multicolumn{8}{l}{\tiny $^*$Consistent self-eval (undirected inference, same as training).}
 \end{tabular}
 \end{table}
 
@@ -111,7 +118,23 @@ HGT (self)$^*$& .111 & .071 & --- & .399 & .070 & ---\\
 \end{tabular}
 \end{table}
 
-KNN-CF achieves the best Overall Score (0.421), dominated by its 91.6\% catalogue coverage. MostPopular leads on per-user NDCG but concentrates recommendations on 0.6\% of the catalogue. Random init marginally outperforms RotatE init for HGT ($\Delta$Recall $+$0.007), suggesting KGE features are subsumed by HGT's own relational learning. The debiasing term $\lambda$ trades ranking quality for coverage: $\lambda{=}0.5$ triples coverage (0.6\%~$\to$~8.8\%) while halving Recall (0.125~$\to$~0.077). All pairwise Wilcoxon and $t$-test comparisons are significant ($p<0.001$).
+KNN-CF achieves the best Overall Score (0.421), dominated by its 91.6\% catalogue coverage. MostPopular leads on per-user NDCG but concentrates recommendations on 0.6\% of the catalogue. XGBoost reaches 66.7\% coverage but suffers from a retrieval bottleneck that limits NDCG@10 to 0.044. Random init marginally outperforms RotatE init for HGT ($\Delta$Recall $+$0.007), suggesting KGE features are subsumed by HGT's own relational learning. The debiasing term $\lambda$ trades ranking quality for coverage: $\lambda{=}0.5$ triples coverage (0.6\%~$\to$~8.8\%) while halving Recall (0.125~$\to$~0.077). All pairwise Wilcoxon and $t$-test comparisons are significant ($p<0.001$).
+
+\paragraph{HGT evaluation note.}
+The HGT benchmark row reflects a directed-evaluation mismatch: the model was trained with undirected message passing but evaluated under directed edges, preventing it from reaching user nodes during inference. Under consistent undirected inference (HGT self row) it recovers Recall@10~0.111 and Coverage~39.9\%. Retraining with directed edges is the direct remediation~\cite{hu2020hgt}.
+
+\paragraph{HGT explainability.}
+Unlike purely collaborative methods, HGT attention weights can be inspected per edge type to identify which entity types — shared genres, co-instrumented tracks, shared tempo class — most influenced a recommendation. This provides human-interpretable explanations grounded in KG structure without additional modelling overhead, a qualitative advantage not captured by the quantitative metrics above. Future work should extend baselines to graph-collaborative methods such as LightGCN~\cite{he2020lightgcn} or KGCN~\cite{wang2019kgcn} for a fuller comparison.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Discussion}
+\label{sec:discussion}
+
+The results expose a clear ranking-vs-diversity trade-off. MostPopular maximises NDCG by exploiting long-tail play-count structure, yet ignores 99.4\% of the catalogue; KNN-CF trades a modest NDCG drop (0.106 vs.\ 0.114) for near-complete coverage (91.6\%), tripling the Overall Score (0.421 vs.\ 0.148). This confirms that popularity exploitation is not viable when diversity is part of the objective.
+
+The XGBoost hybrid reveals a retrieval bottleneck: constraining candidates to 200 items caps reachable NDCG regardless of LTR quality. The low NDCG@10~(0.044) is a first-stage ceiling, not a re-ranking failure; expanding the candidate pool via approximate nearest-neighbour search would be the highest-value fix.
+
+The HGT ablations yield two non-obvious findings. First, RotatE initialisation offers no benefit over random: HGT's own message passing re-learns structural features within a few epochs, making the 100-epoch KGE pre-training step redundant. Second, the logit-adjustment $\lambda$ acts as a smooth ranking-vs-diversity knob ($\lambda{=}0$ maximises Recall; $\lambda{=}0.5$ boosts coverage~$8\times$ at half the Recall), and checkpoint selection by Overall Score automatically lands at a balanced point. Finally, the directed/undirected evaluation mismatch is the single most consequential artefact: HGT's apparent collapse in Table~\ref{tab:bench} is entirely an evaluation protocol issue; under consistent self-eval it is competitive with KNN-CF (Recall@10~0.111, Coverage~39.9\%). See Appendix for all learning curves.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Member Contributions}
@@ -130,5 +153,40 @@ KNN-CF achieves the best Overall Score (0.421), dominated by its 91.6\% catalogu
   \bibliographystyle{unsrtnat}
   \bibliography{main}
 }
+
+% ─────────────────────────────────────────────────────────────────────────────
+\clearpage
+\onecolumn
+\appendix
+\section*{Appendix: Learning Curves}
+\addcontentsline{toc}{section}{Appendix: Learning Curves}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.62\linewidth]{ae_loss_curve.png}
+  \caption{Autoencoder training loss (MSE) over 200 epochs. Loss falls from 0.964 to 0.616; the steepest descent occurs in the first 75 epochs. Early stopping ($\Delta{<}10^{-4}$ over 15 epochs) never triggered, indicating continued — albeit diminishing — compression improvement throughout training.}
+  \label{fig:ae_app}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.62\linewidth]{kge_loss_curve.png}
+  \caption{KGE training loss (log scale) for RotatE and ComplEx over 200 epochs. The two models operate on different absolute scales (ComplEx $\approx13\!\to\!3$; RotatE $\approx0.7\!\to\!0.4$), so a logarithmic $y$-axis keeps both curves legible. RotatE converges to a lower absolute loss (final: 0.356 vs.\ ComplEx: 0.381), but this difference does not translate into downstream HGT ranking improvements (Table~\ref{tab:abl}).}
+  \label{fig:kge_app}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.62\linewidth]{xgb_loss_curve.png}
+  \caption{XGBoost LTR training curve (\texttt{rank:ndcg@10} objective, up to 300 rounds, early stopping at 30). The model converges rapidly and the early-stopping criterion terminates training well before 300 rounds, confirming the 300-candidate retrieval bottleneck as the limiting factor rather than under-training.}
+  \label{fig:xgb_app}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{hgt_curves.png}
+  \caption{HGT training curves (200 epochs, RotatE initialisation). \textit{Left}: listwise debiased loss decreases monotonically. \textit{Centre}: validation Recall@10 improves steadily and plateaus. \textit{Right}: validation NDCG@10 mirrors the Recall trend. All three panels confirm stable optimisation with no signs of overfitting or divergence; the final checkpoint is selected by the composite Overall Score on the validation fold.}
+  \label{fig:hgt_app}
+\end{figure}
 
 \end{document}

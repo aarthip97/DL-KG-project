@@ -5,7 +5,9 @@
 
 The enriched KG contains 12.9 million triples. The entity composition confirms expected counts: 285,037 listeners, 7,013 tracks, 7,013 performances, 3,668 artists, 645 genres, 129 instruments, 12 keys, 9 tempo classes, and 7 decades. Hierarchy traversal queries confirmed that all genre and instrument nodes link correctly to their Wikidata super-classes.
 
-SPARQL genre ranking shows \textit{rock} as the most frequent genre (2,117 artists), while average-weight ranking reveals that focused genres such as \textit{dance pop} (0.81) and \textit{trance} (0.795) rank above \textit{rock} (0.759) — reflecting that broadly tagged artists accumulate many low-weight associations. High-confidence key queries ($\mathit{keyConf}\geq 0.8$) recover the expected Western-music prevalence of C (211 tracks), G (196), and D (150).
+SPARQL genre ranking shows \textit{rock} as the most frequent genre (2,117 artists), while average-weight ranking reveals that focused genres such as \textit{dance pop} (0.81) and \textit{trance} (0.795) rank above \textit{rock} (0.759) — reflecting that broadly tagged artists accumulate many low-weight associations, whereas niche artists tend to carry fewer but stronger genre tags. High-confidence key queries ($\mathit{keyConf}\geq 0.8$) recover the expected Western-music prevalence of C (211 tracks), G (196), and D (150).
+
+Graph exploration identified the most-listened track: \textit{Secrets} by OneRepublic (50,058 distinct listeners), while \textit{You're The One} by Dwight Yoakam accumulated the highest total play count (390,283 plays across 42,810 users), illustrating the distinction between breadth of reach and depth of engagement in the interaction data.
 
 \begin{figure}[h]
   \centering
@@ -27,7 +29,7 @@ The autoencoder trained for the full 200 epochs (early stopping never triggered)
 
 \subsection{Model Comparison}
 
-Table~\ref{tab:benchmark} reports all models at $K{=}10$ over all 284,864 test users. KNN-CF achieves the highest Overall Score (0.421), combining competitive NDCG@10 (0.106) with excellent catalogue coverage (91.6\%) and low popularity bias (0.130). MostPopular attains the highest per-user NDCG@10 (0.114) but recommends from a catalogue of only 0.6\% of items (Coverage: 0.006) and exhibits a high popularity bias (0.611), giving an Overall Score of only 0.148. XGBoost achieves 66.7\% coverage and a low popularity bias (0.118) but suffers from a retrieval bottleneck limiting NDCG@10 to 0.044. All pairwise Wilcoxon and $t$-test comparisons on Recall and NDCG are statistically significant ($p<0.001$).
+Table~\ref{tab:benchmark} reports all models at $K{=}10$ over all 284,864 test users. KNN-CF achieves the highest Overall Score (0.421), combining competitive NDCG@10 (0.106) with excellent catalogue coverage (91.6\%) and low popularity bias (0.130). MostPopular attains the highest per-user NDCG@10 (0.114) but recommends from a catalogue of only 0.6\% of items (Coverage: 0.006) and exhibits a high popularity bias (0.611), giving an Overall Score of only 0.148. XGBoost achieves 66.7\% coverage and a low popularity bias (0.118) but suffers from a retrieval bottleneck limiting NDCG@10 to 0.044. All pairwise Wilcoxon and $t$-test comparisons on Recall and NDCG are statistically significant ($p<0.001$). Multi-$K$ evaluation across $K\in\{5,10,20,50,100\}$ confirms that these rankings hold consistently (Figure~\ref{fig:multik_app}); KNN-CF's Overall Score advantage grows with $K$ as its coverage advantage compounds.
 
 \begin{table}[h]
 \centering\footnotesize
@@ -45,6 +47,44 @@ XGBoost        & 0.038 & 0.044 & 0.072 & 0.035 & 0.667 & 0.118 & 0.336\\
 HGT$^\dagger$  & 0.001 & 0.001 & 0.002 & 0.000 & 0.046 & 0.006 & 0.209\\
 \bottomrule
 \multicolumn{8}{l}{$^\dagger$See Section~\ref{sec:hgt_analysis} for HGT evaluation discussion.}
+\end{tabular}
+\end{table}
+
+\subsection{Multi-\texorpdfstring{$K$}{K} Sensitivity}
+
+Table~\ref{tab:multik} reports Recall, NDCG, Coverage, and Overall Score across $K\in\{5,10,20,50,100\}$ for the three fully evaluated models (HGT excluded due to the directed-eval artefact). KNN-CF's Overall Score advantage grows monotonically with $K$ as its coverage advantage compounds: at $K{=}100$, Overall reaches 0.455 vs.\ 0.267 for MostPopular and 0.401 for XGBoost. MostPopular's NDCG advantage narrows relative to KNN-CF with increasing $K$, and the two are statistically indistinguishable on NDCG@$K$ ($p{=}0.53$ on a shared 5,000-user subsample), while all Recall@$K$ comparisons remain highly significant ($p{<}0.001$). XGBoost closes the coverage gap at large $K$ (86\% at $K{=}100$) but never recovers from its NDCG deficit, which is constrained by the 200-candidate retrieval ceiling.
+
+\begin{table}[h]
+\centering\footnotesize
+\caption{Multi-$K$ evaluation. Overall $= 0.6\cdot$NDCG $+ 0.2\cdot$Cov $+ 0.2(1{-}$PB$)$.}
+\label{tab:multik}
+\setlength{\tabcolsep}{3.2pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{llccccc}
+\toprule
+\textbf{Metric} & \textbf{Model} & \textbf{K=5} & \textbf{K=10} & \textbf{K=20} & \textbf{K=50} & \textbf{K=100}\\
+\midrule
+\multirow{3}{*}{Recall}
+  & KNN-CF      & .079 & .103 & .115 & .121 & .129\\
+  & MostPopular & .088 & .129 & .196 & .303 & .399\\
+  & XGBoost     & .028 & .038 & .050 & .069 & .085\\
+\midrule
+\multirow{3}{*}{NDCG}
+  & KNN-CF      & .095 & .106 & .109 & .111 & .113\\
+  & MostPopular & .096$^\dagger$ & .114$^\dagger$ & .135 & .159 & .177\\
+  & XGBoost     & .038 & .044 & .049 & .055 & .059\\
+\midrule
+\multirow{3}{*}{Cov.}
+  & KNN-CF      & .851 & .916 & .950 & .959 & .960\\
+  & MostPopular & .005 & .006 & .009 & .014 & .024\\
+  & XGBoost     & .570 & .667 & .751 & .826 & .859\\
+\midrule
+\multirow{3}{*}{Overall}
+  & KNN-CF      & \textbf{.392} & \textbf{.421} & \textbf{.440} & \textbf{.451} & \textbf{.455}\\
+  & MostPopular & .110 & .148 & .182 & .232 & .267\\
+  & XGBoost     & .304 & .336 & .364 & .389 & .401\\
+\bottomrule
+\multicolumn{7}{l}{\tiny $^\dagger$KNN-CF vs.\ MostPopular NDCG not sig.\ ($p{=}0.53$); all Recall diffs $p{<}0.001$.}
 \end{tabular}
 \end{table}
 
@@ -76,4 +116,14 @@ $\lambda$ & Recall@10 & NDCG@10 & Cov@10 & PB@10\\
 \end{tabular}
 \end{table}
 
-\paragraph{Explainability.} Unlike purely collaborative methods, HGT attention weights can be inspected per edge type to identify which neighbouring entity types (shared genres, co-instrumented tracks, shared tempo class) most influenced a given recommendation, providing a basis for human-interpretable explanations without additional modelling overhead.
+\paragraph{Representation quality vs.\ hit rate.}
+Qualitative case studies across five users reveal a consistent pattern: HGT achieves 5–50$\times$ higher mean cosine similarity between the user embedding and the recommended tracks in the HGT latent space than any baseline (Table~\ref{tab:qualitative_cos} in the Appendix). For example, in the \textit{mixed-1} case (user\#86839, 134 training interactions), HGT's cos\_mean is 0.119 vs.\ 0.003–0.007 for all other models, and cos\_max reaches 0.709. Simultaneously, HGT's genre Jaccard similarity is consistently the highest ($\approx$0.61–0.66 vs.\ $\approx$0.45–0.55 for baselines), indicating the recommendations are genuinely aligned with the user's musical profile at the latent level. Yet HGT produces fewer hits. This tension suggests the held-out test interactions are an incomplete proxy for true user preferences: the HGT may be surfacing tracks the user would like but has not yet encountered, rather than failing to model their taste. This interpretation is consistent with the known limitation of offline implicit-feedback evaluation and motivates future user-study validation.
+
+\paragraph{Explainability.} Unlike purely collaborative methods, HGT attention weights can be inspected per edge type to identify which neighbouring entity types (shared genres, co-instrumented tracks, shared tempo class) most influenced a given recommendation, providing a basis for human-interpretable explanations without additional modelling overhead. In the success case (\textit{Toxic} by Britney Spears, HIT $\checkmark$), attention concentrates on shared \textit{pop}/\textit{dance pop} genre and \textit{Allegro} tempo-class edges; in the failure case (\textit{Your Woman} by White Town, miss $\times$), the model correctly identifies shared tonal features but the recommended track belongs to an \textit{indie/alternative hip-hop} genre cluster inconsistent with the user's history. These cases and additional examples are in Figures~\ref{fig:hgt_exp_success}--\ref{fig:hgt_exp_mixed}; XGBoost feature importance and SHAP analysis are in Figures~\ref{fig:xgb_importance}--\ref{fig:shap_summary}.
+
+\subsection{Latent Space Analysis}
+\label{sec:latent}
+
+We project all 14,390 node embeddings (capped at 5,000 per type) from the HGT's 64-dimensional output space into 2-D via UMAP, then fit a Gaussian Mixture Model (GMM) with BIC-optimal component count. The BIC selects 10 components (full covariance), yielding a latent structure that is largely type-pure while revealing cross-type semantic groupings (Figure~\ref{fig:umap_all_app}).
+
+The cluster composition reveals that the HGT has learned qualitatively distinct representations for musical roles: Cluster~0 contains nearly all artists (3,667/3,668), Clusters~1/5/9 partition tracks by content, Cluster~6 co-localises all 586 genres with all 11 sampled keys and both modes — suggesting the model has formed a tonal/genre concept space — and Cluster~7 groups all instruments with a single key node and four track outliers, indicating a timbre-centric region. Users are distributed across four clusters (2, 3, 4, 8), with Cluster~4 notably co-clustering users alongside all 6 sampled decades and 8 tempo classes, implying that users in this segment share preferences that correlate with temporal/rhythmic attributes. This emergent multi-modal structure supports the hypothesis that HGT message passing propagates musically meaningful context rather than merely fitting interaction patterns.

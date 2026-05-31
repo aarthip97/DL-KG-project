@@ -1,4 +1,4 @@
-\begin{thebibliography}{11}
+\begin{thebibliography}{15}
 \providecommand{\natexlab}[1]{#1}
 \providecommand{\url}[1]{\texttt{#1}}
 \expandafter\ifx\csname urlstyle\endcsname\relax
@@ -41,10 +41,20 @@ Th\'{e}o Trouillon, Johannes Welbl, Sebastian Riedel, \'{E}ric Gaussier, and
 \newblock Complex embeddings for simple link prediction, 2016.
 \newblock Accepted at ICML 2016.
 
-\bibitem[{The Echo Nest}(2011)]{echonest2011}
-{The Echo Nest}.
-\newblock Taste profile subset of the million song dataset, 2011.
-\newblock URL \url{http://millionsongdataset.com/tasteprofile/}.
+\bibitem[Rendle et~al.(2009)Rendle, Freudenthaler, Gantner, and
+  Schmidt-Thieme]{rendle2009bpr}
+Steffen Rendle, Christoph Freudenthaler, Zeno Gantner, and Lars Schmidt-Thieme.
+\newblock {BPR}: Bayesian personalized ranking from implicit feedback.
+\newblock In \emph{Proceedings of the 25th Conference on Uncertainty in
+  Artificial Intelligence (UAI)}, pages 452--461, 2009.
+\newblock \doi{10.48550/arXiv.1205.2618}.
+
+\bibitem[He et~al.(2017)He, Liao, Zhang, Nie, Hu, and Chua]{he2017ncf}
+Xiangnan He, Lizi Liao, Hanwang Zhang, Liqiang Nie, Xia Hu, and Tat-Seng Chua.
+\newblock Neural collaborative filtering.
+\newblock In \emph{Proceedings of the 26th International World Wide Web
+  Conference (WWW)}, pages 173--182, 2017.
+\newblock \doi{10.1145/3038912.3052569}.
 
 \bibitem[McKay et~al.(2018)McKay, Cumming, and Fujinaga]{mckay2018jsymbolic}
 Cory McKay, Julie Cumming, and Ichiro Fujinaga.
@@ -59,13 +69,21 @@ Hogue Cuthbert, Ariza and Oberholzer.
 \newblock music21, 3rd edition, May 2026.
 \newblock Available at \url{https://music21.org/music21docs/}.
 
-\bibitem[Raimond et~al.(2007)Raimond, Abdallah, Sandler, and
-  Giasson]{raimond2007musicontology}
-Yves Raimond, Samer~A. Abdallah, Mark~B. Sandler, and Frederick Giasson.
-\newblock The music ontology.
-\newblock In \emph{Proceedings of the 8th International Conference on Music
-  Information Retrieval (ISMIR)}, pages 417--422, Vienna, Austria, Sep. 2007.
-\newblock \doi{10.5281/zenodo.1415966}.
+\bibitem[Wang et~al.(2019{\natexlab{a}})Wang, Zhao, Xie, Li, and
+  Guo]{wang2019kgcn}
+Hongwei Wang, Miao Zhao, Xing Xie, Wenjie Li, and Minyi Guo.
+\newblock Knowledge graph convolutional networks for recommender systems.
+\newblock In \emph{Proceedings of the World Wide Web Conference (WWW)}, pages
+  3307--3313, 2019{\natexlab{a}}.
+\newblock \doi{10.1145/3308558.3313417}.
+
+\bibitem[Wang et~al.(2019{\natexlab{b}})Wang, He, Cao, Liu, and
+  Chua]{wang2019kgat}
+Xiang Wang, Xiangnan He, Yixin Cao, Meng Liu, and Tat-Seng Chua.
+\newblock {KGAT}: Knowledge graph attention network for recommendation.
+\newblock In \emph{Proceedings of the 25th ACM SIGKDD International Conference
+  on Knowledge Discovery \& Data Mining}, pages 950--958, 2019{\natexlab{b}}.
+\newblock \doi{10.1145/3292500.3330989}.
 
 \bibitem[He et~al.(2020)He, Deng, Wang, Li, Zhang, and Wang]{he2020lightgcn}
 Xiangnan He, Kuan Deng, Xiang Wang, Yan Li, Yongdong Zhang, and Meng Wang.
@@ -75,11 +93,25 @@ Xiangnan He, Kuan Deng, Xiang Wang, Yan Li, Yongdong Zhang, and Meng Wang.
   on Research and Development in Information Retrieval}, pages 639--648, 2020.
 \newblock \doi{10.1145/3397271.3401063}.
 
-\bibitem[Wang et~al.(2019)Wang, Zhao, Xie, Li, and Guo]{wang2019kgcn}
-Hongwei Wang, Miao Zhao, Xing Xie, Wenjie Li, and Minyi Guo.
-\newblock Knowledge graph convolutional networks for recommender systems.
-\newblock In \emph{Proceedings of the World Wide Web Conference (WWW)}, pages
-  3307--3313, 2019.
-\newblock \doi{10.1145/3308558.3313417}.
+\bibitem[Liu et~al.(2024)Liu, Yang, and Cheng]{liu2024kgmusic}
+X.~Liu, Z.~Yang, and J.~Cheng.
+\newblock Music recommendation algorithms based on knowledge graph and
+  multi-task feature learning.
+\newblock \emph{Scientific Reports}, 14:\penalty0 2055, 2024.
+\newblock \doi{10.1038/s41598-024-52463-z}.
+\newblock URL \url{https://doi.org/10.1038/s41598-024-52463-z}.
+
+\bibitem[{The Echo Nest}(2011)]{echonest2011}
+{The Echo Nest}.
+\newblock Taste profile subset of the million song dataset, 2011.
+\newblock URL \url{http://millionsongdataset.com/tasteprofile/}.
+
+\bibitem[Raimond et~al.(2007)Raimond, Abdallah, Sandler, and
+  Giasson]{raimond2007musicontology}
+Yves Raimond, Samer~A. Abdallah, Mark~B. Sandler, and Frederick Giasson.
+\newblock The music ontology.
+\newblock In \emph{Proceedings of the 8th International Conference on Music
+  Information Retrieval (ISMIR)}, pages 417--422, Vienna, Austria, Sep. 2007.
+\newblock \doi{10.5281/zenodo.1415966}.
 
 \end{thebibliography}

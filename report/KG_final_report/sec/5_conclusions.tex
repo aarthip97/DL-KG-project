@@ -7,4 +7,4 @@ A symbolic-feature autoencoder compressed 1,525-dimensional jSymbolic/music21 de
 
 The HGT recommender, trained with an intensity-weighted listwise loss with logit adjustment for popularity debiasing, achieves Recall@10~0.111 and Coverage~39.9\% in a consistent evaluation. Its slightly underperforming the KNN-CF in the unified benchmark is attributable to an undirected-training/directed-evaluation mismatch rather than a fundamental capacity limitation; retraining with consistent directed message passing is the straightforward remediation. Notably, the RotatE KGE initialisation does not improve over random initialisation, suggesting that KGE-learned structural features are subsumed by the HGT's own relational learning.
 
-Future work should retrain the HGT with directed message passing, extend baselines to graph-collaborative methods such as LightGCN~\cite{he2020lightgcn} or KGCN~\cite{wang2019kgcn}, and conduct a systematic ablation isolating the contributions of KG structure, symbolic audio features, and the popularity-debiased loss.
+Detailed directions for future investigation are outlined in Section~\ref{sec:future_work}.

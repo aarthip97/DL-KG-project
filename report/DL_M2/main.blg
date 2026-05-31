@@ -2,47 +2,45 @@ This is BibTeX, Version 0.99e (TeX Live 2026/Arch Linux)
 Capacity: max_strings=200000, hash_size=200000, hash_prime=170003
 The top-level auxiliary file: main.aux
 The style file: unsrtnat.bst
-I found no \citation commands---while reading file main.aux
 Database file #1: main.bib
-You've used 0 entries,
+You've used 7 entries,
             2481 wiz_defined-function locations,
-            629 strings with 5318 characters,
-and the built_in function-call counts, 34 in all, are:
-= -- 0
-> -- 0
-< -- 0
-+ -- 0
-- -- 0
-* -- 2
-:= -- 11
-add.period$ -- 0
-call.type$ -- 0
-change.case$ -- 0
-chr.to.int$ -- 0
-cite$ -- 0
-duplicate$ -- 0
-empty$ -- 1
-format.name$ -- 0
-if$ -- 1
+            673 strings with 6867 characters,
+and the built_in function-call counts, 3426 in all, are:
+= -- 287
+> -- 195
+< -- 5
++ -- 72
+- -- 58
+* -- 252
+:= -- 514
+add.period$ -- 25
+call.type$ -- 7
+change.case$ -- 14
+chr.to.int$ -- 7
+cite$ -- 7
+duplicate$ -- 172
+empty$ -- 294
+format.name$ -- 67
+if$ -- 755
 int.to.chr$ -- 1
-int.to.str$ -- 1
-missing$ -- 0
-newline$ -- 8
-num.names$ -- 0
-pop$ -- 0
+int.to.str$ -- 8
+missing$ -- 4
+newline$ -- 47
+num.names$ -- 21
+pop$ -- 75
 preamble$ -- 1
-purify$ -- 0
+purify$ -- 7
 quote$ -- 0
-skip$ -- 1
+skip$ -- 129
 stack$ -- 0
-substring$ -- 0
-swap$ -- 0
-text.length$ -- 0
+substring$ -- 158
+swap$ -- 60
+text.length$ -- 4
 text.prefix$ -- 0
 top$ -- 0
-type$ -- 0
+type$ -- 49
 warning$ -- 0
-while$ -- 0
+while$ -- 26
 width$ -- 0
-write$ -- 7
-(There was 1 error message)
+write$ -- 105

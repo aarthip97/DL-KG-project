@@ -1,0 +1,17 @@
+\section{Future Work}
+\label{sec:future_work}
+
+\paragraph{HGT with directed message passing.}
+The most immediate improvement is retraining the HGT with directed edges. The undirected-training/directed-evaluation mismatch (Section~\ref{sec:hgt_analysis}) suppresses the benchmark score entirely; correcting the edge-direction flag and rerunning a single training pass is the direct remediation with no architectural changes required.
+
+\paragraph{Investigating KGE initialisation.}
+A key open question is why random initialisation marginally outperforms RotatE initialisation for the HGT (Recall@10 0.118 vs.\ 0.111; Table~\ref{tab:lambda}). Two competing hypotheses warrant systematic study: (i)~KGE features learned on a \textit{static} relational structure may misalign with the ranking objective, causing the HGT to waste capacity overriding them; or (ii)~the KGE training corpus (807,955 triples, listening edges excluded) may not represent the recommendation-relevant subgraph faithfully enough. A controlled experiment should compare frozen vs.\ fine-tuned KGE features, vary the KGE corpus composition (including vs.\ excluding different relation types), and evaluate KGE structural quality via link prediction before assessing downstream recommendation impact.
+
+\paragraph{KGE model selection.}
+Only RotatE and ComplEx were explored. A broader comparison including TransE, DistMult, and RESCAL would establish whether the complex-valued inductive bias genuinely helps on this KG. Given the rationale for RotatE (asymmetric and compositional relations, Section~\ref{sec:models}), one would expect RotatE to outperform real-valued models on link prediction; if this advantage does \textit{not} transfer to recommendation quality when used as a GNN initialiser, it suggests that the HGT's own message passing subsumes the structural prior regardless of which KGE is used.
+
+\paragraph{Structured hyperparameter search.}
+All configurations were chosen under time pressure rather than by systematic search. A grid or Bayesian optimisation sweep should cover HGT hidden dimension $\{64, 128, 256\}$, message-passing layers $\{1, 2, 3\}$, attention heads $\{2, 4, 8\}$, temperature $\tau \in \{0.05, 0.1, 0.2\}$, debiasing strength $\lambda \in [0, 1]$, and KGE entity dimension $\{64, 128, 256\}$. Particular focus should be placed on the $\lambda$--coverage interaction: the ablation in Table~\ref{tab:lambda} reveals a clear monotonic trade-off that may have a different optimal operating point under directed-edge training.
+
+\paragraph{Extended baselines and ablation design.}
+Adding graph-collaborative methods — LightGCN~\cite{he2020lightgcn} and KGCN~\cite{wang2019kgcn} — would clarify whether KG heterogeneity provides measurable gains over homogeneous graph learning. A factorial ablation removing KG structure, symbolic audio features, and the popularity-debiased loss independently would isolate each component's contribution and determine whether the added complexity of heterogeneous graph modelling is justified for this research question.
