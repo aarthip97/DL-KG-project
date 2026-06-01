@@ -560,6 +560,8 @@ def save_latent_analysis(
     k_range: Optional[Iterable[int]] = None,
     gmm_users: Optional["GMMResult"] = None,
     user_composition: Optional[pd.DataFrame] = None,
+    user_subsample: Optional[pd.DataFrame] = None,
+    user_centers_2d: Optional[np.ndarray] = None,
 ) -> Path:
     """Persist a full latent-space analysis under ``out_dir``.
 
@@ -577,7 +579,11 @@ def save_latent_analysis(
     * ``cluster_composition.csv`` — the ``cluster × Node_Type`` count table.
     * ``gmm_users.pkl`` — *(optional)* a second :class:`GMMResult` from a
       **users-only** sweep (listener-archetype centroids) plus its node-type
-      composition, written only when ``gmm_users`` is supplied.
+      composition and the UMAP-projected ``centers_2d``, written only when
+      ``gmm_users`` is supplied.
+    * ``users_umap.parquet`` — *(optional)* the plotted users-only subsample with
+      its exact GMM ``Cluster_ID`` + 2-D UMAP ``X``/``Y`` (so the archetype
+      scatter redraws on reload without a forward pass or a fresh projection).
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -619,7 +625,13 @@ def save_latent_analysis(
         with open(out_dir / "gmm_users.pkl", "wb") as f:
             pickle.dump({"gmm": gmm_users,
                          "composition": (None if user_composition is None
-                                         else user_composition)}, f)
+                                         else user_composition),
+                         "centers_2d": (None if user_centers_2d is None
+                                        else np.asarray(user_centers_2d))}, f)
+    if user_subsample is not None:
+        cols = [c for c in ("Node_ID", "Node_Type", "Cluster_ID", "X", "Y")
+                if c in user_subsample.columns]
+        user_subsample[cols].to_parquet(out_dir / "users_umap.parquet", index=False)
     return out_dir
 
 
@@ -629,7 +641,7 @@ def load_latent_analysis(out_dir) -> dict:
     Returns a dict with ``emb_df`` (full embeddings), ``gmm`` (:class:`GMMResult`),
     ``centers_2d``, ``k_range`` and — when present — ``subsample``,
     ``composition``, ``nodes_clustered``, and the users-only ``gmm_users`` +
-    ``user_composition``.
+    ``user_composition`` + ``user_centers_2d`` + ``user_subsample``.
     """
     out_dir = Path(out_dir)
     npz = np.load(out_dir / "node_embeddings.npz", allow_pickle=False)
@@ -658,4 +670,8 @@ def load_latent_analysis(out_dir) -> dict:
             blob_u = pickle.load(f)
         out["gmm_users"] = blob_u["gmm"]
         out["user_composition"] = blob_u.get("composition")
+        out["user_centers_2d"] = blob_u.get("centers_2d")
+    p = out_dir / "users_umap.parquet"
+    if p.exists():
+        out["user_subsample"] = pd.read_parquet(p)
     return out
