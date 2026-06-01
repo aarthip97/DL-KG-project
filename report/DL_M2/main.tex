@@ -18,6 +18,58 @@
 \begin{document}
 \maketitle
 
+\section{Problem Statement}
+This project investigates how a Graph Neural Network (GNN)-based music knowledge graph, integrating user interaction history, musical features (such as pitch statistics and tempo), and song metadata (including artists and genres), can be used to predict user-specific music preferences. 
+While many music recommendation algorithms already exist and are widely used, most of them rely primarily on user interaction data and similarity measures between users. Incorporating musical features into the recommendation process may provide a richer and more structured representation of songs, enabling the model to capture deeper relationships between musical content and user preferences. By leveraging a knowledge graph combined with GNNs, this project aims to model these complex, multi-relational dependencies and explore their potential for more accurate and context-aware music preference prediction.
+
+\section{Background and Context}
+In order to ensure a suitable choice of models and their architecture, reasonable evaluation metrics, as well as the choice of relevant musical features and appropriate graph design, we review the prior studies on music recommendation systems, collaborative filtering techniques, and graph-based learning methods, including Graph Neural Networks (GNNs). Such as research performed  by \cite{liu2024kgmusic} which is a knowledge graph-enhanced recommendation framework that jointly learns from user-item interactions and graph-based representations, and represents a state-of-the-art approach for improving recommendation accuracy and addressing challenges such as data sparsity and cold start.
+
+\section{Data}
+For this project, 2 major data sources were used:
+\begin{itemize}\setlength\itemsep{0pt}
+    \item \textbf{Lakh MIDI Dataset (LMD)} - A large-scale collection of MIDI files (machine-readable representation of musical structure) representing music in symbolic form (notes, timing, instruments).
+    \item \textbf{Million Song Dataset (MSD)} - A dataset developed by The Echo Nest, containing audio-derived features such as tempo, key, or loudness metadata for songs, as well as a user taste profile subset, which is used to define our recommendation target. 
+\end{itemize}
+
+\section{Methodology}
+A high-level overview of the project methodology is shown in ~\ref{fig:pipeline}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.8\linewidth]{methodology.png}
+  \caption{End-to-end pipeline overview. Raw MIDI and MSD data are aligned and cleaned; symbolic features are extracted and compressed by the autoencoder; the enriched KG is constructed and loaded into GraphDB; KG embeddings initialise node features; the HGT is trained on the PyG heterogeneous graph; and recommenders are evaluated at multiple $K$ values.}
+  \label{fig:pipeline}
+\end{figure}
+
+\subsection{Data pipeline}
+The first step of the data processing methodology involved the extraction and linking of the Lakh MIDI and Million Song Dataset (MSD). The alignment between MIDI files and audio tracks was based on precomputed similarity scores obtained using Dynamic Time Warping (DTW) by Raffel (2016). In this process, both MIDI and audio signals were first converted into chroma-based representations over time, and then compared to determine their similarity. The threshold for acceptable similarity score of 0.55 was set during the filtering step, in order to ensure reliable alignment. The remaining files and duplicates were omitted resulting in a dataset of 18383 tracks. 
+The next step in the data preparation process concerned processing and subsequently linking user interaction data extracted from the Echo Nest Taste Profile dataset, consisting of unique song and user identifiers as well as a play count for each recorded pairing. The user data was filtered to retain only the songs that also exist in the previously matched Lakh/MSD dataset. Additionally, instances with fewer than 5 remaining song interactions were removed, to address the cold start problem (the inclusion of users with  not enough listening history to train and evaluate recommendations for them). After the filtering step the dataset consists of 286,889 unique users, and 7,050 unique songs.
+\\
+After the data integration and filtering process, the subsequent step includes feature extraction, engineering, and selection. In our data, the attributes of each song can be either of metadata or symbolic music feature type. The first ones are those derived directly from audio analysis and metadata features. Some of these features are related to song’s artist, such as their name, genre, location, familiarity, or hotness. Other features are related to the songs themselves, including song release year, the name of an album it is a part of, the song hotness, duration, or even algorithmic estimation of danceability or energy score calculated from listener point of view. The symbolic music features are those constructed based on various representations (MIDI, audio, musicXML) of the LAKH midi files using tools such as jSymbolic, music21, and include features such as tempo, pitch range, note density, rhythm features, pitch histograms, or melodic features. A large volume of features can be extracted from each track using these libraries, some of which are less useful and/or unsuitable for integration into a knowledge graph. Therefore some of these features are excluded/removed based on these and other traits.
+\\
+The final step of the data pipeline consists of designing and populating the knowledge graph. The graph schema is defined using a structured ontology, where core entities such as users (listener class), musical tracks, artists, genres, and certain musical features are represented as nodes, and with the relationships between these entities modeled as edges. For example, user-song interactions are captured through relations such as listened, while songs are linked to artists (performed by), genres (has genre), and symbolic or audio-derived features (has music feature). Additionally, hierarchical relationships between concepts, such as subclasses of musical features (e.g., rhythm, dynamics, pitch statistics), are incorporated to enrich the semantic structure of the graph. The graph is populated by integrating the filtered user interaction data with the Lakh/MSD dataset and the extracted musical features, using shared identifiers such as song\_id and MIDI file mappings. This unified representation enables the combination of relational, contextual, and musical information, forming the foundation for subsequent graph-based learning and recommendation models. Figure ~\ref{fig:kg_ontology} shows the ontology of the knowledge graph linking users, songs, and musical features that are be used to train the GNN for recommendation prediction.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.95\linewidth]{schema_overview.png}
+  \caption{An overview of the ontology used to }
+  \label{fig:kg_ontology}
+\end{figure}
+
+\subsection{Baselines}
+
+Three baseline models were chosen to establish a baseline for comparison against the KG + GNN pipeline, these were:
+
+\begin{itemize}
+    \item \textbf{MostPopular} ranks all unseen items by global play frequency identically for every user.
+    \item \textbf{KNN-CF}, a user--user collaborative filter purely based on user taste data and compensating for song popularity.
+    \item \textbf{XGBoost Hybrid}, a gradient-boosted LTR model which uses a 300-dimensional feature vector per (user, track) pair that concatenates the 128-dim user-profile and track AE embeddings with 44 categorical features: one-hot key, mode, and tempo class; target-encoded genre and artist; and a multi-hot instrument indicator. This design isolates the GNN contribution by fusing content and behaviour without any graph structure.
+\end{itemize}
+
+\subsection{Heterogeneous Graph Transformer (HGT)}
+
+The Heterogeneous Graph Transformer (HGT)~\cite{hu2020hgt} learns separate transformation and attention parameters for each (source-type, edge-type, target-type) triple, preserving the graph's typed structure throughout message passing. This makes HGT particularly well suited to our multi-relational music KG, where node types span users, tracks, artists, genres, instruments, keys, modes, tempo classes, and decades. An additional advantage over opaque embedding models is that HGT's attention weights can be traced back to specific edge types and neighbouring entities, providing recommendation rationales that are directly grounded in KG structure — an important property for a domain where users benefit from understanding why a track was suggested. For these reasons, the HGT was selected as the ML model to be used for the KG + GNN pipeline.
+
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Training Methods}
 \label{sec:training}
@@ -59,7 +111,7 @@ A stratified 70/10/20 train/val/test split by genre and decade preserves popular
 \begin{equation*}
   \mathrm{Overall@}K = 0.6\,\mathrm{NDCG@}K + 0.2\,\mathrm{Cov} + 0.2(1-\mathrm{PB@}K),
 \end{equation*}
-which also serves as the HGT checkpoint criterion. Statistical significance uses paired Wilcoxon signed-rank and Friedman omnibus tests on a shared 5,000-user subsample.
+which also serves as the HGT checkpoint criterion. Evaluation user sample similarity determination uses paired Wilcoxon signed-rank and Friedman omnibus tests on a shared 5,000-user subsample to ensure that the users included in the evaluation sample are comparable.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Results and Learning Curves}
@@ -118,7 +170,7 @@ HGT (self)$^*$& .111 & .071 & --- & --- & .399 & .070 & ---\\
 \end{tabular}
 \end{table}
 
-KNN-CF achieves the best Overall Score (0.421), dominated by its 91.6\% catalogue coverage. MostPopular leads on per-user NDCG but concentrates recommendations on 0.6\% of the catalogue. XGBoost reaches 66.7\% coverage but suffers from a retrieval bottleneck that limits NDCG@10 to 0.044. Random init marginally outperforms RotatE init for HGT ($\Delta$Recall $+$0.007), suggesting KGE features are subsumed by HGT's own relational learning. The debiasing term $\lambda$ trades ranking quality for coverage: $\lambda{=}0.5$ triples coverage (0.6\%~$\to$~8.8\%) while halving Recall (0.125~$\to$~0.077). All pairwise Wilcoxon and $t$-test comparisons are significant ($p<0.001$).
+KNN-CF achieves the best Overall Score (0.421), dominated by its 91.6\% catalogue coverage. MostPopular leads on per-user NDCG but concentrates recommendations on 0.6\% of the catalogue. XGBoost reaches 66.7\% coverage but suffers from a retrieval bottleneck that limits NDCG@10 to 0.044. Random init marginally outperforms RotatE init for HGT ($\Delta$Recall $+$0.007, $\Delta$NDCG $+$0.005), suggesting KGE features are subsumed by HGT's own relational learning and/or that the methodology for learning the embeddings is flawed. The debiasing term $\lambda$ trades ranking quality for coverage: $\lambda{=}0.5$ triples coverage (0.6\%~$\to$~8.8\%) while halving Recall (0.125~$\to$~0.077). All pairwise Wilcoxon and $t$-test comparisons are significant ($p<0.001$).
 
 \paragraph{HGT evaluation note.}
 The HGT benchmark row reflects a directed-evaluation mismatch: the model was trained with undirected message passing but evaluated under directed edges, preventing it from reaching user nodes during inference. Under consistent undirected inference (HGT self row) it recovers Recall@10~0.111 and Coverage~39.9\%. Retraining with directed edges is the direct remediation~\cite{hu2020hgt}.
@@ -130,7 +182,7 @@ Unlike purely collaborative methods, HGT attention weights can be inspected per 
 \section{Discussion}
 \label{sec:discussion}
 
-The results expose a clear ranking-vs-diversity trade-off. MostPopular maximises NDCG by exploiting long-tail play-count structure, yet ignores 99.4\% of the catalogue; KNN-CF trades a modest NDCG drop (0.106 vs.\ 0.114) for near-complete coverage (91.6\%), tripling the Overall Score (0.421 vs.\ 0.148). This confirms that popularity exploitation is not viable when diversity is part of the objective.
+The results expose a clear ranking-vs-diversity trade-off. MostPopular maximises NDCG by exploiting long-tail play-count structure, yet ignores 99.4\% of the catalogue; KNN-CF trades a modest NDCG drop (0.106 vs.\ 0.114) for near-complete coverage (91.6\%), tripling the Overall Score (0.421 vs.\ 0.148). This confirms that popularity exploitation is not viable when diversity is part of the objective. This also touches upon a flaw/limitation in evaluation methodology: Popularity is likely a factor in whether or not a user has already listened to a song, but not necessarily a factor in whether or not a user will enjoy a song. As any static dataset can only include music a user has listened to, a recommendation being absent from the users profile does not inherently mean the user will not enjoy the song. However, any method for compensating for this would require closer integration with the user themselves.
 
 The XGBoost hybrid reveals a retrieval bottleneck: constraining candidates to 200 items caps reachable NDCG regardless of LTR quality. The low NDCG@10~(0.044) is a first-stage ceiling, not a re-ranking failure; expanding the candidate pool via approximate nearest-neighbour search would be the highest-value fix.
 
