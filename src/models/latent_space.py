@@ -558,6 +558,8 @@ def save_latent_analysis(
     subsample: Optional[pd.DataFrame] = None,
     composition: Optional[pd.DataFrame] = None,
     k_range: Optional[Iterable[int]] = None,
+    gmm_users: Optional["GMMResult"] = None,
+    user_composition: Optional[pd.DataFrame] = None,
 ) -> Path:
     """Persist a full latent-space analysis under ``out_dir``.
 
@@ -573,6 +575,9 @@ def save_latent_analysis(
     * ``subsample_umap.parquet`` — the plotted subsample with its exact GMM
       ``Cluster_ID`` + 2-D UMAP ``X``/``Y``.
     * ``cluster_composition.csv`` — the ``cluster × Node_Type`` count table.
+    * ``gmm_users.pkl`` — *(optional)* a second :class:`GMMResult` from a
+      **users-only** sweep (listener-archetype centroids) plus its node-type
+      composition, written only when ``gmm_users`` is supplied.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -610,6 +615,11 @@ def save_latent_analysis(
         subsample[cols].to_parquet(out_dir / "subsample_umap.parquet", index=False)
     if composition is not None:
         composition.to_csv(out_dir / "cluster_composition.csv")
+    if gmm_users is not None:
+        with open(out_dir / "gmm_users.pkl", "wb") as f:
+            pickle.dump({"gmm": gmm_users,
+                         "composition": (None if user_composition is None
+                                         else user_composition)}, f)
     return out_dir
 
 
@@ -618,7 +628,8 @@ def load_latent_analysis(out_dir) -> dict:
 
     Returns a dict with ``emb_df`` (full embeddings), ``gmm`` (:class:`GMMResult`),
     ``centers_2d``, ``k_range`` and — when present — ``subsample``,
-    ``composition`` and ``nodes_clustered``.
+    ``composition``, ``nodes_clustered``, and the users-only ``gmm_users`` +
+    ``user_composition``.
     """
     out_dir = Path(out_dir)
     npz = np.load(out_dir / "node_embeddings.npz", allow_pickle=False)
@@ -641,4 +652,10 @@ def load_latent_analysis(out_dir) -> dict:
     p = out_dir / "cluster_composition.csv"
     if p.exists():
         out["composition"] = pd.read_csv(p, index_col=0)
+    p = out_dir / "gmm_users.pkl"
+    if p.exists():
+        with open(p, "rb") as f:
+            blob_u = pickle.load(f)
+        out["gmm_users"] = blob_u["gmm"]
+        out["user_composition"] = blob_u.get("composition")
     return out

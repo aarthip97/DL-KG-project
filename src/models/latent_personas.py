@@ -277,18 +277,25 @@ def summarise_clusters(
 # ─── 4-5. taste vector → persona → recommendations ────────────────────────────
 
 def taste_vector_from_selections(
-    selections: Mapping[str, Sequence[str]],
+    selections: Mapping[str, object],
     attr_vectors: Mapping[str, Mapping[str, np.ndarray]],
     *,
     weights: Optional[Mapping[str, float]] = None,
 ) -> np.ndarray:
     """Blend the selected attribute embeddings into one taste vector.
 
-    ``selections`` maps an attribute type to the chosen labels, e.g.
-    ``{"genre": ["rock", "metal"], "tempo_class": ["Allegro"], "mode": ["Major"]}``.
-    Each type contributes the mean of its selected anchor vectors, scaled by
-    ``weights`` (defaults to :data:`DEFAULT_WEIGHTS`); the sum is L2-normalised.
-    Unknown labels are ignored.
+    ``selections`` maps an attribute type to the chosen labels. Two forms are
+    accepted (and may be mixed across types):
+
+    * a plain list — ``{"genre": ["rock", "metal"]}`` — all picks weighted equally;
+    * a ``{label: weight}`` mapping — ``{"genre": {"rock": 9, "classical": 10,
+      "pop": 7}}`` — a per-item importance (any positive scale, e.g. 1–10).
+
+    Within a type the picks are combined as a **weighted mean** of their anchor
+    vectors (equal weights for the list form), then scaled by the per-*type*
+    ``weights`` (defaults to :data:`DEFAULT_WEIGHTS` — genre counts more than key);
+    the sum across types is L2-normalised. Unknown labels and non-positive
+    weights are ignored.
 
     Raises:
         ValueError: if nothing valid was selected.
@@ -299,14 +306,19 @@ def taste_vector_from_selections(
         raise ValueError("attr_vectors is empty")
     acc = np.zeros(dim, dtype=np.float32)
     used = 0
-    for nt, labels in selections.items():
+    for nt, picks in selections.items():
         table = attr_vectors.get(nt)
-        if not table or not labels:
+        if not table or not picks:
             continue
-        picked = [table[l] for l in labels if l in table]
-        if not picked:
+        if isinstance(picks, Mapping):                      # {label: weight}
+            items = [(l, float(w)) for l, w in picks.items() if l in table and float(w) > 0]
+        else:                                               # [label, ...] → equal weights
+            items = [(l, 1.0) for l in picks if l in table]
+        if not items:
             continue
-        acc += float(weights.get(nt, 0.5)) * np.mean(picked, axis=0).astype(np.float32)
+        wsum = sum(w for _, w in items) or 1.0
+        vec = sum(w * table[l] for l, w in items) / wsum    # within-type weighted mean
+        acc += float(weights.get(nt, 0.5)) * vec.astype(np.float32)
         used += 1
     if used == 0:
         raise ValueError("no recognised attributes selected")
@@ -347,6 +359,80 @@ def recommend_for_vector(
     out = track_meta.iloc[pool].copy()
     out["sim"] = sims[pool]
     return out.reset_index(drop=True)
+
+
+# ─── 5b. user-manifold cold start: persona-centroid vs k-NN user blend ────────
+
+def nearest_users(
+    query: np.ndarray,
+    user_emb: np.ndarray,
+    *,
+    k: int = 15,
+    temperature: float = 0.07,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The ``k`` nearest real users to ``query`` (cosine) + soft blend weights.
+
+    Args:
+        query: a taste vector in the shared HGT latent space (e.g. the output of
+            :func:`taste_vector_from_selections`).
+        user_emb: ``(n_users, d)`` matrix of **user** node embeddings.
+        k: neighbourhood size.
+        temperature: softmax temperature on the cosine similarities — lower
+            concentrates weight on the closest users, higher averages more evenly.
+
+    Returns:
+        ``(idx, weights, sims)`` — neighbour row indices (high→low similarity),
+        their softmax blend weights (sum to 1) and their raw cosine similarities.
+    """
+    q = _l2norm(query)
+    U = _l2norm(user_emb)
+    sims = U @ q                                          # [n_users]
+    k = int(min(max(k, 1), len(sims)))
+    idx = np.argpartition(-sims, k - 1)[:k]
+    idx = idx[np.argsort(-sims[idx])]
+    s = sims[idx]
+    w = np.exp((s - s.max()) / max(temperature, 1e-6))
+    w = (w / w.sum()).astype(np.float32)
+    return idx.astype(np.int64), w, s.astype(np.float32)
+
+
+def blend_user_embedding(
+    query: np.ndarray,
+    user_emb: np.ndarray,
+    *,
+    k: int = 15,
+    temperature: float = 0.07,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Synthesise a brand-new user's embedding from existing users — no retrain.
+
+    The new vector is the similarity-weighted mean of the ``k`` nearest real
+    users (see :func:`nearest_users`), so it lands *on the learned user manifold*
+    (inside its convex hull) rather than drifting into track/attribute regions.
+    This is a non-parametric / Nadaraya–Watson inductive embedding: the HGT is
+    never touched.
+
+    Returns:
+        ``(blended_vec, idx, weights, sims)`` — the L2-normalised blend plus the
+        neighbour indices / weights / similarities backing it (for explanation).
+    """
+    idx, w, s = nearest_users(query, user_emb, k=k, temperature=temperature)
+    blended = (w[:, None] * np.asarray(user_emb, dtype=np.float32)[idx]).sum(0)
+    return _l2norm(blended), idx, w, s
+
+
+def neighbor_dispersion(user_emb: np.ndarray, idx: np.ndarray) -> float:
+    """Mean pairwise cosine among the chosen neighbour users (blend confidence).
+
+    Near 1.0 → the neighbours agree, so the blend is a reliable estimate; lower →
+    it is averaging dissimilar users, so the (coarser) persona centroid is safer.
+    """
+    idx = np.asarray(idx)
+    if len(idx) < 2:
+        return 1.0
+    M = _l2norm(user_emb[idx])
+    G = M @ M.T
+    iu = np.triu_indices(len(idx), k=1)
+    return float(G[iu].mean())
 
 
 # ─── 6. explanation ───────────────────────────────────────────────────────────
@@ -478,10 +564,95 @@ class PersonaPack:
     track_cluster: np.ndarray
     weights: Dict[str, float] = field(default_factory=lambda: dict(DEFAULT_WEIGHTS))
     composition: Optional[pd.DataFrame] = None
+    # ── user-manifold cold start (optional; set when a users-only GMM is built) ──
+    user_emb: Optional[np.ndarray] = None          # (n_users, d) user embeddings
+    user_centroids: Optional[np.ndarray] = None    # users-only GMM means (archetypes)
+    user_personas: Optional[pd.DataFrame] = None   # summarise_clusters(user_centroids)
+    user_composition: Optional[pd.DataFrame] = None
+    blend_k: int = 15
+    blend_temperature: float = 0.07
 
     # convenience: the labels a form can offer, sorted
     def options(self, attr_type: str) -> List[str]:
         return sorted(self.attr_vectors.get(attr_type, {}))
+
+    @property
+    def has_user_manifold(self) -> bool:
+        """True when the users-only GMM artefacts are present (centroid/blend modes)."""
+        return self.user_emb is not None and self.user_centroids is not None
+
+    # ── user-manifold recommendation modes (all pure inference, no retrain) ──────
+    def recommend_user_persona(
+        self, selections: Mapping[str, Sequence[str]], *, k: int = 10,
+    ) -> Tuple[pd.DataFrame, int, List[Tuple[int, float]]]:
+        """Snap the form to the nearest **user archetype** centroid and recommend.
+
+        Returns ``(recs, persona_id, ranked)`` — recs are the tracks nearest the
+        matched users-only centroid.
+        """
+        if self.user_centroids is None:
+            raise ValueError("pack has no user_centroids — build a users-only GMM first")
+        vec = taste_vector_from_selections(selections, self.attr_vectors, weights=self.weights)
+        pid, ranked = assign_persona(vec, self.user_centroids)
+        recs = recommend_for_vector(self.user_centroids[pid], self.track_emb,
+                                    self.track_meta, k=k)
+        return recs, pid, ranked
+
+    def recommend_user_blend(
+        self, selections: Mapping[str, Sequence[str]], *, k: int = 10,
+        k_users: Optional[int] = None,
+    ) -> Tuple[pd.DataFrame, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Build a bespoke new-user vector via :func:`blend_user_embedding`, recommend.
+
+        Returns ``(recs, blend_vec, neighbor_idx, neighbor_weights, neighbor_sims)``.
+        """
+        if self.user_emb is None:
+            raise ValueError("pack has no user_emb — build the user manifold first")
+        vec = taste_vector_from_selections(selections, self.attr_vectors, weights=self.weights)
+        b, idx, w, s = blend_user_embedding(
+            vec, self.user_emb, k=int(k_users or self.blend_k),
+            temperature=self.blend_temperature)
+        recs = recommend_for_vector(b, self.track_emb, self.track_meta, k=k)
+        return recs, b, idx, w, s
+
+    def compare_user_modes(
+        self, selections: Mapping[str, Sequence[str]], *, k: int = 10,
+        k_users: Optional[int] = None,
+    ) -> dict:
+        """Run persona-centroid **and** k-NN blend, with a "which is more informative"
+        diagnostic.
+
+        The diagnostic quantifies how much the personalized blend adds over the
+        coarse archetype:
+
+        * ``residual`` = ``1 - cos(blend, centroid)`` — how far the blend sits from
+          its archetype prototype (≈0 → persona already captures the user).
+        * ``overlap`` = Jaccard of the two top-``k`` recommendation sets.
+        * ``neighbor_dispersion`` = agreement among the blend's neighbour users.
+
+        ``verdict`` is ``"blend"`` when the blend looks materially more individual
+        (residual high or rec overlap low) **and** its neighbours are coherent,
+        else ``"persona"``.
+        """
+        recs_p, pid, ranked = self.recommend_user_persona(selections, k=k)
+        recs_b, b, idx, w, s = self.recommend_user_blend(selections, k=k, k_users=k_users)
+        cvec = self.user_centroids[pid]
+        residual = 1.0 - float(_l2norm(b) @ _l2norm(cvec))
+        set_p, set_b = set(recs_p["kg_idx"].tolist()), set(recs_b["kg_idx"].tolist())
+        overlap = len(set_p & set_b) / max(len(set_p | set_b), 1)
+        disp = neighbor_dispersion(self.user_emb, idx)
+        pname = (self.user_personas.at[pid, "persona"]
+                 if self.user_personas is not None and pid in self.user_personas.index
+                 else f"user-cluster-{pid}")
+        individual = (residual >= 0.15) or (overlap <= 0.5)
+        verdict = "blend" if (individual and disp >= 0.5) else "persona"
+        return {
+            "persona_id": int(pid), "persona_name": pname, "ranked": ranked,
+            "recs_persona": recs_p, "recs_blend": recs_b,
+            "blend_vec": b, "residual": residual, "overlap": overlap,
+            "neighbor_idx": idx, "neighbor_weights": w, "neighbor_sims": s,
+            "neighbor_dispersion": disp, "verdict": verdict,
+        }
 
     def recommend(
         self,
@@ -516,13 +687,21 @@ def build_persona_pack(
     composition: Optional[pd.DataFrame] = None,
     weights: Optional[Mapping[str, float]] = None,
     top_tracks: int = 200,
+    user_centroids: Optional[np.ndarray] = None,
+    user_composition: Optional[pd.DataFrame] = None,
 ) -> PersonaPack:
     """Assemble a :class:`PersonaPack` from the latent-space artefacts.
 
-    ``centroids`` are the GMM means (``GMMResult.means``); ``composition`` is an
-    optional ``cluster × Node_Type`` count frame (``pd.crosstab`` of the
-    subsample's ``Cluster_ID`` and ``Node_Type``) used to label personas with
-    their dominant node type and user count.
+    ``centroids`` are the all-node-type GMM means (``GMMResult.means``);
+    ``composition`` is an optional ``cluster × Node_Type`` count frame
+    (``pd.crosstab`` of the subsample's ``Cluster_ID`` and ``Node_Type``) used to
+    label personas with their dominant node type and user count.
+
+    When ``user_centroids`` (the means of a **users-only** GMM) are supplied, the
+    pack also gains the user-manifold cold-start modes: every ``user`` node's
+    embedding is indexed for the k-NN blend, and the user centroids are summarised
+    into listener-archetype personas. ``user_composition`` optionally labels those
+    archetypes (a ``cluster × Node_Type`` crosstab of the users-only subsample).
     """
     attr_vectors = build_attribute_vectors(emb_df, edge_dict)
     track_emb, track_meta = build_track_table(
@@ -533,12 +712,25 @@ def build_persona_pack(
         composition=composition, top_tracks=top_tracks)
     # each track's own nearest persona (for optional persona-restricted recs)
     track_cluster = (_l2norm(track_emb) @ _l2norm(np.asarray(centroids)).T).argmax(1)
+
+    # ── optional user manifold (users-only GMM) ─────────────────────────────────
+    user_emb = type_embedding_matrix(emb_df, "user")
+    user_emb = user_emb if len(user_emb) else None
+    user_personas = None
+    if user_centroids is not None:
+        user_centroids = np.asarray(user_centroids, dtype=np.float32)
+        user_personas = summarise_clusters(
+            user_centroids, track_emb, track_meta, attr_vectors,
+            composition=user_composition, top_tracks=top_tracks)
+
     return PersonaPack(
         attr_vectors=attr_vectors, centroids=np.asarray(centroids, dtype=np.float32),
         best_params=dict(best_params), track_emb=track_emb, track_meta=track_meta,
         personas=personas, track_cluster=np.asarray(track_cluster),
         weights=dict(DEFAULT_WEIGHTS if weights is None else weights),
-        composition=composition)
+        composition=composition,
+        user_emb=user_emb, user_centroids=user_centroids,
+        user_personas=user_personas, user_composition=user_composition)
 
 
 def save_persona_pack(pack: PersonaPack, path) -> Path:
@@ -654,6 +846,23 @@ class ColdStartHGT:
                                device=self._gdev)
         return torch.stack([v.to(self._gdev) for v in vecs]).mean(0)
 
+    def tracks_listened_by(self, user_idx, *, top: Optional[int] = None) -> np.ndarray:
+        """KG track indices the given existing users listened to, most-frequent first.
+
+        Read straight off the base reverse (track → user) edges, so it lets a
+        cold-start user be seeded from the *real* histories of its nearest
+        neighbour users — the most faithful grounding for the k-NN-blend rationale.
+        """
+        rev = self._base_rev.cpu().numpy()
+        users = np.asarray(list({int(u) for u in np.asarray(user_idx).ravel()}),
+                           dtype=rev.dtype)
+        tracks = rev[0][np.isin(rev[1], users)]
+        if len(tracks) == 0:
+            return np.array([], dtype=np.int64)
+        uniq, cnt = np.unique(tracks, return_counts=True)
+        out = uniq[np.argsort(-cnt)].astype(np.int64)
+        return out[:top] if top else out
+
     def recommend(
         self,
         selections: Mapping[str, Sequence[str]],
@@ -661,22 +870,42 @@ class ColdStartHGT:
         k: int = 10,
         seed_k: int = 8,
         exclude_seeds: bool = True,
+        seed_vec: Optional[np.ndarray] = None,
+        seed_kg: Optional[Sequence[int]] = None,
     ) -> dict:
         """Inductive cold-start recommendation + a ready :class:`HGTExplainer`.
 
+        The synthetic user's stand-in history (the seed tracks it is wired to) can
+        be chosen three ways, so every vector-building strategy can be routed
+        through this *same* attention-grounded forward pass:
+
+        * ``seed_kg`` — explicit KG track indices (e.g. the listening edges of the
+          k nearest users, from :meth:`tracks_listened_by`);
+        * ``seed_vec`` — any output-space vector to rank tracks by (a **persona
+          centroid** or a **k-NN user blend**);
+        * neither — the attribute taste vector (the default behaviour).
+
         Returns a dict with ``recs`` (``track_meta`` rows + ``score``),
         ``synth_idx`` (the temporary user's KG index), ``explainer`` (wrapping the
-        captured attention), ``seed_rows``/``seed_kg`` and the ``taste_vec``.
+        captured attention), ``seed_rows``/``seed_kg`` and the seeding ``taste_vec``.
         """
         import torch
         from torch_geometric.data import HeteroData
 
         from .evaluation.explainability import HGTExplainer, capture_hgt_attention
 
-        taste = taste_vector_from_selections(selections, self.pack.attr_vectors,
-                                             weights=self.pack.weights)
-        sims = _l2norm(self.pack.track_emb) @ _l2norm(taste)
-        seed_rows = np.argsort(-sims)[:seed_k]
+        query_vec = (np.asarray(seed_vec, dtype=np.float32) if seed_vec is not None
+                     else taste_vector_from_selections(
+                         selections, self.pack.attr_vectors, weights=self.pack.weights))
+        if seed_kg is not None:
+            _row_of_kg = {int(kg): r for r, kg in enumerate(self._row_kg)}
+            seed_rows = np.array([_row_of_kg[int(kg)] for kg in np.asarray(seed_kg)
+                                  if int(kg) in _row_of_kg][:seed_k], dtype=np.int64)
+        else:
+            seed_rows = np.array([], dtype=np.int64)
+        if len(seed_rows) == 0:                          # default / fallback seeding
+            sims = _l2norm(self.pack.track_emb) @ _l2norm(query_vec)
+            seed_rows = np.argsort(-sims)[:seed_k]
         seed_kg = self._row_kg[seed_rows]
 
         U = self.n_users
@@ -710,7 +939,7 @@ class ColdStartHGT:
             user_type=self.user_type, item_type=self.item_type)
         return {"recs": recs.reset_index(drop=True), "synth_idx": U,
                 "explainer": explainer, "seed_rows": seed_rows, "seed_kg": seed_kg,
-                "taste_vec": taste, "scores": scores}
+                "taste_vec": query_vec, "scores": scores}
 
 
 # ─── ipywidgets GUI ───────────────────────────────────────────────────────────
@@ -736,16 +965,75 @@ def _recs_table_html(recs: pd.DataFrame, score_col: str) -> str:
             + "".join(rows) + "</table>")
 
 
+def _neighbors_html(idx: np.ndarray, weights: np.ndarray, sims: np.ndarray) -> str:
+    """The real users backing a k-NN taste blend, as chips (index · sim · weight)."""
+    chips = " ".join(
+        f"<span style='background:#eef7ee;border-radius:4px;padding:1px 6px;margin:0 2px;"
+        f"font-size:11px'>user&nbsp;#{int(i)} <span style='color:#888'>"
+        f"(sim {float(s):.2f}, w {float(w):.2f})</span></span>"
+        for i, w, s in zip(idx, weights, sims))
+    return ("<div style='font-family:sans-serif;font-size:12px;margin-top:6px'>"
+            f"<b>Blended from {len(idx)} nearest users:</b><br>{chips}</div>")
+
+
+def _compare_diag_html(cmp: dict) -> str:
+    """The "which is more informative" verdict panel for the compare mode."""
+    verdict = cmp["verdict"]
+    indiv = ("your taste sits well inside this archetype — the persona centroid "
+             "already captures you" if verdict == "persona" else
+             "your taste sits between archetypes — the personalized blend carries "
+             "individual signal the single centroid discards")
+    badge = ("#1f7a1f" if verdict == "blend" else "#7a5a1f")
+    return (
+        "<div style='padding:10px;background:#f7f7fb;border-radius:6px;"
+        "font-family:sans-serif;font-size:13px'>"
+        f"<b>More informative here: "
+        f"<span style='color:{badge}'>"
+        f"{'k-NN taste blend' if verdict=='blend' else 'persona centroid'}</span></b><br>"
+        f"<span style='color:#555'>{indiv}.</span><br><br>"
+        f"residual&nbsp;(blend↔centroid cosine gap): <b>{cmp['residual']:.3f}</b> "
+        "<span style='color:#888'>— 0 ≈ identical to the archetype</span><br>"
+        f"recommendation overlap@k: <b>{cmp['overlap']*100:.0f}%</b> "
+        "<span style='color:#888'>— how much the two lists agree</span><br>"
+        f"neighbour agreement: <b>{cmp['neighbor_dispersion']:.2f}</b> "
+        "<span style='color:#888'>— mean pairwise cosine of the blend's users "
+        "(high ⇒ blend reliable)</span>"
+        "</div>")
+
+
+def _compare_tables_html(cmp: dict) -> str:
+    """Side-by-side persona-centroid vs k-NN-blend recommendation tables."""
+    left = _recs_table_html(cmp["recs_persona"], "sim")
+    right = _recs_table_html(cmp["recs_blend"], "sim")
+    return (
+        "<div style='display:flex;gap:16px;font-family:sans-serif'>"
+        f"<div style='flex:1'><h4 style='margin:4px 0'>Persona centroid "
+        f"#{cmp['persona_id']} — “{_html_escape(cmp['persona_name'])}”</h4>{left}</div>"
+        f"<div style='flex:1'><h4 style='margin:4px 0'>My taste "
+        f"(k-NN user blend)</h4>{right}</div></div>")
+
+
 def launch_persona_gui(pack: PersonaPack, *, cold_start: "ColdStartHGT | None" = None,
                        default_k: int = 10, default_seed_k: int = 8):
     """A 3-page ipywidgets app rendered **inline** in the notebook output.
 
     Pages: **1 · Your taste** (the form), **2 · Recommendations** (ranked tracks +
-    matched persona), **3 · Why these?** (the rationale). When ``cold_start`` (a
-    :class:`ColdStartHGT`) is supplied, the form offers an *HGT-attention* mode
-    that treats the new user as a temporary graph node and shows the faithful
-    edge-attention rationale (the §12 story); otherwise it uses the persona/cosine
-    explanation. No server/localhost — everything renders in the cell output.
+    matched persona), **3 · Why these?** (the rationale).
+
+    The form's **mode** selector exposes whichever cold-start strategies the pack
+    supports (all pure inference, no retraining):
+
+    * **User persona (centroid)** / **My taste (k-NN blend)** / **Compare** —
+      available when ``pack`` carries a users-only GMM (``user_centroids``): snap
+      to a listener-archetype centroid, synthesise a bespoke vector from the
+      nearest real users, or run both with a "which is more informative"
+      diagnostic (residual, rec-overlap, neighbour agreement).
+    * **HGT attention (inductive)** — available when ``cold_start`` (a
+      :class:`ColdStartHGT`) is supplied: treats the new user as a temporary graph
+      node and shows the faithful softmax edge-attention (the §12 story).
+    * **Persona (cosine)** — the always-available attribute-anchor baseline.
+
+    No server/localhost — everything renders in the cell output.
 
     Returns the :class:`ipywidgets.Tab` (display it, or leave as the last cell
     expression). Falls back to a printed message if ``ipywidgets`` is missing.
@@ -759,6 +1047,7 @@ def launch_persona_gui(pack: PersonaPack, *, cold_start: "ColdStartHGT | None" =
         return None
 
     has_hgt = cold_start is not None
+    has_user = pack.has_user_manifold      # users-only GMM → centroid/blend/compare
 
     # ── page 1: the form ──────────────────────────────────────────────────────
     def _ms(attr, rows=6):
@@ -780,10 +1069,20 @@ def launch_persona_gui(pack: PersonaPack, *, cold_start: "ColdStartHGT | None" =
     w_seed = W.IntSlider(value=default_seed_k, min=3, max=20, description="seed tracks",
                          style={"description_width": "92px"},
                          layout=W.Layout(display="" if has_hgt else "none"))
-    _modes = (["HGT attention (inductive)", "Persona (cosine)"] if has_hgt
-              else ["Persona (cosine)"])
-    w_mode_sel = W.ToggleButtons(
-        options=_modes, value=_modes[0], description="explain via",
+    w_kusers = W.IntSlider(value=pack.blend_k, min=3, max=50, description="blend users",
+                           style={"description_width": "92px"},
+                           layout=W.Layout(display="" if has_user else "none"))
+    # axis 1 — how the new-user vector is built
+    _sources = ((["Persona centroid", "k-NN blend", "Compare: persona vs blend"]
+                 if has_user else []) + ["Attribute taste"])
+    w_source = W.ToggleButtons(
+        options=_sources, value=_sources[0], description="recommend via",
+        style={"description_width": "92px"},
+        layout=W.Layout(display="" if len(_sources) > 1 else "none"))
+    # axis 2 — how that recommendation is explained
+    _explains = ["Cosine / anchors"] + (["HGT attention"] if has_hgt else [])
+    w_explain = W.ToggleButtons(
+        options=_explains, value=_explains[0], description="explain via",
         style={"description_width": "92px"},
         layout=W.Layout(display="" if has_hgt else "none"))
     w_btn = W.Button(description="Get recommendations  →", button_style="primary",
@@ -827,6 +1126,25 @@ def launch_persona_gui(pack: PersonaPack, *, cold_start: "ColdStartHGT | None" =
                              "to this GUI to get faithful edge-attention rationales "
                              "(treat-the-new-user-as-a-temporary-node).</div>"))
 
+    def _render_user_expl():
+        """Persona-centroid / k-NN-blend rationale (same HTML as cosine + neighbours)."""
+        expl_out.clear_output(wait=True)
+        with expl_out:
+            display(HTML(format_explanation_html(state["expl"])))
+            nb = state.get("neighbors")
+            if nb is not None:
+                display(HTML(_neighbors_html(*nb)))
+
+    def _render_compare_expl():
+        expl_out.clear_output(wait=True)
+        with expl_out:
+            cmp = state.get("cmp")
+            if cmp is None:
+                print("Run a comparison first."); return
+            display(HTML(_compare_diag_html(cmp)))
+            display(HTML(_neighbors_html(cmp["neighbor_idx"], cmp["neighbor_weights"],
+                                         cmp["neighbor_sims"])))
+
     def _render_hgt_expl(idx):
         expl_out.clear_output(wait=True)
         with expl_out:
@@ -857,6 +1175,16 @@ def launch_persona_gui(pack: PersonaPack, *, cold_start: "ColdStartHGT | None" =
                 except Exception as ex_err:  # noqa: BLE001
                     print(f"[{fn} skipped: {ex_err}]")
 
+    def _show_hgt(res):
+        """Render an inductive-HGT result: recs table + per-rec attention picker."""
+        state.update(res=res, recs=res["recs"], mode="hgt")
+        display(HTML(_recs_table_html(res["recs"], "score")))
+        w_pick.options = [(f"{i+1}. {t.title or '?'} — {t.artist or '?'}", i)
+                          for i, t in enumerate(res["recs"].itertuples())]
+        if w_pick.options:
+            w_pick.value = 0
+        _render_hgt_expl(0)
+
     def _on_pick(change):
         if state.get("mode") == "hgt" and change["name"] == "value":
             _render_hgt_expl(change["new"])
@@ -870,26 +1198,66 @@ def launch_persona_gui(pack: PersonaPack, *, cold_start: "ColdStartHGT | None" =
                               "(a genre is a good start).</span>")
             return
         w_status.value = "<span style='color:#666'>scoring…</span>"
-        use_hgt = has_hgt and str(w_mode_sel.value).startswith("HGT")
+        src = str(w_source.value)
+        want_hgt = has_hgt and str(w_explain.value).startswith("HGT") \
+            and not src.startswith("Compare")
+        k, k_users, seed_k = int(w_k.value), int(w_kusers.value), int(w_seed.value)
         recs_out.clear_output(wait=True)
         try:
             with recs_out:
                 display(HTML(_banner_html(sel)))
-                if use_hgt:
-                    res = cold_start.recommend(sel, k=int(w_k.value), seed_k=int(w_seed.value))
-                    state.update(res=res, recs=res["recs"], mode="hgt")
-                    display(HTML(_recs_table_html(res["recs"], "score")))
-                    w_pick.options = [(f"{i+1}. {t.title or '?'} — {t.artist or '?'}", i)
-                                      for i, t in enumerate(res["recs"].itertuples())]
-                    if w_pick.options:
-                        w_pick.value = 0
-                    _render_hgt_expl(0)
-                else:
-                    recs, expl = pack.recommend(sel, k=int(w_k.value))
-                    state.update(recs=recs, expl=expl, mode="cosine")
-                    display(HTML(_recs_table_html(recs, "sim")))
-                    w_pick.options = []
-                    _render_cosine_expl()
+                w_pick.options = []                       # only HGT mode uses per-rec pick
+                vec = taste_vector_from_selections(sel, pack.attr_vectors, weights=pack.weights)
+
+                if src.startswith("Compare"):
+                    # cosine-only diagnostic (attention is not defined for two lists)
+                    cmp = pack.compare_user_modes(sel, k=k, k_users=k_users)
+                    state.update(cmp=cmp, mode="compare")
+                    display(HTML(_compare_tables_html(cmp)))
+                    _render_compare_expl()
+
+                elif src.startswith("Persona"):          # nearest user-archetype centroid
+                    pid, ranked = assign_persona(vec, pack.user_centroids)
+                    cvec = pack.user_centroids[pid]
+                    if want_hgt:
+                        _show_hgt(cold_start.recommend(sel, k=k, seed_k=seed_k, seed_vec=cvec))
+                    else:
+                        recs = recommend_for_vector(cvec, pack.track_emb, pack.track_meta, k=k)
+                        expl = explain_recommendations(
+                            sel, recs, persona_id=pid, personas=pack.user_personas,
+                            ranked_personas=ranked, attr_vectors=pack.attr_vectors, taste_vec=cvec)
+                        state.update(recs=recs, expl=expl, neighbors=None, mode="user_persona")
+                        display(HTML(_recs_table_html(recs, "sim")))
+                        _render_user_expl()
+
+                elif src.startswith("k-NN"):             # blend of nearest real users
+                    b, idx, w, s = blend_user_embedding(
+                        vec, pack.user_emb, k=k_users, temperature=pack.blend_temperature)
+                    if want_hgt:
+                        # seed the temp node from the neighbours' real listening edges
+                        # (falls back to the blend vector inside recommend() if empty)
+                        seed_kg = cold_start.tracks_listened_by(idx, top=seed_k)
+                        _show_hgt(cold_start.recommend(
+                            sel, k=k, seed_k=seed_k, seed_vec=b,
+                            seed_kg=(seed_kg if len(seed_kg) else None)))
+                    else:
+                        recs = recommend_for_vector(b, pack.track_emb, pack.track_meta, k=k)
+                        pid, ranked = assign_persona(b, pack.user_centroids)
+                        expl = explain_recommendations(
+                            sel, recs, persona_id=pid, personas=pack.user_personas,
+                            ranked_personas=ranked, attr_vectors=pack.attr_vectors, taste_vec=b)
+                        state.update(recs=recs, expl=expl, neighbors=(idx, w, s), mode="user_blend")
+                        display(HTML(_recs_table_html(recs, "sim")))
+                        _render_user_expl()
+
+                else:                                     # Attribute taste (all-type baseline)
+                    if want_hgt:
+                        _show_hgt(cold_start.recommend(sel, k=k, seed_k=seed_k))
+                    else:
+                        recs, expl = pack.recommend(sel, k=k)
+                        state.update(recs=recs, expl=expl, mode="cosine")
+                        display(HTML(_recs_table_html(recs, "sim")))
+                        _render_cosine_expl()
             w_status.value = ""
             tab.selected_index = 1
         except Exception as ex_err:  # noqa: BLE001
@@ -898,14 +1266,23 @@ def launch_persona_gui(pack: PersonaPack, *, cold_start: "ColdStartHGT | None" =
     w_btn.on_click(_on_click)
 
     left = [w_genre] + ([w_instr] if w_instr is not None else [])
-    right = [w_tempo, w_mode, w_decade, w_k] + ([w_seed, w_mode_sel] if has_hgt else [])
-    mode_note = ("two explanation modes: faithful HGT edge-attention or persona-cosine"
-                 if has_hgt else "persona-cosine explanation "
-                 "(add a ColdStartHGT for attention rationales)")
+    right = ([w_tempo, w_mode, w_decade, w_k]
+             + ([w_kusers] if has_user else [])
+             + ([w_seed] if has_hgt else []))
+    controls = ([w_source] if len(_sources) > 1 else []) + ([w_explain] if has_hgt else [])
+    _src_note = ("snap to a listener-archetype <b>centroid</b>, synthesise your own "
+                 "vector via a <b>k-NN blend</b> of similar users, <b>compare</b> the two, "
+                 "or use the attribute <b>taste</b> vector"
+                 if has_user else "attribute <b>taste</b> vector")
+    _exp_note = (" — explain each with cosine/anchors <b>or</b> faithful "
+                 "<b>HGT edge-attention</b> (new user as a temporary graph node)"
+                 if has_hgt else "")
+    mode_note = f"recommend via: {_src_note}{_exp_note}"
     page1 = W.VBox([
         W.HTML("<h4 style='margin:4px 0'>🎧 Tell us your taste</h4>"
                f"<div style='color:#666;font-size:12px'>{mode_note}</div>"),
         W.HBox([W.VBox(left), W.VBox(right)]),
+        W.VBox(controls),
         W.HBox([w_btn, w_status]),
     ])
     page2 = W.VBox([recs_out])
@@ -917,12 +1294,201 @@ def launch_persona_gui(pack: PersonaPack, *, cold_start: "ColdStartHGT | None" =
     return tab
 
 
+# ─── Gradio web app (separate browser tab; public link via share=True) ─────────
+
+def launch_persona_app(
+    pack: PersonaPack,
+    *,
+    cold_start: "ColdStartHGT | None" = None,
+    share: bool = True,
+    inline: bool = False,
+    server_port: Optional[int] = None,
+    default_k: int = 10,
+    default_seed_k: int = 8,
+    default_weight: int = 7,
+    **launch_kwargs,
+):
+    """Serve the cold-start recommender as a **Gradio web app** (not inline).
+
+    Unlike :func:`launch_persona_gui` (inline ipywidgets), this launches a real
+    web server.  With ``share=True`` Gradio prints a public ``*.gradio.live`` URL
+    you can open in a separate browser tab **from any device** — so in Colab you
+    just run the build cell, then this cell, and open the link (no need to keep
+    the notebook tab focused).
+
+    Features beyond the inline GUI:
+
+    * **per-item preference weights** — pick several labels per category and give
+      each a 1–10 importance (e.g. rock 9, classical 10, pop 7); a slider appears
+      for every pick and feeds the ``{label: weight}`` taste vector;
+    * **searchable multi-select dropdowns** — type to autocomplete/filter the
+      attribute labels;
+    * the same modes (persona centroid / k-NN blend / compare / attribute taste)
+      and explanations (cosine-anchors or faithful HGT-attention) as the inline GUI.
+
+    Returns the ``gradio.Blocks`` (already launched), or ``None`` if gradio is
+    missing (``pip install gradio``).
+    """
+    try:
+        import gradio as gr
+    except Exception as e:  # noqa: BLE001
+        print(f"[persona-app] gradio not installed ({e}). Run `pip install gradio`, "
+              "or use launch_persona_gui(...) for the inline ipywidgets GUI.")
+        return None
+    import matplotlib
+    matplotlib.use("Agg")        # headless figures for gr.Plot on a server/Colab
+
+    has_hgt = cold_start is not None
+    has_user = pack.has_user_manifold
+    attr_types = [nt for nt in ATTR_TYPES if pack.options(nt)]
+    sources = ((["Persona centroid", "k-NN blend", "Compare: persona vs blend"]
+                if has_user else []) + ["Attribute taste"])
+    explains = ["Cosine / anchors"] + (["HGT attention"] if has_hgt else [])
+
+    # ── compute: (weighted selections, controls) → (recs_html, why_html, figure) ──
+    def _hgt_outputs(res):
+        recs = res["recs"]
+        ex, kg = res["explainer"], int(recs.iloc[0]["kg_idx"])
+        e = ex.explain(res["synth_idx"], kg, top_k_anchors=6)
+        try:
+            fig = ex.plot_explanation_graph(e)
+        except Exception as _err:  # noqa: BLE001
+            fig = None
+        why = ("<div style='font-family:sans-serif;font-size:12px'><b>Faithful HGT "
+               "attention</b> — the graph shows how your temporary node's embedding "
+               "was built; edge labels are the real softmax attention. Explaining the "
+               f"top pick “{_html_escape(recs.iloc[0].get('title') or '?')}”.</div>"
+               "<pre style='font-size:12px;white-space:pre-wrap;font-family:monospace'>"
+               + _html_escape(ex.explain_text(e)) + "</pre>")
+        return _recs_table_html(recs, "score"), why, fig
+
+    def _compute(selections, source, explain, k, k_users, seed_k):
+        if not selections:
+            return ("<div style='color:#b00;font-family:sans-serif'>Pick at least one "
+                    "preference and give it a weight &gt; 0.</div>", "", None)
+        want_hgt = (has_hgt and str(explain).startswith("HGT")
+                    and not str(source).startswith("Compare"))
+        vec = taste_vector_from_selections(selections, pack.attr_vectors, weights=pack.weights)
+
+        if str(source).startswith("Compare"):
+            cmp = pack.compare_user_modes(selections, k=k, k_users=k_users)
+            why = (_compare_diag_html(cmp) + _neighbors_html(
+                cmp["neighbor_idx"], cmp["neighbor_weights"], cmp["neighbor_sims"]))
+            return _compare_tables_html(cmp), why, None
+
+        if str(source).startswith("Persona"):
+            pid, ranked = assign_persona(vec, pack.user_centroids)
+            cvec = pack.user_centroids[pid]
+            if want_hgt:
+                return _hgt_outputs(cold_start.recommend(
+                    selections, k=k, seed_k=seed_k, seed_vec=cvec))
+            recs = recommend_for_vector(cvec, pack.track_emb, pack.track_meta, k=k)
+            why = format_explanation_html(explain_recommendations(
+                selections, recs, persona_id=pid, personas=pack.user_personas,
+                ranked_personas=ranked, attr_vectors=pack.attr_vectors, taste_vec=cvec))
+            return _recs_table_html(recs, "sim"), why, None
+
+        if str(source).startswith("k-NN"):
+            b, idx, w, s = blend_user_embedding(
+                vec, pack.user_emb, k=k_users, temperature=pack.blend_temperature)
+            if want_hgt:
+                seed_kg = cold_start.tracks_listened_by(idx, top=seed_k)
+                return _hgt_outputs(cold_start.recommend(
+                    selections, k=k, seed_k=seed_k, seed_vec=b,
+                    seed_kg=(seed_kg if len(seed_kg) else None)))
+            recs = recommend_for_vector(b, pack.track_emb, pack.track_meta, k=k)
+            pid, ranked = assign_persona(b, pack.user_centroids)
+            why = (format_explanation_html(explain_recommendations(
+                selections, recs, persona_id=pid, personas=pack.user_personas,
+                ranked_personas=ranked, attr_vectors=pack.attr_vectors, taste_vec=b))
+                + _neighbors_html(idx, w, s))
+            return _recs_table_html(recs, "sim"), why, None
+
+        # Attribute taste (all-type baseline)
+        if want_hgt:
+            return _hgt_outputs(cold_start.recommend(selections, k=k, seed_k=seed_k))
+        recs, e = pack.recommend(selections, k=k)
+        return _recs_table_html(recs, "sim"), format_explanation_html(e), None
+
+    # ── UI ──────────────────────────────────────────────────────────────────────
+    with gr.Blocks(title="Persona cold-start recommender") as demo:
+        gr.Markdown("# 🎧 Persona cold-start recommender\n"
+                    "Pick a few preferences per category (type to search), set how "
+                    "much each matters (1–10), choose how to build & explain the "
+                    "recommendation, then hit **Get recommendations**.")
+        dropdowns: Dict[str, object] = {}
+        with gr.Row():
+            for nt in attr_types:
+                dropdowns[nt] = gr.Dropdown(
+                    choices=pack.options(nt), label=nt, multiselect=True,
+                    filterable=True, allow_custom_value=False)
+
+        gr.Markdown("#### Importance of each pick (1–10)")
+        with gr.Row():
+            w_mode = gr.Radio(sources, value=sources[0], label="recommend via")
+            w_explain = gr.Radio(explains, value=explains[0], label="explain via",
+                                 visible=has_hgt)
+        with gr.Row():
+            w_k = gr.Slider(3, 30, value=default_k, step=1, label="top-k")
+            w_kusers = gr.Slider(3, 50, value=pack.blend_k, step=1,
+                                 label="blend users", visible=has_user)
+            w_seed = gr.Slider(3, 20, value=default_seed_k, step=1,
+                               label="HGT seed tracks", visible=has_hgt)
+        w_btn = gr.Button("Get recommendations  →", variant="primary")
+
+        out_recs = gr.HTML(label="Recommendations")
+        out_why = gr.HTML(label="Why these?")
+        out_plot = gr.Plot(label="How the HGT built it", visible=has_hgt)
+
+        # Dynamic per-pick weight sliders: one appears for every selected label.
+        @gr.render(inputs=list(dropdowns.values()))
+        def _weights(*selected_per_type):
+            meta: List[Tuple[str, str]] = []
+            sliders = []
+            any_pick = any(selected_per_type)
+            if any_pick:
+                with gr.Row():
+                    for nt, picks in zip(dropdowns.keys(), selected_per_type):
+                        for lab in (picks or []):
+                            sliders.append(gr.Slider(
+                                1, 10, value=default_weight, step=1,
+                                label=f"{nt} · {lab}"))
+                            meta.append((nt, lab))
+            else:
+                gr.Markdown("*Select at least one preference above to set its weight.*")
+
+            def _run(*vals):
+                n = len(meta)
+                wvals, ctrl = vals[:n], vals[n:]
+                mode_v, expl_v, k_v, ku_v, sd_v = ctrl
+                selections: Dict[str, Dict[str, float]] = {}
+                for (nt, lab), wv in zip(meta, wvals):
+                    selections.setdefault(nt, {})[lab] = float(wv)
+                try:
+                    return _compute(selections, mode_v, expl_v,
+                                    int(k_v), int(ku_v), int(sd_v))
+                except Exception as err:  # noqa: BLE001
+                    return (f"<div style='color:#b00;font-family:sans-serif'>Failed: "
+                            f"{_html_escape(err)}</div>", "", None)
+
+            w_btn.click(_run, inputs=sliders + [w_mode, w_explain, w_k, w_kusers, w_seed],
+                        outputs=[out_recs, out_why, out_plot])
+
+    demo.queue()
+    launch_kwargs.setdefault("show_error", True)
+    if server_port is not None:
+        launch_kwargs["server_port"] = server_port
+    demo.launch(share=share, inline=inline, **launch_kwargs)
+    return demo
+
+
 __all__ = [
     "ATTR_TYPES", "DEFAULT_WEIGHTS", "PersonaPack", "ColdStartHGT",
     "type_embedding_matrix", "build_attribute_vectors", "build_track_table",
     "nearest_anchors", "summarise_clusters", "taste_vector_from_selections",
+    "nearest_users", "blend_user_embedding", "neighbor_dispersion",
     "assign_persona", "recommend_for_vector", "explain_recommendations",
     "format_explanation_text", "format_explanation_html",
     "build_persona_pack", "save_persona_pack", "load_persona_pack",
-    "launch_persona_gui",
+    "launch_persona_gui", "launch_persona_app",
 ]

@@ -28,7 +28,8 @@ seaborn>=0.13
 ipykernel>=6.29
 jupyterlab>=4.0
 plotly>=5.15
-ipywidgets>=7.7         
+ipywidgets>=7.7
+gradio>=4.0         # web app library for interactive demos
 
 # ── Dev utilities ─────────────────────────────────────────────────────────────
 scikit-learn>=1.4       # PCA, cosine similarity helpers

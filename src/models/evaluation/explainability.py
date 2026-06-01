@@ -164,8 +164,9 @@ class Reason:
 
     kind: str                       # "artist" | "genre" | "decade" | ...
     value: str                      # human-readable attribute label
-    strength: float                 # Σ anchor-attention of supporting anchors
+    strength: float                 # Σ anchor-attention of supporting anchors (raw, deduped)
     anchors: List[Tuple[str, float]]  # [(anchor track label, anchor attn), ...]
+    support: float = 0.0            # strength ÷ Σ attention on the shown anchors → [0,1]
 
 
 @dataclass
@@ -181,6 +182,10 @@ class Explanation:
     drivers: List[dict] = field(default_factory=list)   # track's defining neighbours
     reasons: List[Reason] = field(default_factory=list)
     track_attrs: Dict[str, List[str]] = field(default_factory=dict)
+    # Attention coverage: how much of each node's *total* incoming attention the
+    # shown top-k edges account for — so the plot can be honest about the rest.
+    # ``{"anchors"|"drivers": {"shown": Σattn_shown, "total": Σattn_all, "n_total": int}}``
+    coverage: Dict[str, dict] = field(default_factory=dict)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -348,48 +353,58 @@ class HGTExplainer:
             score = float(torch.dot(u, t))
 
         # 1) User anchors — the listened tracks that most shaped U's embedding.
-        anchors: List[dict] = []
-        for et, src_id, attn in self.incoming(self.user_type, user_kg):
-            if et[0] != self.item_type:        # only track→user messages
-                continue
-            anchors.append({
-                "track_kg": src_id,
-                "label": self.node_label(self.item_type, src_id),
-                "attn": attn,
-                "attrs": self.track_attributes(src_id),
-            })
-            if len(anchors) >= top_k_anchors:
-                break
+        anchor_edges = [(s, a) for et, s, a in self.incoming(self.user_type, user_kg)
+                        if et[0] == self.item_type]        # track→user messages, sorted
+        anchors: List[dict] = [{
+            "track_kg": s,
+            "label": self.node_label(self.item_type, s),
+            "attn": a,
+            "attrs": self.track_attributes(s),
+        } for s, a in anchor_edges[:top_k_anchors]]
 
         # 2) Track drivers — the neighbours that most shaped T's embedding.
-        drivers: List[dict] = []
-        for et, src_id, attn in self.incoming(self.item_type, track_kg)[:top_k_drivers]:
-            drivers.append({
-                "rel": et[1],
-                "ntype": et[0],
-                "node_kg": src_id,
-                "label": self.node_label(et[0], src_id),
-                "attn": attn,
-            })
+        driver_edges = self.incoming(self.item_type, track_kg)   # all relations, sorted
+        drivers: List[dict] = [{
+            "rel": et[1],
+            "ntype": et[0],
+            "node_kg": s,
+            "label": self.node_label(et[0], s),
+            "attn": a,
+        } for et, s, a in driver_edges[:top_k_drivers]]
+
+        # Coverage — what fraction of each node's total incoming attention is shown.
+        coverage = {
+            "anchors": {"shown": float(sum(a for _, a in anchor_edges[:top_k_anchors])),
+                        "total": float(sum(a for _, a in anchor_edges)),
+                        "n_total": len(anchor_edges)},
+            "drivers": {"shown": float(sum(a for *_, a in driver_edges[:top_k_drivers])),
+                        "total": float(sum(a for *_, a in driver_edges)),
+                        "n_total": len(driver_edges)},
+        }
 
         # 3) Reasons — attributes shared between the anchors and the rec.
+        # Each anchor contributes its attention to a shared attribute AT MOST ONCE
+        # (dedupe by node id), so an anchor that exposes the same attribute through
+        # several edges — common for `instrument` — can't inflate the total.
         track_attrs = self.track_attributes(track_kg)
         track_attr_ids = {k: {i for i, _ in v} for k, v in track_attrs.items()}
+        anchor_attn_used = float(sum(a["attn"] for a in anchors)) or 1.0
         reasons: List[Reason] = []
         for kind, t_ids in track_attr_ids.items():
             buckets: Dict[int, Tuple[str, List[Tuple[str, float]]]] = {}
             for a in anchors:
-                for nid, lab in a["attrs"].get(kind, []):
-                    if nid in t_ids:
-                        _, supp = buckets.setdefault(nid, (lab, []))
-                        supp.append((a["label"], a["attn"]))
+                for nid in {i for i, _ in a["attrs"].get(kind, [])} & t_ids:
+                    lab = next(l for i, l in a["attrs"][kind] if i == nid)
+                    _, supp = buckets.setdefault(nid, (lab, []))
+                    supp.append((a["label"], a["attn"]))
             for nid, (lab, supp) in buckets.items():
+                strength = float(sum(w for _, w in supp))
                 reasons.append(Reason(
-                    kind=kind, value=lab,
-                    strength=float(sum(w for _, w in supp)),
+                    kind=kind, value=lab, strength=strength,
+                    support=strength / anchor_attn_used,
                     anchors=sorted(supp, key=lambda x: x[1], reverse=True),
                 ))
-        reasons.sort(key=lambda r: r.strength, reverse=True)
+        reasons.sort(key=lambda r: r.support, reverse=True)
 
         return Explanation(
             user_kg=user_kg, track_kg=track_kg,
@@ -397,6 +412,7 @@ class HGTExplainer:
             score=score, is_hit=is_hit,
             anchors=anchors, drivers=drivers, reasons=reasons,
             track_attrs={k: [lab for _, lab in v] for k, v in track_attrs.items()},
+            coverage=coverage,
         )
 
     # ── renderings ───────────────────────────────────────────────────────────
@@ -415,11 +431,12 @@ class HGTExplainer:
             lines.append(f"  • the track is: {attr_str}")
 
         if expl.reasons:
-            lines.append("  • shared with your most-attended tracks:")
+            lines.append("  • shared with your most-attended tracks "
+                         "(support = share of your attention on tracks that share it):")
             for r in expl.reasons[:max_reasons]:
                 who = ", ".join(f"“{lab}” (attn {w:.0%})" for lab, w in r.anchors[:2])
                 lines.append(f"      – same {r.kind} “{r.value}” "
-                             f"(strength {r.strength:.2f}) ← {who}")
+                             f"(support {r.support:.0%}) ← {who}")
         else:
             lines.append("  • no explicit attribute overlap with your top tracks — "
                          "ranked via latent KGE/audio similarity rather than a "
@@ -451,14 +468,16 @@ class HGTExplainer:
         ax1.set_title("Your taste anchors\n(green = shares an attribute with the rec)",
                       fontsize=9)
 
-        # Panel 2 — reasons (shared attributes) by strength.
+        # Panel 2 — reasons (shared attributes) by support (normalised share).
         rlabs = [f"{r.kind}: {r.value}"[:34] for r in expl.reasons][:8][::-1]
-        rvals = [r.strength for r in expl.reasons][:8][::-1]
+        rvals = [r.support for r in expl.reasons][:8][::-1]
         if rlabs:
             ax2.barh(range(len(rlabs)), rvals, color="darkorange")
             ax2.set_yticks(range(len(rlabs)))
             ax2.set_yticklabels(rlabs, fontsize=8)
-            ax2.set_xlabel("Σ anchor-attention supporting this reason")
+            ax2.set_xlim(0, 1)
+            ax2.xaxis.set_major_formatter(lambda x, _: f"{x:.0%}")
+            ax2.set_xlabel("support — share of your attention on tracks that share it")
         else:
             ax2.text(0.5, 0.5, "no shared-attribute reasons", ha="center",
                      va="center", fontsize=10, style="italic")
@@ -472,91 +491,131 @@ class HGTExplainer:
         fig.tight_layout()
         return fig
 
-    def plot_explanation_graph(self, expl: Explanation, *, top_k: int = 4,
-                               figsize=(11, 6)):
-        """Draw the attention-weighted rationale as an actual node-edge graph.
+    def plot_explanation_graph(self, expl: Explanation, *, top_k: int = 5,
+                               top_k_drivers: int = 5, figsize=(14, 8)):
+        """Draw *how the HGT built this recommendation* as a node-edge graph.
 
-        Layout (left→right): user · top anchor tracks · shared-attribute nodes ·
-        recommended track.  Edge thickness/label on the user→anchor edges is the
-        captured attention; anchor→attribute→rec links trace the shared
-        attributes that justify the recommendation.  Pure matplotlib, no deps.
+        Two-sided, left→right::
+
+            tracks you played  →[attn]→  [USER] ⋯score⋯ [TRACK]  ←[attn]←  drivers
+
+        The left edges are the genuine attention that shaped the **user**
+        embedding (``track→user``); the right edges the attention that shaped the
+        **track** embedding (``neighbour→track``).  *Every* drawn edge is labelled
+        with its softmax-attention share and scaled in width; driver nodes whose
+        attribute the user also shares (the semantic "why") are highlighted.  A
+        caption reports how much of each node's *total* incoming attention the
+        shown top-k edges cover — so the picture is honest about the long tail.
+        Pure matplotlib, no deps.
         """
+        import textwrap
+
         import matplotlib.pyplot as plt
         from matplotlib.lines import Line2D
 
+        def _norm(s):
+            return str(s).strip().lower()
+
         anchors = expl.anchors[:top_k]
-        reasons = expl.reasons[:6]
+        drivers = expl.drivers[:top_k_drivers]
+        shared_vals = {_norm(r.value) for r in expl.reasons}
 
-        def _wrap(s, n=22):
-            s = s if len(s) <= n else s[: n - 1] + "…"
-            return s
-
-        # Column x-positions.
-        xU, xA, xR, xT = 0.0, 1.0, 2.0, 3.0
+        xA, xU, xT, xD = 0.0, 1.6, 3.6, 5.2
+        yU = yT = 0.5
         fig, ax = plt.subplots(figsize=figsize)
 
-        # Node y-positions, vertically centred per column.
-        def _ys(n):
-            return list(np.linspace(0.9, 0.1, n)) if n else []
+        def _ys(n, lo=0.12, hi=0.88):
+            if n == 0:
+                return []
+            if n == 1:
+                return [(lo + hi) / 2]
+            return list(np.linspace(hi, lo, n))
 
-        yU = [0.5]
-        yA = _ys(len(anchors))
-        yR = _ys(len(reasons))
-        yT = [0.5]
+        yA, yD = _ys(len(anchors)), _ys(len(drivers))
 
-        # Edges: user → anchors (width = attention).
-        amax = max((a["attn"] for a in anchors), default=1.0) or 1.0
-        for ya, a in zip(yA, anchors):
-            ax.plot([xU, xA], [yU[0], ya], color="steelblue",
-                    lw=0.5 + 3.5 * a["attn"] / amax, alpha=0.7, zorder=1)
-            ax.text((xU + xA) / 2, (yU[0] + ya) / 2, f"{a['attn']:.0%}",
-                    fontsize=7, color="steelblue", ha="center", va="center")
+        def _box(x, y, text, fc, *, ec="#444", lw=1.0, width=15, fs=9, bold=False):
+            ax.text(x, y, textwrap.fill(str(text), width), ha="center", va="center",
+                    fontsize=fs, zorder=5, fontweight=("bold" if bold else "normal"),
+                    bbox=dict(boxstyle="round,pad=0.45", fc=fc, ec=ec, lw=lw))
 
-        # Edges: anchors → reason (if the anchor backs it) and reason → track.
-        reason_y = {f"{r.kind}: {r.value}": yr for r, yr in zip(reasons, yR)}
-        for r, yr in zip(reasons, yR):
-            key = f"{r.kind}: {r.value}"
-            backing_labels = {lab for lab, _ in r.anchors}
-            for ya, a in zip(yA, anchors):
-                if a["label"] in backing_labels:
-                    ax.plot([xA, xR], [ya, yr], color="seagreen", lw=1.0,
-                            alpha=0.55, zorder=1)
-            ax.plot([xR, xT], [yr, yT[0]], color="darkorange", lw=1.4,
-                    alpha=0.8, zorder=1)
+        def _edge(x0, y0, x1, y1, attn, amax, color):
+            frac = (attn / amax) if amax else 0.0
+            ax.annotate("", xy=(x1, y1), xytext=(x0, y0), zorder=2,
+                        arrowprops=dict(arrowstyle="-|>", color=color, alpha=0.8,
+                                        lw=1.3 + 5.0 * frac, shrinkA=26, shrinkB=30))
+            ax.text(x0 + 0.40 * (x1 - x0), y0 + 0.40 * (y1 - y0), f"{attn:.0%}",
+                    fontsize=10, color=color, ha="center", va="center", zorder=6,
+                    fontweight="bold",
+                    bbox=dict(boxstyle="round,pad=0.18", fc="white", ec=color, lw=0.8))
 
-        # Nodes.
-        def _node(x, y, text, fc):
-            ax.scatter([x], [y], s=420, color=fc, edgecolor="black",
-                       zorder=3, linewidths=0.6)
-            ax.text(x, y, _wrap(text), fontsize=7.5, ha="center", va="center",
-                    zorder=4)
+        # left: anchors → user (attention that built the USER embedding)
+        amax_a = max((a["attn"] for a in anchors), default=1.0) or 1.0
+        for y, a in zip(yA, anchors):
+            _edge(xA, y, xU, yU, a["attn"], amax_a, "#2c7fb8")
+        # right: drivers → track (attention that built the TRACK embedding)
+        amax_d = max((d["attn"] for d in drivers), default=1.0) or 1.0
+        for y, d in zip(yD, drivers):
+            _edge(xD, y, xT, yT, d["attn"], amax_d, "#c97a14")
 
-        _node(xU, yU[0], f"user#{expl.user_kg}", "lightsteelblue")
-        for ya, a in zip(yA, anchors):
-            _node(xA, ya, a["label"], "#cfe3f3")
-        for r, yr in zip(reasons, yR):
-            _node(xR, yr, f"{r.kind}\n{r.value}", "#ffe6c2")
-        _node(xT, yT[0], expl.track_label, "#ffd0d0")
+        # centre: scored user ⋯ track link
+        ax.annotate("", xy=(xT, yT), xytext=(xU, yU), zorder=2,
+                    arrowprops=dict(arrowstyle="-|>", color="#444", lw=2.0,
+                                    ls="--", shrinkA=34, shrinkB=36))
+        score_txt = "recommends" if expl.score is None else f"score {expl.score:+.2f}"
+        ax.text((xU + xT) / 2, yU + 0.05, score_txt, fontsize=10, ha="center",
+                va="bottom", color="#222", fontweight="bold", zorder=6,
+                bbox=dict(boxstyle="round,pad=0.2", fc="#f3f3f3", ec="#999", lw=0.7))
 
-        for x, lab in [(xU, "user"), (xA, "taste anchors"),
-                       (xR, "shared attributes"), (xT, "recommended")]:
-            ax.text(x, 1.02, lab, fontsize=9, ha="center", va="bottom",
-                    fontweight="bold")
+        # nodes
+        for y, a in zip(yA, anchors):
+            _box(xA, y, a["label"], "#d7ebf7", width=15)
+        _box(xU, yU, f"USER #{expl.user_kg}", "#aacbe6", ec="#1f5e85", lw=1.6,
+             width=12, bold=True)
+        _box(xT, yT, expl.track_label, "#f6c6c6", ec="#9c2b2b", lw=1.6,
+             width=16, bold=True)
+        for y, d in zip(yD, drivers):
+            is_shared = _norm(d["label"]) in shared_vals
+            _box(xD, y, f"{d['ntype']}: {d['label']}",
+                 "#ffe1a8" if is_shared else "#ececec",
+                 ec="#cc9a06" if is_shared else "#999",
+                 lw=1.6 if is_shared else 0.9, width=15, bold=is_shared)
 
-        ax.set_xlim(-0.4, 3.4)
-        ax.set_ylim(0.0, 1.12)
+        # column headers
+        for x, lab in [(xA, "tracks you played\n(shaped YOU)"), (xU, "your embedding"),
+                       (xT, "the recommendation"), (xD, "what shaped the TRACK")]:
+            ax.text(x, 0.99, lab, fontsize=9, ha="center", va="bottom",
+                    fontweight="bold", color="#333")
+
+        ax.set_xlim(-0.7, 5.9)
+        ax.set_ylim(-0.04, 1.10)
         ax.axis("off")
+
         legend = [
-            Line2D([0], [0], color="steelblue", lw=3, label="U→track attention"),
-            Line2D([0], [0], color="seagreen", lw=2, label="anchor shares attribute"),
-            Line2D([0], [0], color="darkorange", lw=2, label="attribute of rec"),
+            Line2D([0], [0], color="#2c7fb8", lw=3, label="attention → your embedding"),
+            Line2D([0], [0], color="#c97a14", lw=3, label="attention → track embedding"),
+            Line2D([0], [0], marker="s", color="w", markerfacecolor="#ffe1a8",
+                   markeredgecolor="#cc9a06", markersize=12,
+                   label="driver you also share (the “why”)"),
         ]
-        ax.legend(handles=legend, loc="lower center", ncol=3, fontsize=8,
+        ax.legend(handles=legend, loc="lower center", ncol=3, fontsize=8.5,
                   frameon=False, bbox_to_anchor=(0.5, -0.06))
-        verdict = ("" if expl.is_hit is None else
-                   "  [HIT]" if expl.is_hit else "  [miss]")
-        ax.set_title(f"Attention rationale{verdict}", fontsize=11)
-        fig.tight_layout()
+
+        def _cov(side, shown_n):
+            c = expl.coverage.get(side, {})
+            tot = c.get("total", 0.0) or 1.0
+            return (f"top {shown_n} of {c.get('n_total', shown_n)} "
+                    f"({c.get('shown', 0.0) / tot:.0%} of its attention)")
+        cap = ("Edge labels = genuine HGT softmax attention (a node's share of its "
+               "incoming message, averaged over heads).  "
+               f"USER side shows {_cov('anchors', len(anchors))}; "
+               f"TRACK side shows {_cov('drivers', len(drivers))}.")
+        fig.text(0.5, 0.01, cap, ha="center", va="bottom", fontsize=8, color="#555",
+                 wrap=True)
+
+        verdict = "" if expl.is_hit is None else ("  [HIT]" if expl.is_hit else "  [miss]")
+        ax.set_title(f"How the HGT built this recommendation{verdict}", fontsize=12,
+                     fontweight="bold")
+        fig.subplots_adjust(left=0.02, right=0.98, top=0.91, bottom=0.11)
         return fig
 
 
