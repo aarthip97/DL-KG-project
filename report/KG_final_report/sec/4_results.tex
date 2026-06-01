@@ -25,7 +25,7 @@ Graph exploration identified the most-listened track: \textit{Secrets} by OneRep
 
 \subsection{Autoencoder}
 
-The autoencoder trained for the full 200 epochs (early stopping never triggered), with MSE falling from 0.964 at epoch~1 to 0.616 at epoch~200. The steepest descent occurs in the first 75 epochs, followed by a gradual flattening, indicating continued but diminishing compression improvement throughout training.
+The autoencoder trained for the full 200 epochs (early stopping never triggered), with MSE falling from 0.964 at epoch~1 to 0.616 at epoch~200. The steepest descent occurs in the first 75 epochs, followed by a gradual flattening, indicating continued but diminishing compression improvement throughout training. The high MSE even as the autoencoder approaches convergence could be due to the high reduction in dimensionality being performed.
 
 \subsection{Model Comparison}
 
@@ -35,8 +35,8 @@ Table~\ref{tab:benchmark} reports all models at $K{=}10$ over all 284,864 test u
 \centering\footnotesize
 \caption{Test benchmark at $K{=}10$ (all 284,864 test users). Coverage and Popularity Bias (PB) are catalogue-level metrics. Overall Score weights NDCG, Coverage, and $(1-\mathrm{PB})$ as $0.6{:}0.2{:}0.2$.}
 \label{tab:benchmark}
-\setlength{\tabcolsep}{4pt}
-\renewcommand{\arraystretch}{1.15}
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.1}
 \begin{tabular}{lccccccc}
 \toprule
 \textbf{Model} & \textbf{Rec.} & \textbf{NDCG} & \textbf{HR} & \textbf{MRR} & \textbf{Cov.} & \textbf{PB} & \textbf{Overall}\\
