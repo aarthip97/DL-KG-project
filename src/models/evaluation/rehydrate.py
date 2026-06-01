@@ -160,6 +160,7 @@ def rebuild_hgt_recommender_from_disk(
     device: str = "cpu",
     num_heads: int = 4,
     dropout: float = 0.1,
+    eval_undirected: bool = True,
     verbose: bool = True,
 ) -> dict:
     """Reconstruct the frozen HGT recommender from disk **without retraining**.
@@ -170,8 +171,10 @@ def rebuild_hgt_recommender_from_disk(
     ↔ KG-node index bridges straight from the cached splits, re-instantiates
     :class:`~models.hgt.RecommenderHGT` (architecture inferred from the
     ``state_dict``; ``num_heads`` supplied) and loads ``model.pt``, then forwards
-    on the directed graph — exactly as the benchmark cell does when the model is
-    in memory — to materialise the user/track embeddings.
+    on the **undirected** graph (``eval_undirected=True``, the training-consistent
+    protocol) to materialise the user/track embeddings. Set
+    ``eval_undirected=False`` only to reproduce the legacy directed forward for
+    the directed-vs-undirected ablation.
 
     Returns a dict with the ``recommender`` plus the rebuilt ``model``, ``data``,
     ``edge_dict``, the three index-bridge maps and ``idx2song``, so the
@@ -255,12 +258,19 @@ def rebuild_hgt_recommender_from_disk(
     model.load_state_dict(state_dict)
     model.to(device).eval()
 
-    # Forward on the DIRECTED graph (same as the benchmark cell's in-memory path).
+    # Forward to materialise the embeddings. The model was TRAINED on the
+    # undirected graph (reverse `track→user` edges added as a distinct typed
+    # relation), so by default we evaluate on the undirected graph too — the
+    # training-consistent protocol §12/§13 already use. On the raw directed graph
+    # `user` nodes have NO incoming edges and collapse to their projected input
+    # features, which understates the model; `eval_undirected=False` reproduces
+    # that directed forward only for the directed-vs-undirected ablation.
+    _fwd = ToUndirected(merge=False)(data) if eval_undirected else data
     with torch.no_grad():
         emb = model(
-            {nt: data[nt].x.to(device) for nt in data.node_types
-             if data[nt].get("x") is not None},
-            {et: data[et].edge_index.to(device) for et in data.edge_types})
+            {nt: _fwd[nt].x.to(device) for nt in _fwd.node_types
+             if _fwd[nt].get("x") is not None},
+            {et: _fwd[et].edge_index.to(device) for et in _fwd.edge_types})
     user_emb = emb["user"].cpu().numpy().astype(np.float32)
     track_emb = emb["track"].cpu().numpy().astype(np.float32)
 

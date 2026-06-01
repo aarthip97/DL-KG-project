@@ -27,7 +27,8 @@ Evaluation: full-ranking Recall@K and NDCG@K on held-out edges produced by
 RandomLinkSplit, computed once every eval_every epochs and at the final epoch.
 
 Extras: cosine LR decay (single cycle, no restarts), gradient clipping,
-optional W&B logging, torch.compile.
+torch.compile. Per-epoch metrics are returned in ``TrainResult.history`` (the
+caller persists them to CSV/PNG); there is no experiment-tracker dependency.
 """
 from __future__ import annotations
 
@@ -44,12 +45,6 @@ from tqdm.auto import tqdm
 
 from .hgt import RecommenderHGT
 from .loss import compute_log_pop_prior, debiased_listwise_loss, evaluate_top_k
-
-try:
-    import wandb
-    _WANDB = True
-except ImportError:
-    _WANDB = False
 
 
 def _gt_to_eval_edges(gt, device):
@@ -111,9 +106,6 @@ def train_hgt(
     use_amp: bool = True,
     use_checkpoint: bool = False,
     compile_model: bool = False,
-    use_wandb: bool = True,
-    wandb_project: str = "music-recommender-hgt",
-    wandb_config: Optional[dict] = None,
     seed: int = 42,
     verbose: bool = True,
 ) -> TrainResult:
@@ -195,9 +187,6 @@ def train_hgt(
       compile_model           -- call torch.compile() on the model before training
                                  (PyTorch >= 2.0 only; adds ~30s startup, then 20-40%
                                  faster per epoch on T4/A100 via Triton JIT).
-      use_wandb               -- enable Weights and Biases logging.
-      wandb_project           -- W&B project name.
-      wandb_config            -- extra key-value pairs merged into the W&B run config.
       seed                    -- random seed for reproducibility.
       verbose                 -- print one-line summary after each evaluation epoch.
 
@@ -351,33 +340,6 @@ def train_hgt(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         opt, T_max=_t_max, eta_min=lr_eta_min
     )
-
-    if use_wandb and _WANDB:
-        wandb.init(
-            project=wandb_project,
-            config={
-                "hidden_channels": hidden_channels,
-                "out_channels":    out_channels,
-                "num_heads":       num_heads,
-                "num_layers":      num_layers,
-                "dropout":         dropout,
-                "epochs":          epochs,
-                "lr":              lr,
-                "weight_decay":    weight_decay,
-                "user_batch_size": user_batch_size,
-                "lambda_reg":      lambda_reg,
-                "temperature":     temperature,
-                "lr_t0":           lr_t0,
-                "monitor":         monitor,
-                "val_ratio":       val_ratio,
-                "test_ratio":      test_ratio,
-                **(wandb_config or {}),
-            },
-        )
-        # NOTE: wandb.watch(..., log="gradients") is intentionally NOT used.
-        # On Colab it hooks every parameter and serialises gradient histograms
-        # each step, which routinely hangs the run before the first epoch ever
-        # logs. Skipping it costs only gradient telemetry, not training.
 
     history: list[dict] = []
     best_monitor = -float("inf")
@@ -535,9 +497,6 @@ def train_hgt(
                      for k, v in log.items() if k != "epoch"}
             _epoch_bar.set_postfix(_post)
 
-        if use_wandb and _WANDB:
-            wandb.log(log, step=ep)
-
         # -- early stopping (counted in evaluation steps) ---------------------
         if (early_stopping_patience is not None
                 and (ep % eval_every == 0 or ep == epochs)
@@ -579,11 +538,6 @@ def train_hgt(
 
     if verbose:
         print("[hgt test]", "  ".join(f"{k}={v:.4f}" for k, v in test_metrics.items()))
-
-    if use_wandb and _WANDB:
-        wandb.log({f"test/{k}": v for k, v in test_metrics.items()})
-        wandb.summary.update({f"test/{k}": v for k, v in test_metrics.items()})
-        wandb.finish()
 
     t_elapsed = time.time() - t_start
     return TrainResult(
