@@ -44,54 +44,59 @@ MODE_NAMES = {0: 'minor', 1: 'major'}
 # 1.  Low-level HDF5 reader
 # ─────────────────────────────────────────────────────────────────────────────
 
-def read_msd_metadata(h5_path: str | pathlib.Path) -> dict:
-    """
-    Read **all** available metadata from a single MSD HDF5 summary file.
+# Cap on every variable-length list field (artist_terms, similar_artists, mbtags…)
+# Keeps the resulting DataFrame compact and avoids 100-element similar_artists rows.
+MAX_LIST_ITEMS = 5
 
-    Uses h5py directly (avoids the pytables / Python 3.10+ incompatibility).
-    Covers every field exposed by the official MSongsDB getter functions
-    (https://github.com/tbertinmahieux/MSongsDB/blob/master/PythonSrc/hdf5_getters.py).
+
+def read_msd_metadata(
+    h5_path: str | pathlib.Path,
+    include_acoustic: bool = False,
+) -> dict:
+    """
+    Read the *useful* metadata from a single MSD HDF5 summary file.
+
+    Field names mirror the official ``hdf5_getters.py`` from the Million Song
+    Dataset distribution (Bertin-Mahieux, 2010): the dict key is exactly the
+    name returned by the corresponding ``get_<field>`` function, with two
+    derived helpers added — ``key_name`` and ``mode_name``.
 
     Parameters
     ----------
     h5_path : path to a ``<TRXXXXX>.h5`` file
+    include_acoustic : bool, default False
+        If True, also return the 12-d ``mean_segments_pitches`` (chroma) and
+        ``mean_segments_timbre`` vectors plus structural counts
+        (``n_beats``, ``n_bars``, ``n_sections``, ``n_tatums``).
 
     Returns
     -------
-    dict — scalars are Python native types; array fields are summarised:
+    dict — keys (named after the official MSD getters):
 
-    Scalars (metadata group)
-        artist_name, title, release, artist_id, song_id,
-        artist_mbid, artist_playmeid, artist_7digitalid,
-        release_7digitalid, track_7digitalid,
-        artist_familiarity, artist_hotttnesss, song_hotttnesss,
-        artist_latitude, artist_longitude, artist_location
-
-    Scalars (analysis group)
-        track_id, analysis_sample_rate, audio_md5,
-        msd_key, key_name, key_confidence,
-        msd_mode, mode_name, mode_confidence,
-        msd_tempo, msd_time_sig, time_sig_confidence,
-        msd_duration, msd_loudness, end_of_fade_in, start_of_fade_out,
-        msd_danceability, msd_energy
-
-    Scalars (musicbrainz group)
+    Identifiers
+        track_id, song_id, artist_id, artist_mbid, audio_md5
+    Textual / location
+        artist_name, title, release, artist_location,
+        artist_latitude, artist_longitude
+    Popularity
+        artist_familiarity, artist_hotttnesss, song_hotttnesss
+    Tonal / rhythmic scalars
+        key, key_name, key_confidence,
+        mode, mode_name, mode_confidence,
+        tempo, time_signature, time_signature_confidence,
+        duration, loudness, danceability, energy
+    Temporal
         year
-
-    Array fields — stored as lists / numpy arrays
-        artist_terms, artist_terms_freq, artist_terms_weight
-        similar_artists
-        mbtags, mbtags_count
-        mean_chroma        (12-d mean pitch-class vector from segments_pitches)
-        mean_timbre        (12-d mean timbre vector from segments_timbre)
-        beats_count        (number of detected beats)
-        bars_count         (number of detected bars)
-        sections_count     (number of detected sections)
-        tatums_count       (number of detected tatums)
-
-    Derived
-        primary_genre, top3_genres
+    Tags / genre  (each list capped at MAX_LIST_ITEMS)
+        artist_terms, artist_terms_freq, artist_terms_weight,
+        primary_genre, top3_genres,
+        similar_artists, artist_mbtags, artist_mbtags_count
+    (Optional, only if include_acoustic=True)
+        mean_segments_pitches (12-d), mean_segments_timbre (12-d),
+        n_beats, n_bars, n_sections, n_tatums
     """
+
+    # ── tiny helpers ────────────────────────────────────────────────────────
     def _str(val) -> Optional[str]:
         if val is None:
             return None
@@ -104,219 +109,274 @@ def read_msd_metadata(h5_path: str | pathlib.Path) -> dict:
             return []
         return [s for v in arr if (s := _str(v))]
 
-    def _scalar(dataset: Any, row: int, cast: Any = float) -> Any:
-        """Safely read a scalar field; return None on any error."""
+    def _scalar(songs_ds, field: str, row: int, cast=float):
+        """Read one scalar from a compound 'songs' dataset (pytables Table)."""
         try:
-            v = dataset[row]
+            v = songs_ds[field][row]
             if cast is str:
                 return _str(v)
-            result = cast(v)
-            # treat sentinel zeros as None for year
-            if cast is int and result == 0 and str(getattr(dataset, 'name', '')).endswith('year'):
-                return None
-            return result
+            return cast(v)
         except Exception:
             return None
 
-    def _arr_slice(f, path: str, idx_path: str, row: int,
-                   nrows: int) -> Optional[np.ndarray]:
+    def _arr_slice(f, data_path: str, songs_ds, idx_field: str,
+                   row: int, nrows: int) -> Optional[np.ndarray]:
         """
-        Return the variable-length sub-array for *row* using the standard
-        MSongsDB index pattern (idx_<field>[row] : idx_<field>[row+1]).
+        Variable-length sub-array for ``row`` using the standard ``idx_<field>``
+        pattern from the official ``hdf5_getters.py``::
+
+            data[ idx_field[row] : idx_field[row+1] ]
+
+        For the last (or only) song in the file we slice to the end of ``data``.
+        ``idx_field`` lives **inside** the compound 'songs' dataset, so it must
+        be accessed as ``songs_ds[idx_field]``, *not* as ``f[songs_path/idx_field]``
+        (h5py cannot descend into a compound dataset by path).
         """
         try:
-            data = f[path]
-            idx  = f[idx_path]
-            start = int(idx[row])
-            end   = int(idx[row + 1]) if row + 1 < nrows else len(data)
+            data    = f[data_path]
+            idx_col = songs_ds[idx_field]   # 1-D int array, length == nrows
+            start   = int(idx_col[row])
+            end     = int(idx_col[row + 1]) if row + 1 < nrows else int(data.shape[0])
+            if end <= start:
+                return np.array([])
             return np.array(data[start:end])
         except Exception:
             return None
+        
+    # ── normalise: empty lists → None so isnull() / isna() detect them ──────
+    def _none_if_empty(v):
+        """Return None for empty lists/pd.NA; pass everything else through."""
+        if v is pd.NA:
+            return None
+        if isinstance(v, list) and len(v) == 0:
+            return None
+        return v
 
+    # ── open file and grab the three 'songs' compound datasets ──────────────
     with h5py.File(h5_path, 'r') as f:
         try:
-            meta_songs  = f['metadata']['songs']
-            anal_songs  = f['analysis']['songs']
-            mb_songs    = f['musicbrainz']['songs']
+            meta_songs = f['metadata/songs']      # compound dataset (Table)
+            anal_songs = f['analysis/songs']
+            mb_songs   = f['musicbrainz/songs']
         except KeyError:
             return {}
 
-        row   = 0
-        nrows = int(meta_songs.shape[0])
-
-        # ── metadata.songs scalars ────────────────────────────────────────────
-        artist_name         = _scalar(meta_songs['artist_name'],        row, str)
-        title               = _scalar(meta_songs['title'],              row, str)
-        release             = _scalar(meta_songs['release'],            row, str)
-        artist_id           = _scalar(meta_songs['artist_id'],          row, str)
-        song_id             = _scalar(meta_songs['song_id'],            row, str)
-        artist_mbid         = _scalar(meta_songs['artist_mbid'],        row, str)
-        artist_playmeid     = _scalar(meta_songs['artist_playmeid'],    row, int)
-        artist_7digitalid   = _scalar(meta_songs['artist_7digitalid'],  row, int)
-        release_7digitalid  = _scalar(meta_songs['release_7digitalid'], row, int)
-        track_7digitalid    = _scalar(meta_songs['track_7digitalid'],   row, int)
-        artist_familiarity  = _scalar(meta_songs['artist_familiarity'], row, float)
-        artist_hotttnesss   = _scalar(meta_songs['artist_hotttnesss'],  row, float)
-        song_hotttnesss     = _scalar(meta_songs['song_hotttnesss'],    row, float)
-        artist_latitude     = _scalar(meta_songs['artist_latitude'],    row, float)
-        artist_longitude    = _scalar(meta_songs['artist_longitude'],   row, float)
-        artist_location     = _scalar(meta_songs['artist_location'],    row, str)
-
-        # ── analysis.songs scalars ────────────────────────────────────────────
-        track_id            = _scalar(anal_songs['track_id'],              row, str)
-        analysis_sample_rate= _scalar(anal_songs['analysis_sample_rate'],  row, int)
-        audio_md5           = _scalar(anal_songs['audio_md5'],             row, str)
-        raw_key             = _scalar(anal_songs['key'],                   row, int)
-        key_conf            = _scalar(anal_songs['key_confidence'],        row, float)
-        raw_mode            = _scalar(anal_songs['mode'],                  row, int)
-        mode_conf           = _scalar(anal_songs['mode_confidence'],       row, float)
-        tempo               = _scalar(anal_songs['tempo'],                 row, float)
-        time_sig            = _scalar(anal_songs['time_signature'],        row, int)
-        time_sig_conf       = _scalar(anal_songs['time_signature_confidence'], row, float)
-        duration            = _scalar(anal_songs['duration'],              row, float)
-        loudness            = _scalar(anal_songs['loudness'],              row, float)
-        end_fade_in         = _scalar(anal_songs['end_of_fade_in'],        row, float)
-        start_fade_out      = _scalar(anal_songs['start_of_fade_out'],     row, float)
-        danceability        = _scalar(anal_songs['danceability'],          row, float)
-        energy              = _scalar(anal_songs['energy'],                row, float)
-
-        key_name  = KEY_NAMES[int(raw_key or 0) % 12]
-        mode_name = MODE_NAMES.get(int(raw_mode or 0), 'unknown')
-
-        # ── musicbrainz.songs scalars ─────────────────────────────────────────
-        raw_year = _scalar(mb_songs['year'], row, int)
-        year     = raw_year if raw_year and raw_year != 0 else None
-
-        # ── variable-length arrays (metadata) ─────────────────────────────────
+        row = 0
+        meta_nrows = int(meta_songs.shape[0])
         anal_nrows = int(anal_songs.shape[0])
         mb_nrows   = int(mb_songs.shape[0])
 
-        try:
-            terms        = _arr_str(f['metadata']['artist_terms'][:])
-            terms_freq   = [float(v) for v in f['metadata']['artist_terms_freq'][:]]
-            terms_weight = [float(v) for v in f['metadata']['artist_terms_weight'][:]]
-        except Exception:
-            terms, terms_freq, terms_weight = [], [], []
+        # ── metadata.songs scalars (names match get_<field>) ────────────────
+        artist_name        = _scalar(meta_songs, 'artist_name',        row, str)
+        title              = _scalar(meta_songs, 'title',              row, str)
+        release            = _scalar(meta_songs, 'release',            row, str)
+        artist_id          = _scalar(meta_songs, 'artist_id',          row, str)
+        song_id            = _scalar(meta_songs, 'song_id',            row, str)
+        artist_mbid        = _scalar(meta_songs, 'artist_mbid',        row, str)
+        artist_familiarity = _scalar(meta_songs, 'artist_familiarity', row, float)
+        artist_hotttnesss  = _scalar(meta_songs, 'artist_hotttnesss',  row, float)
+        song_hotttnesss    = _scalar(meta_songs, 'song_hotttnesss',    row, float)
+        
+        artist_latitude    = _scalar(meta_songs, 'artist_latitude',    row, float)
+        artist_longitude   = _scalar(meta_songs, 'artist_longitude',   row, float)
+        artist_location    = _scalar(meta_songs, 'artist_location',    row, str)
 
-        try:
-            similar_artists = _arr_str(
-                _arr_slice(f, 'metadata/similar_artists',
-                           'metadata/songs/idx_similar_artists', row, nrows)
-            )
-        except Exception:
-            similar_artists = []
+        # ── analysis.songs scalars ──────────────────────────────────────────
+        track_id                  = _scalar(anal_songs, 'track_id',                  row, str)
+        audio_md5                 = _scalar(anal_songs, 'audio_md5',                 row, str)
+        key                       = _scalar(anal_songs, 'key',                       row, int)
+        key_confidence            = _scalar(anal_songs, 'key_confidence',            row, float)
+        mode                      = _scalar(anal_songs, 'mode',                      row, int)
+        mode_confidence           = _scalar(anal_songs, 'mode_confidence',           row, float)
+        tempo                     = _scalar(anal_songs, 'tempo',                     row, float)
+        time_signature            = _scalar(anal_songs, 'time_signature',            row, int)
+        time_signature_confidence = _scalar(anal_songs, 'time_signature_confidence', row, float)
+        duration                  = _scalar(anal_songs, 'duration',                  row, float)
+        loudness                  = _scalar(anal_songs, 'loudness',                  row, float)
+        danceability              = _scalar(anal_songs, 'danceability',              row, float)
+        energy                    = _scalar(anal_songs, 'energy',                    row, float)
 
-        # ── variable-length arrays (musicbrainz) ──────────────────────────────
-        try:
-            mbtags = _arr_str(
-                _arr_slice(f, 'musicbrainz/artist_mbtags',
-                           'musicbrainz/songs/idx_artist_mbtags', row, mb_nrows)
-            )
-            mbtags_count = [
-                int(v) for v in (
-                    _arr_slice(f, 'musicbrainz/artist_mbtags_count',
-                               'musicbrainz/songs/idx_artist_mbtags', row, mb_nrows)
-                    or []
-                )
-            ]
-        except Exception:
-            mbtags, mbtags_count = [], []
+        key_name  = KEY_NAMES[int(key or 0) % 12]
+        mode_name = MODE_NAMES.get(int(mode or 0), 'unknown')
 
-        # ── variable-length arrays (analysis) — aggregated ───────────────────
-        #  segments_pitches  → mean chroma vector (12-d)
-        try:
-            pitches = _arr_slice(f, 'analysis/segments_pitches',
-                                 'analysis/songs/idx_segments_pitches', row, anal_nrows)
-            mean_chroma = pitches.mean(axis=0).tolist() if pitches is not None and pitches.ndim == 2 else None
-        except Exception:
-            mean_chroma = None
+        # ── musicbrainz.songs scalars ───────────────────────────────────────
+        raw_year = _scalar(mb_songs, 'year', row, int)
+        year     = raw_year if raw_year and raw_year != 0 else None
 
-        #  segments_timbre   → mean timbre vector (12-d)
-        try:
-            timbre = _arr_slice(f, 'analysis/segments_timbre',
-                                'analysis/songs/idx_segments_timbre', row, anal_nrows)
-            mean_timbre = timbre.mean(axis=0).tolist() if timbre is not None and timbre.ndim == 2 else None
-        except Exception:
-            mean_timbre = None
+        # ── variable-length: artist_terms / freq / weight (sorted, capped) ──
+        terms_arr  = _arr_slice(f, 'metadata/artist_terms',
+                                meta_songs, 'idx_artist_terms', row, meta_nrows)
+        freq_arr   = _arr_slice(f, 'metadata/artist_terms_freq',
+                                meta_songs, 'idx_artist_terms', row, meta_nrows)
+        weight_arr = _arr_slice(f, 'metadata/artist_terms_weight',
+                                meta_songs, 'idx_artist_terms', row, meta_nrows)
 
-        # structural counts
-        def _count(path, idx_path):
-            arr = _arr_slice(f, path, idx_path, row, anal_nrows)
-            return int(len(arr)) if arr is not None else None
+        terms_all = _arr_str(terms_arr)
+        freqs   = [float(v) for v in (freq_arr   if freq_arr   is not None else [])]
+        weights = [float(v) for v in (weight_arr if weight_arr is not None else [])]
 
-        beats_count    = _count('analysis/beats_start',    'analysis/songs/idx_beats_start')
-        bars_count     = _count('analysis/bars_start',     'analysis/songs/idx_bars_start')
-        sections_count = _count('analysis/sections_start', 'analysis/songs/idx_sections_start')
-        tatums_count   = _count('analysis/tatums_start',   'analysis/songs/idx_tatums_start')
+        # pad to common length, then sort by frequency desc and cap
+        n = min(len(terms_all), len(freqs), len(weights))
+        if n > 0:
+            paired = sorted(zip(freqs[:n], weights[:n], terms_all[:n]),
+                            reverse=True)[:MAX_LIST_ITEMS]
+            artist_terms        = [t for _, _, t in paired]
+            artist_terms_freq   = [f for f, _, _ in paired]
+            artist_terms_weight = [w for _, w, _ in paired]
+        else:
+            artist_terms, artist_terms_freq, artist_terms_weight = None, None, None
 
-    # ── derived fields ────────────────────────────────────────────────────────
-    primary_genre = None
-    top3_genres   = []
-    if terms and terms_freq:
-        paired        = sorted(zip(terms_freq, terms), reverse=True)
-        primary_genre = paired[0][1] if paired else None
-        top3_genres   = [t for _, t in paired[:3]]
+        # ── variable-length: similar_artists (capped) ───────────────────────
+        sim_arr = _arr_slice(f, 'metadata/similar_artists',
+                             meta_songs, 'idx_similar_artists', row, meta_nrows)
+        # sim_arr is a numpy array — never use bare `if sim_arr` (ambiguous for len > 1)
+        _sim_list = _arr_str(sim_arr)[:MAX_LIST_ITEMS] if (sim_arr is not None and len(sim_arr) > 0) else []
+        similar_artists = _sim_list if _sim_list else None
+
+        # ── variable-length: artist_mbtags + counts (sorted by count, capped) ─
+        mbtags_arr  = _arr_slice(f, 'musicbrainz/artist_mbtags',
+                                 mb_songs, 'idx_artist_mbtags', row, mb_nrows)
+        mbcount_arr = _arr_slice(f, 'musicbrainz/artist_mbtags_count',
+                                 mb_songs, 'idx_artist_mbtags', row, mb_nrows)
+        mbtags_all  = _arr_str(mbtags_arr)
+        mb_counts = [int(v) for v in (mbcount_arr if (mbcount_arr is not None and len(mbcount_arr) > 0) else [])]
+        m = min(len(mbtags_all), len(mb_counts))
+        if m > 0:
+            mb_paired = sorted(zip(mb_counts[:m], mbtags_all[:m]),
+                               reverse=True)[:MAX_LIST_ITEMS]
+            artist_mbtags       = [t for _, t in mb_paired]
+            artist_mbtags_count = [c for c, _ in mb_paired]
+        else:
+            artist_mbtags, artist_mbtags_count = None, None
+
+    
+    # ── derived: primary genre + top-3 genres from (already capped) terms ──
+    primary_genre = artist_terms[0] if artist_terms else None
+    top3_genres   = artist_terms[:3] if artist_terms else None
 
     return {
-        # ── identifiers ───────────────────────────────────────────────────────
-        'track_id':           track_id,
-        'song_id':            song_id, # ECHO NEST song_id to be used when linking the track to user data 
-        'artist_id':          artist_id,
-        'artist_mbid':        artist_mbid,
-        'artist_playmeid':    artist_playmeid,
-        'artist_7digitalid':  artist_7digitalid,
-        'release_7digitalid': release_7digitalid,
-        'track_7digitalid':   track_7digitalid,
-        'audio_md5':          audio_md5,
-        # ── textual metadata ──────────────────────────────────────────────────
-        'artist_name':     artist_name,
-        'title':           title,
-        'release':         release,
-        'artist_location': artist_location,
-        'artist_latitude': artist_latitude,
-        'artist_longitude':artist_longitude,
-        # ── popularity / social ───────────────────────────────────────────────
-        'artist_familiarity': artist_familiarity,
-        'artist_hotttnesss':  artist_hotttnesss,
-        'song_hotttnesss':    song_hotttnesss,
-        # ── tonal ─────────────────────────────────────────────────────────────
-        'msd_key':          raw_key,
-        'key_name':         key_name,
-        'key_confidence':   key_conf,
-        'msd_mode':         raw_mode,
-        'mode_name':        mode_name,
-        'mode_confidence':  mode_conf,
-        # ── rhythm / time ─────────────────────────────────────────────────────
-        'msd_tempo':            tempo,
-        'msd_time_sig':         time_sig,
-        'time_sig_confidence':  time_sig_conf,
-        'msd_duration':         duration,
-        'end_of_fade_in':       end_fade_in,
-        'start_of_fade_out':    start_fade_out,
-        'analysis_sample_rate': analysis_sample_rate,
-        # ── audio characteristics ─────────────────────────────────────────────
-        'msd_loudness':     loudness,
-        'msd_danceability': danceability,
-        'msd_energy':       energy,
-        # ── temporal ──────────────────────────────────────────────────────────
-        'year': year,
-        # ── tags / genre ──────────────────────────────────────────────────────
-        'artist_terms':        terms,
-        'artist_terms_freq':   terms_freq,
-        'artist_terms_weight': terms_weight,
-        'primary_genre':       primary_genre,
-        'top3_genres':         top3_genres,
-        'similar_artists':     similar_artists,
-        'mbtags':              mbtags,
-        'mbtags_count':        mbtags_count,
-        # ── aggregated audio analysis ─────────────────────────────────────────
-        'mean_chroma':     mean_chroma,   # list[float] len=12
-        'mean_timbre':     mean_timbre,   # list[float] len=12
-        'beats_count':     beats_count,
-        'bars_count':      bars_count,
-        'sections_count':  sections_count,
-        'tatums_count':    tatums_count,
-    }
+            # identifiers
+            'track_id':    track_id,
+            'song_id':     song_id,
+            'artist_id':   artist_id,
+            'artist_mbid': artist_mbid,
+            'audio_md5':   audio_md5,
+            # textual / location
+            'artist_name':      artist_name,
+            'title':            title,
+            'release':          release,
+            'artist_location':  artist_location,
+            'artist_latitude':  artist_latitude,
+            'artist_longitude': artist_longitude,
+            # popularity
+            'artist_familiarity': artist_familiarity,
+            'artist_hotttnesss':  artist_hotttnesss,
+            'song_hotttnesss':    song_hotttnesss,
+            # tonal
+            'key':             key,
+            'key_name':        key_name,
+            'key_confidence':  key_confidence,
+            'mode':            mode,
+            'mode_name':       mode_name,
+            'mode_confidence': mode_confidence,
+            # rhythm / time
+            'tempo':                     tempo,
+            'time_signature':            time_signature,
+            'time_signature_confidence': time_signature_confidence,
+            'duration':                  duration,
+            # audio characteristics
+            'loudness':     loudness,
+            'danceability': danceability,
+            'energy':       energy,
+            # temporal
+            'year': year,
+            # tags / genre — empty list → None so isnull() counts them correctly
+            'artist_terms':        _none_if_empty(artist_terms),
+            'artist_terms_freq':   _none_if_empty(artist_terms_freq),
+            'artist_terms_weight': _none_if_empty(artist_terms_weight),
+            'primary_genre':       primary_genre,           # already None or str
+            'top3_genres':         _none_if_empty(top3_genres),
+            'similar_artists':     _none_if_empty(similar_artists),
+            'artist_mbtags':       _none_if_empty(artist_mbtags),
+            'artist_mbtags_count': _none_if_empty(artist_mbtags_count),
+        }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1b.  MIDI instrumentation reader (pretty_midi)  —  minimal version
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Safety cap on the length of midi_instrument_names. The vast majority of LMD
+# files have ≤ 15 distinct instruments; a few outliers go above 20.
+MAX_INSTRUMENTS = 15
+
+
+def read_midi_instrumentation(
+    midi_path: str | pathlib.Path,
+    max_items: int = MAX_INSTRUMENTS,
+) -> dict:
+    """
+    Extract a minimal instrumentation summary from a MIDI file using
+    ``pretty_midi``.
+
+    Identification rules
+    --------------------
+    A MIDI file contains a list of *instrument tracks* (``pm.instruments``).
+    Each track has:
+
+      * ``program`` — General-MIDI program number, 0-127, set by a Program-Change
+        message. ``pretty_midi.program_to_instrument_name(program)`` returns the
+        official GM name (e.g. 0 → ``'Acoustic Grand Piano'``).
+      * ``is_drum`` — True iff the track was authored on MIDI channel 10
+        (the GM percussion channel). On that channel the *note number* selects
+        the percussion sound (GM Percussion Map), **not** the program number;
+        applying ``program_to_instrument_name`` to a drum track is meaningless.
+        We therefore label every drum track simply as ``'Drums'``.
+
+    The returned name list is **deduplicated** (so a file with 3 piano tracks
+    contributes 'Acoustic Grand Piano' only once) but the count
+    ``midi_n_instruments`` reflects all tracks (including drum kits).
+
+    Returns
+    -------
+    dict with two keys (or ``{}`` on parsing failure):
+
+        midi_n_instruments    : int        — number of instrument tracks
+        midi_instrument_names : list[str]  — unique GM names (+ 'Drums' if any),
+                                             capped at ``max_items``
+    """
+    try:
+        import pretty_midi  # lazy import — keeps module importable without it
+    except ImportError:
+        return {}
+
+    try:
+        pm = pretty_midi.PrettyMIDI(str(midi_path))
+    except Exception:
+        return {}
+
+    try:
+        names: list[str] = []
+        seen: set[str] = set()
+        has_drums = False
+
+        for ins in pm.instruments:
+            if ins.is_drum:
+                has_drums = True
+                continue  # named 'Drums' once at the end
+            name = pretty_midi.program_to_instrument_name(int(ins.program))
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
+
+        if has_drums:
+            names.append('Drums')
+
+        return {
+            'midi_n_instruments':    len(pm.instruments),
+            'midi_instrument_names': names[:max_items] if names else None,
+        }
+    except Exception:
+        return {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -445,29 +505,54 @@ class LakhMSDLinker:
         self,
         max_tracks: Optional[int] = None,
         verbose: bool = True,
+        include_midi: bool = False,
     ) -> pd.DataFrame:
         """
         Build a flat, deduplicated DataFrame merging:
         - MIDI file paths (filtered + ranked by match score)
         - MSD HDF5 metadata
+        - (optional) MIDI instrumentation extracted with ``pretty_midi``
+
+        Parameters
+        ----------
+        max_tracks : limit the number of MSD tracks processed (for quick runs).
+        verbose : print progress / dedup info.
+        include_midi : if True, parse each kept MIDI with ``pretty_midi`` and
+            attach instrumentation columns (``midi_n_instruments``,
+            ``midi_instrument_names``). Adds ~3-10 ms per file.
 
         Returns
         -------
-        pd.DataFrame with columns:
+        pd.DataFrame with columns (names match the official MSD ``hdf5_getters``):
             track_id, midi_path, match_score,
             artist_name, title, release, artist_id, song_id,
-            msd_key, key_name, key_confidence,
-            msd_mode, mode_name, mode_confidence,
-            msd_tempo, msd_time_sig, msd_duration, msd_loudness,
-            msd_danceability, msd_energy, year,
-            primary_genre, top3_genres, artist_terms, mbtags
+            key, key_name, key_confidence,
+            mode, mode_name, mode_confidence,
+            tempo, time_signature, time_signature_confidence,
+            duration, loudness, danceability, energy, year,
+            primary_genre, top3_genres,
+            artist_terms, artist_terms_freq, artist_terms_weight,
+            similar_artists, artist_mbtags, artist_mbtags_count
+            [+ midi_n_instruments, midi_instrument_names if include_midi=True]
         """
         tracks = self.discover_tracks(max_tracks=max_tracks, verbose=verbose)
         rows   = []
         seen_hashes: set[str] = set()  # deduplicate by MIDI md5
 
+        # Eagerly verify pretty_midi is importable so we fail loudly instead
+        # of silently producing a DataFrame without midi_* columns.
+        if include_midi:
+            try:
+                import pretty_midi 
+            except ImportError as e:
+                raise ImportError(
+                    "include_midi=True requires `pretty_midi` "
+                    "(pip install pretty_midi)."
+                ) from e
+
         iter_tracks = tqdm(tracks, desc='Reading HDF5 metadata') if verbose else tracks
 
+        midi_parse_failures = 0
         for rec in iter_tracks:
             msd_meta = {}
             if rec['h5_path'] is not None:
@@ -494,22 +579,42 @@ class LakhMSDLinker:
                     'match_score': score,
                 }
                 row.update(msd_meta)
+                if include_midi:
+                    midi_meta = read_midi_instrumentation(midi_path)
+                    if not midi_meta:
+                        midi_parse_failures += 1
+                    # Always set both keys so the columns exist even if every
+                    # parse failed — downstream code checks `'midi_n_instruments'
+                    # in df.columns` to decide whether MIDI features are present.
+                    row['midi_n_instruments']    = midi_meta.get('midi_n_instruments',    np.nan)
+                    row['midi_instrument_names'] = midi_meta.get('midi_instrument_names', [])
                 rows.append(row)
+
+        if include_midi and verbose:
+            ok = len(rows) - midi_parse_failures
+            print(f'MIDI parsed OK for {ok}/{len(rows)} files '
+                  f'({100*ok/max(len(rows),1):.1f}%)')
 
         df = pd.DataFrame(rows)
 
-        # ── deduplication: keep one row per (artist_id, title) combo ─────────
-        if 'artist_id' in df.columns and 'title' in df.columns:
-            before = len(df)
-            df = (
-                df
-                .sort_values('match_score')
-                .drop_duplicates(subset=['artist_id', 'title'], keep='first')
-                .reset_index(drop=True)
-            )
-            if verbose:
-                print(f'Dedup: {before} → {len(df)} rows '
-                      f'(removed {before - len(df)} duplicates by artist+title)')
+        # ── deduplication notes ──────────────────────────────────────────────
+        # We deliberately do NOT collapse by (artist_id, title) here, because
+        # legitimately distinct items in the MSD share that pair:
+        #   - covers by the same artist (live vs. studio)
+        #   - re-recordings / remasters / acoustic versions
+        #   - remixes (often credited to the original artist)
+        # Exact-file duplicates were already removed above via the MIDI md5
+        # hash (`seen_hashes`); when pick_midi='best' we additionally keep at
+        # most one row per MSD track_id by construction.
+        # If you want a stricter, lossy collapse for downstream tasks, do it
+        # in the analysis notebook — not here.
+        if verbose:
+            n_tracks = df['track_id'].nunique() if 'track_id' in df.columns else len(df)
+            n_songs  = df['song_id'].nunique()  if 'song_id'  in df.columns else None
+            msg = f'Built dataset: {len(df)} rows ({n_tracks} unique track_ids'
+            if n_songs is not None:
+                msg += f', {n_songs} unique song_ids'
+            print(msg + ')')
 
         return df
 

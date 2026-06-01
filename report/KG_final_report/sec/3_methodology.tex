@@ -1,0 +1,107 @@
+\section{Knowledge Graph Construction}
+\label{sec:kg}
+
+Figure~\ref{fig:pipeline} gives a bird's-eye view of the end-to-end pipeline described in this and the following section.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.95\linewidth]{methodology.png}
+  \caption{End-to-end pipeline overview. Raw MIDI and MSD data are aligned and cleaned; symbolic features are extracted and compressed by the autoencoder; the enriched KG is constructed and loaded into GraphDB; KG embeddings initialise node features; the HGT is trained on the PyG heterogeneous graph; and recommenders are evaluated at multiple $K$ values.}
+  \label{fig:pipeline}
+\end{figure}
+
+\subsection{Ontology Design}
+
+The KG reuses three established vocabularies: Music Ontology~\cite{raimond2007musicontology} for musical entities (Track, Performance, Artist, Instrument), FOAF for agents (Listener as a \texttt{foaf:Agent} subclass), and the Event Ontology for listening events. A project-specific \texttt{mrc:} namespace adds concepts absent from these vocabularies, such as \texttt{mrc:TempoClass}, \texttt{mrc:ListeningEvent}, and \texttt{mrc:listenCount}.
+
+Core OWL alignments ground the KG in the Wikidata upper-concept hierarchy: \texttt{mrc:Genre}$\equiv$\texttt{wd:Q188451}, \texttt{mo:Instrument}$\equiv$\texttt{wd:Q34379}, and \texttt{mrc:Key}$\equiv$\texttt{wd:Q534932}. Release years are bucketed into shared \texttt{mrc:Decade} nodes linked by \texttt{wdt:P155}/\texttt{wdt:P156} temporal predecessor/successor relations, converting a sparse scalar into a structural co-reference bridge for GNN message passing.
+
+\subsection{Simple Knowledge Graph}
+
+Each track row maps to a connected cluster of typed entities. Categorical concepts (genres, instruments, keys, modes, tempo classes) become shared named-individual nodes reused across tracks; scalar measurements are stored as datatype literals on the relevant node. Of the original 40 MSD columns, 22 are retained for the KG; of 1,525 symbolic features, 11 scalar descriptors are stored as datatype properties on the Track node (e.g.\ \texttt{mrc:noteDensity}, \texttt{mrc:chromaticMotion}). User interactions are modelled as direct \texttt{mrc:listenedTo} edges from \texttt{mrc:Listener} to \texttt{mrc:MSDTrack}.
+
+\subsection{Rich Knowledge Graph}
+
+The rich variant reifies genre associations as \texttt{mrc:GenreAssociation} blank nodes carrying MSD tag-strength weights (\texttt{mrc:weight}), moves key and mode to the \texttt{mo:Performance} node with confidence scores (\texttt{mrc:keyConfidence}, \texttt{mrc:modeConfidence}), and reifies listening interactions as \texttt{mrc:ListeningEvent} blank nodes storing \texttt{mrc:listenCount}. This variant enables SPARQL confidence-filtered queries and ontological demonstrations but is not consumed directly by the GNN due to the blank-node structure.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.85\linewidth]{graph.png}
+  \caption{ABox neighbourhood of track \textit{When She Dances} as rendered in GraphDB. The central Performance node connects to key (C), mode (Major), tempo class (Andante), three instruments, and the artist Joe Bonamassa, who links to five genre nodes.}
+  \label{fig:abox}
+\end{figure}
+
+\subsection{TBox Schema}
+\label{sec:tbox}
+
+Figure~\ref{fig:tbox} illustrates a fragment of the TBox defining how user listening behaviour is modelled at the schema level. \texttt{mrc:ListeningEvent} is declared a subclass of \texttt{mo:Event}, grounding the vocabulary in the Music Ontology. Object properties \texttt{mrc:hasListeningInteraction} (domain: \texttt{mrc:Listener}, range: \texttt{mrc:ListeningEvent}) and \texttt{mrc:onTrack} (domain: \texttt{mrc:ListeningEvent}, range: \texttt{mrc:MSDTrack}) model the full listening chain; \texttt{mrc:onTrack} is additionally declared a sub-property of \texttt{mrc:factor}, reflecting its role as a contributing recommendation signal.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.9\linewidth]{TBox.jpeg}
+  \caption{TBox fragment in GraphDB showing the schema-level definition of \texttt{mrc:ListeningEvent} and its connecting properties.}
+  \label{fig:tbox}
+\end{figure}
+
+\section{Representation Learning}
+\label{sec:models}
+
+\subsection{Symbolic-Feature Autoencoder}
+
+The full 1,525-dimensional jSymbolic vector is standardised and compressed by a fully connected autoencoder with encoder layers $1526\!\to\!512\!\to\!256\!\to\!128$ and a symmetric decoder, each followed by ReLU and dropout~0.2. Training uses Adam ($lr=10^{-3}$, batch 256) to minimise MSE, for up to 200 epochs with early stopping ($\Delta<10^{-4}$ over 15 epochs). The 128-dimensional bottleneck embedding is used both as the track node feature in the GNN and as the item representation in the hybrid baseline.
+
+\subsection{Knowledge-Graph Embeddings}
+
+Our KG is dominated by \textit{asymmetric} relations: a user listens to a track but not the reverse; an artist performs a track but a track does not perform an artist. Real-valued translation models such as TransE cannot represent such asymmetry, since their additive offset is the same in both directions. Complex-valued models break this symmetry naturally.
+
+\textbf{RotatE}~\cite{sun2019rotate} encodes each relation as a rotation in complex space ($h\circ r\approx t$ element-wise); the inverse $\bar{r}$ is a distinct rotation, simultaneously capturing asymmetric and inverse patterns. Crucially, RotatE also models \textit{compositional} chains — e.g.\ \textit{track}$\xrightarrow{\text{inDecade}}\textit{2000s}\xrightarrow{\text{followedBy}}$\textit{2010s} or genre-hierarchy traversals — since compositions of rotations are themselves rotations. RotatE is therefore used as the primary GNN node initialiser.
+
+\textbf{ComplEx}~\cite{trouillon2016complex} scores triples via $\mathrm{Re}(\langle h,r,\bar{t}\rangle)$, achieving asymmetry by conjugating $t$ but not $h$; it has no analogous compositional closure and is retained for comparison.
+
+Both models are trained on 807,955 triples (listening edges excluded to prevent target-signal leakage) for 100 epochs with entity\_dim=128, producing 256-dimensional vectors for all 304,110 entities. The embedding dimension is set to match the autoencoder bottleneck so that audio content and relational structure contribute comparably to the 384-dimensional track node representation.
+
+\subsection{From KG to Learnable Tensors}
+
+Before neural consumption, the RDF triple set is streamed into a \texttt{PyTorch Geometric} \texttt{HeteroData} object. Each ontology class becomes a distinct node type — \texttt{user}, \texttt{track}, \texttt{artist}, \texttt{genre}, \texttt{instrument}, \texttt{key}, \texttt{mode}, \texttt{tempoClass}, \texttt{decade} — and each predicate a typed directed edge. Track nodes are initialised with the concatenated AE and RotatE embeddings (384-dim); all other node types receive their 256-dim KGE features. Since the simple KG encodes each listening event as a direct \texttt{user}$\to$\texttt{track} edge, user-to-item message passing requires only a single hop.
+
+\subsection{Heterogeneous Graph Transformer (HGT)}
+
+The HGT~\cite{hu2020hgt} stack uses 2 message-passing layers, 4 attention heads, hidden dimension 128, and dropout 0.1. Track nodes are initialised with a 384-dimensional vector (128-dim AE concatenated with 256-dim KGE); all other node types use their 256-dim KGE features. An MLP head per node type projects hidden representations to a 64-dimensional output space, $\ell_2$-normalised for cosine similarity scoring.
+
+\paragraph{Loss.} Given normalised user embedding $\hat{\mathbf{u}}$ and track embeddings $\hat{\mathbf{t}}_i$, the logit-adjusted score is
+\begin{equation}
+s_i = \tfrac{\hat{\mathbf{u}}^\top\hat{\mathbf{t}}_i}{\tau} + \lambda\log p_i,
+\end{equation}
+where $\tau{=}0.1$ sharpens the softmax and $p_i$ is the Laplace-smoothed marginal listen probability. Since $\log p_i<0$, popular tracks are penalised, boosting less-heard items. Soft training targets $\tilde{p}_{ui}\propto\log(1+c_{ui})$ normalised row-wise encode engagement intensity. The loss is
+\begin{equation}
+\mathcal{L}=-\frac{1}{|B|}\sum_{u\in B}\sum_i\tilde{p}_{ui}\log\mathrm{softmax}(\mathbf{s}_u)_i.
+\end{equation}
+
+Training runs for 200 epochs with Adam ($lr{=}10^{-3}$, weight decay $10^{-4}$) and cosine-annealing LR schedule. Model selection uses the composite Overall Score (Eq.~\ref{eq:overall}) at $K{=}10$ to reward both ranking quality and catalogue diversity jointly.
+
+\subsection{Baselines}
+
+\textbf{MostPopular} ranks all unseen items by global play frequency identically for every user.
+
+\textbf{KNN-CF} is a user--user collaborative filter on the $\ell_2$-normalised interaction matrix; neighbourhood size $k$ is tuned by sweeping candidate values and selecting the $k$ maximising the composite validation score ($k{=}6$ selected).
+
+\textbf{XGBoost Hybrid} retrieves 200 candidates per user via cosine similarity between the mean-pooled AE user profile and track embeddings, then re-ranks with a gradient-boosted LTR model (\texttt{rank:ndcg@10}, up to 300 rounds, early stopping at 30). The 300-dimensional feature vector per (user, track) pair concatenates the 128-dim user-profile and track AE embeddings with 44 categorical features: one-hot key, mode, and tempo class; target-encoded genre and artist; and a multi-hot instrument indicator. This design isolates the GNN contribution by fusing content and behaviour without any graph structure.
+
+\subsection{Evaluation Protocol}
+
+A single user-level stratified split (70/10/20 train/val/test), stratified by song genre and release decade, ensures that popularity and content distributions are preserved across folds. Song features and KG structure are visible to all splits; only interactions are partitioned.
+
+For evaluated user $u$ with held-out ground-truth set $\mathcal{G}_u$ and ranked top-$K$ list $R_u=(r_1,\dots,r_K)$, let $g_i=\mathbf{1}[r_i\in\mathcal{G}_u]$. Per-user metrics are:
+\begin{align*}
+\mathrm{P@}K &= \tfrac{1}{K}\textstyle\sum_{i\le K}g_i,\quad
+\mathrm{R@}K = \tfrac{\sum_{i\le K}g_i}{\min(K,|\mathcal{G}_u|)},\\
+\mathrm{HR@}K &= \mathbf{1}\bigl[\textstyle\sum_{i\le K}g_i>0\bigr],\quad
+\mathrm{MRR} = \tfrac{1}{\min\{i:g_i=1\}},\\
+\mathrm{NDCG@}K &= \frac{\mathrm{DCG@}K}{\mathrm{IDCG@}K},\quad
+\mathrm{DCG@}K = \textstyle\sum_{i\le K}\tfrac{g_i}{\log_2(i+1)}.
+\end{align*}
+Two catalogue-level metrics capture diversity: coverage $\mathrm{Cov}=|\bigcup_u R_u|/|\mathcal{I}|$ and mean popularity bias $\mathrm{PB@}K=\tfrac{1}{K}\sum_{i\le K}\pi(r_i)$, where $\pi(\cdot)\in[0,1]$ is the normalised global play frequency. These are fused into a composite score
+\begin{equation}\label{eq:overall}
+\mathrm{Overall@}K = 0.6\,\mathrm{NDCG@}K + 0.2\,\mathrm{Cov} + 0.2(1-\mathrm{PB@}K),
+\end{equation}
+which rewards models that rank accurately \emph{and} surface diverse, less popular content; it also serves as the HGT checkpoint criterion. Statistical significance is assessed by paired Wilcoxon signed-rank and Friedman omnibus tests on a shared 5,000-user subsample.

@@ -1,0 +1,10 @@
+\section{Introduction}
+\label{sec:intro}
+
+Music recommendation systems predominately rely on collaborative filtering signals, which inherently favour popular content and struggle to capture the musical content of individual tracks. A user who enjoys Baroque counterpoint and a user who enjoys jazz both interact with overlapping mainstream pop songs; purely behavioural models conflate these distinct preferences.
+
+Knowledge graphs offer a complementary representation: by encoding tracks, artists, genres, keys, tempos, instruments, and users as typed entities connected by meaningful relations, a KG makes musical structure explicit and queryable. Graph neural networks (GNNs) can then propagate relational context across this structure, enabling models to learn both content-based and collaborative signals within a single trainable framework.
+
+\textbf{This work presents a complete end-to-end pipeline} that (i)~integrates the Lakh MIDI Dataset~\cite{raffel2016lakh} and Million Song Dataset~\cite{msd2011} into a musically rich KG; (ii)~compresses 1,525-dimensional symbolic features via an autoencoder and trains KG embeddings (RotatE~\cite{sun2019rotate}, ComplEx~\cite{trouillon2016complex}) for structural node initialisation; (iii)~trains a Heterogeneous Graph Transformer~\cite{hu2020hgt} with a popularity-debiased listwise loss; and (iv)~evaluates the full model family against three baselines using a comprehensive ranking metric suite augmented by catalogue-level diversity measures.
+
+Our contributions are: (1)~a two-tier RDF music ontology with Wikidata alignment and validated SPARQL queries; (2)~an intensity-weighted listwise loss with logit adjustment for popularity debiasing; (3)~a comparative study of symbolic-feature autoencoder, KGE initialisation strategies, and HGT recommendation; and (4)~attention-based explanation rationales for individual recommendations.

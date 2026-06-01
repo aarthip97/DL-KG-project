@@ -1,0 +1,39 @@
+\section{Data}
+\label{sec:data}
+
+\subsection{Sources}
+
+\textbf{Lakh MIDI Dataset (LMD)}~\cite{raffel2016lakh} provides MIDI files aligned to audio tracks via Dynamic Time Warping (DTW) on chroma representations. We retain matches with a DTW similarity score $\geq 0.55$, yielding 19,037 unique tracks after deduplication.
+
+\textbf{Million Song Dataset (MSD)}~\cite{msd2011} supplies audio-derived scalars (tempo, key, loudness, time signature), artist metadata, genre tags with weights, and the Echo Nest Taste Profile~\cite{echonest2011}: approximately 48 million user--song interaction triplets (\texttt{user\_id}, \texttt{song\_id}, \texttt{play\_count}).
+
+\subsection{Processing Pipeline}
+
+\paragraph{Interaction filtering.} Raw Taste Profile interactions are cleaned in three stages (Table~\ref{tab:filtering}): (1)~18,913 erroneous song IDs from the MSD mismatch list are removed; (2)~interactions are inner-joined with the LMD-matched track set; (3)~users with fewer than 5 remaining interactions are dropped to address cold-start. The resulting dataset covers 285,037 users interacting with 7,227 unique songs.
+
+\begin{table}[h]
+\centering\footnotesize
+\caption{Interaction filtering pipeline.}
+\label{tab:filtering}
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Step} & \textbf{Interactions} & \textbf{Users} & \textbf{Songs}\\
+\midrule
+Raw              & 48,373,586 & 1,019,318 & 384,546\\
+$-$Mismatches   & 45,795,100 & 1,019,318 & 378,309\\
+$\cap$LMD       & 4,243,384  &   848,243 &   7,465\\
+$-$Cold-start   & 3,048,959  &   285,037 &   7,227\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.9\linewidth]{taste_profile_graph.png}
+  \caption{Taste Profile filtering funnel across interactions, unique users, and unique songs.}
+  \label{fig:funnel}
+\end{figure}
+
+\paragraph{Symbolic feature extraction.} jSymbolic~\cite{mckay2018jsymbolic} and music21~\cite{music21docs} are applied to all 19,037 MIDI files; 7,013 succeed and form the basis for all downstream modelling. Together they produce 1,525 numerical descriptors per track spanning seven categories: pitch, melodic, harmonic, rhythmic, dynamics, textural, and instrumentation.

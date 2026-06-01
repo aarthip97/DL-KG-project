@@ -1,0 +1,53 @@
+\documentclass[10pt,twocolumn,letterpaper]{article}
+
+\usepackage[pagenumbers]{cvpr}
+
+\input{preamble}
+
+\definecolor{cvprblue}{rgb}{0.21,0.49,0.74}
+\usepackage[pagebackref,breaklinks,colorlinks,allcolors=cvprblue]{hyperref}
+
+\def\paperID{*****}
+\def\confName{KG-DL}
+\def\confYear{2026}
+
+\title{Content and User Preference Based Music Recommendation\\
+       Using Knowledge Graphs and Graph Neural Networks}
+
+\author{%
+  \textbf{Group 7} \quad
+  Pedro Fanica (54346) \quad
+  Aarthi Perumpillichira (66404) \quad
+  Maja Skwaroń (66083)\\[0.25em]
+  {\small Knowledge Graphs Course (Prof.\ Cátia Pesquita)
+    $\,\cdot\,$
+    Deep Learning Course (Prof.\ Nuno Garcia)}\\[0.1em]
+  {\small Faculdade de Ciências da Universidade de Lisboa (FCUL)
+    $\,\cdot\,$
+    Academic Year 2025/26}%
+}
+
+\begin{document}
+\maketitle
+\thispagestyle{plain}  % CVPR \maketitle calls \thispagestyle{empty}; restore footer
+
+\input{sec/0_abstract}
+\input{sec/1_intro}
+\input{sec/1b_related_work}
+\input{sec/2_data}
+\input{sec/3_methodology}
+\input{sec/4_results}
+\input{sec/5_conclusions}
+\input{sec/6_future_work}
+\input{sec/7_member_contribution}
+
+{
+  \small
+  \bibliographystyle{unsrtnat}
+  \bibliography{main}
+}
+
+\appendix
+\input{sec/Appendix}
+
+\end{document}

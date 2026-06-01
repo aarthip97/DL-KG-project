@@ -131,7 +131,7 @@ def _unpack(archive: Path, target_dir: Path, skip_existing: bool) -> None:
         return
 
     target_dir.mkdir(parents=True, exist_ok=True)
-    print(f"    📦 Unpacking {archive.name} → {_rp(target_dir)} …", flush=True)
+    print(f"    Unpacking {archive.name} → {_rp(target_dir)} …", flush=True)
 
     with tarfile.open(archive, "r:gz") as tf:
         members = tf.getmembers()

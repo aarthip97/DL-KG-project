@@ -1,0 +1,343 @@
+\clearpage
+\onecolumn
+
+\appendix
+\section*{Appendix}
+\addcontentsline{toc}{section}{Appendix}
+
+% ─────────────────────────────────────────────
+\section{Exploratory Overview of MSD Features}
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{output1.png}
+\captionof{figure}{Exploratory overview of MSD feature distributions.}
+\label{fig:msd_eda}
+\end{center}
+
+% ─────────────────────────────────────────────
+\section{User Taste Profile Diagnostics}
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{user_diagnostics.png}
+\captionof{figure}{Play-count distribution, songs per user, users per song, and top-20 most-played tracks in the filtered Echo Nest Taste Profile.}
+\label{fig:user_diag}
+\end{center}
+
+% ─────────────────────────────────────────────
+\section{KG Entity and Relation Statistics}
+
+\begin{center}
+\includegraphics[width=0.65\linewidth]{node_type_histogram.png}
+\captionof{figure}{Node type histogram for the simple KG (excluding blank nodes from the rich variant).}
+\label{fig:node_hist}
+\end{center}
+
+% ─────────────────────────────────────────────
+\section{Simple vs.\ Rich KG: Structural Differences}
+
+\begin{center}
+\footnotesize
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{p{0.20\textwidth} p{0.32\textwidth} p{0.42\textwidth}}
+\toprule
+\textbf{Feature} & \textbf{Simple KG} & \textbf{Rich KG}\\
+\midrule
+Genre association
+& Direct edge: \texttt{artist\;mrc:hasGenre\;genre}
+& Blank node: \texttt{artist\;mrc:hasGenreAssoc\;[a mrc:GenreAssociation; mrc:genre g; mrc:weight w]}\\
+\midrule
+\texttt{artist\_terms\_weight} & Not stored & \texttt{mrc:weight} on GenreAssociation\\
+\midrule
+Key / Mode & Named node on Track & Named node on Performance + confidence scores\\
+\midrule
+\texttt{play\_count} & Not stored & \texttt{mrc:listenCount} on ListeningEvent blank node\\
+\midrule
+User$\to$Track & \texttt{user\;mrc:listenedTo\;track} & \texttt{user\;mrc:hasListeningInteraction\;[a mrc:ListeningEvent; mrc:onTrack track; mrc:listenCount n]}\\
+\bottomrule
+\end{tabular}
+\captionof{table}{Structural differences between simple and rich KG variants.}
+\label{tab:simple_vs_rich}
+\end{center}
+
+% ─────────────────────────────────────────────
+\section{Music Feature RDF Mapping (Simple KG)}
+
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.1}
+
+\begin{longtable}{
+>{\ttfamily\bfseries\RaggedRight\arraybackslash}p{0.19\textwidth}
+>{\RaggedRight\arraybackslash}p{0.31\textwidth}
+>{\RaggedRight\arraybackslash}p{0.07\textwidth}
+>{\ttfamily\RaggedRight\arraybackslash}p{0.23\textwidth}
+>{\RaggedRight\arraybackslash}p{0.18\textwidth}
+}
+\caption{Selected MSD and jSymbolic features mapped to RDF representation.}
+\label{tab:kg_features}\\
+\toprule
+\textbf{Feature} & \textbf{Description} & \textbf{Origin} & \textbf{RDF Term} & \textbf{Storage}\\
+\midrule
+\endfirsthead
+\toprule
+\textbf{Feature} & \textbf{Description} & \textbf{Origin} & \textbf{RDF Term} & \textbf{Storage}\\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+key & Musical key (C, C\#, \ldots, B) & MSD & mrc:hasKey & Named Node\\
+mode & Modality (Major/Minor) & MSD & mrc:hasMode & Named Node\\
+primary\_genre & Highest-weight genre tag & MSD & mrc:hasGenre & Named Node\\
+midi\_instruments & MIDI instrument names & MIDI/LMD & mo:instrument & Named Node\\
+tempo & Mean BPM & jSymbolic / MSD & mo:tempo & Literal (xsd:double)\\
+Tempo\_class & Categorical tempo marking & Derived & mrc:hasTempoClass & Named Node\\
+Mean\_Tempo & jSymbolic mean BPM & jSymbolic & mrc:meanTempo & Literal (xsd:double)\\
+Note\_Density & Average notes per second & jSymbolic & mrc:noteDensity & Literal (xsd:double)\\
+Amount\_of\_Staccato & Fraction of staccato notes & jSymbolic & mrc:amountOfStaccato & Literal (xsd:double)\\
+Chromatic\_Motion & Fraction of semitone intervals & jSymbolic & mrc:chromaticMotion & Literal (xsd:double)\\
+Chord\_Duration & Mean chord duration & jSymbolic & mrc:chordDuration & Literal (xsd:double)\\
+Avg\_Indep\_Voices & Mean simultaneous voices & jSymbolic & mrc:averageNumberOfIndependentVoices & Literal (xsd:double)\\
+\end{longtable}
+
+% ─────────────────────────────────────────────
+\section{GraphDB Track Node Inspection}
+
+\begin{center}
+\includegraphics[width=0.38\linewidth]{1.png}
+\captionof{figure}{Selected properties of track TRAYEGN128F9361233 (\textit{When She Dances}) in GraphDB (part 1).}
+\label{fig:gdb1}
+\end{center}
+
+\begin{center}
+\includegraphics[width=0.38\linewidth]{2.png}
+\captionof{figure}{Additional jSymbolic properties of the same track (part 2).}
+\label{fig:gdb2}
+\end{center}
+
+% ─────────────────────────────────────────────
+\section{Selected SPARQL Queries and Results}
+\label{sec:sparql}
+
+All queries share the following prefix block (omitted from individual listings):
+\begin{footnotesize}
+\begin{verbatim}
+PREFIX mrc: <http://purl.org/ontology/mrc/>
+PREFIX mo:  <http://purl.org/ontology/mo/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+PREFIX dct: <http://purl.org/dc/terms/>
+\end{verbatim}
+\end{footnotesize}
+
+\subsection*{Q1 — Genre Ranking (Simple KG)}
+\begin{footnotesize}
+\begin{verbatim}
+SELECT ?genreLabel (COUNT(DISTINCT ?artist) AS ?n)
+WHERE { ?artist mrc:hasGenre ?g .
+        ?g rdfs:label ?genreLabel .
+        FILTER(LANG(?genreLabel) = "en") }
+GROUP BY ?genreLabel  ORDER BY DESC(?n)  LIMIT 30
+\end{verbatim}
+\end{footnotesize}
+
+\begin{table}[H]\centering\footnotesize
+\caption{Top 5 genres by artist count (Simple KG).}
+\begin{tabular}{lr}\toprule Genre & \#Artists\\\midrule
+rock & 2,117 \\ pop & 1,062 \\ electronic & 1,037 \\ pop rock & 814 \\ hip hop & 381\\\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{Q2 — Genre Weights (Rich KG)}
+\begin{footnotesize}
+\begin{verbatim}
+SELECT ?genreLabel (COUNT(DISTINCT ?artist) AS ?n)
+  (ROUND(AVG(?w)*1000)/1000 AS ?avg_weight)
+WHERE { ?artist mrc:hasGenreAssoc ?a .
+        ?a mrc:genre ?g; mrc:weight ?w .
+        ?g rdfs:label ?genreLabel .
+        FILTER(LANG(?genreLabel) = "en") }
+GROUP BY ?genreLabel  ORDER BY DESC(?avg_weight)  LIMIT 10
+\end{verbatim}
+\end{footnotesize}
+
+\noindent Top by average weight: dance pop (0.810), trance (0.795), ballad (0.779), rock (0.759).
+
+\subsection*{Q3 — High-Confidence Key Distribution (Rich KG)}
+\begin{footnotesize}
+\begin{verbatim}
+SELECT ?keyLabel (COUNT(*) AS ?n)
+WHERE { ?p a mo:Performance; mrc:hasKey ?k;
+           mrc:keyConfidence ?kc .
+        FILTER(?kc >= 0.8)
+        ?k rdfs:label ?keyLabel .
+        FILTER(LANG(?keyLabel) = "en") }
+GROUP BY ?keyLabel  ORDER BY DESC(?n)
+\end{verbatim}
+\end{footnotesize}
+
+\noindent Top keys at $\geq$0.8 confidence: C\,(211), G\,(196), D\,(150), A\,(103), F\,(98).
+
+% ─────────────────────────────────────────────
+\section{Learning Curves}
+
+\begin{center}
+\includegraphics[width=0.62\linewidth]{ae_loss_curve.png}
+\captionof{figure}{Autoencoder MSE over 200 epochs (0.964 $\to$ 0.616). Steepest descent in first 75 epochs; early stopping never triggered.}
+\label{fig:ae_curve_app}
+\end{center}
+
+\begin{center}
+\includegraphics[width=0.62\linewidth]{kge_loss_curve.png}
+\captionof{figure}{KGE training loss (log scale) for RotatE and ComplEx over 200 epochs. The scales differ between models (ComplEx $\approx13\!\to\!3$; RotatE $\approx0.7\!\to\!0.4$); RotatE converges to a lower absolute loss but this does not translate into downstream HGT gains (Table~3 in main text).}
+\label{fig:kge_curve_app}
+\end{center}
+
+\begin{center}
+\includegraphics[width=0.62\linewidth]{xgb_loss_curve.png}
+\captionof{figure}{XGBoost LTR training curve (\texttt{rank:ndcg@10} objective). Early stopping terminates training well before 300 rounds, confirming that the retrieval bottleneck — not under-training — limits ranking performance.}
+\label{fig:xgb_curve_app}
+\end{center}
+
+\begin{center}
+\includegraphics[width=\linewidth]{hgt_curves.png}
+\captionof{figure}{HGT training curves (200 epochs, RotatE init). \textit{Left}: listwise debiased loss decreases monotonically. \textit{Centre}: validation Recall@10. \textit{Right}: validation NDCG@10. All three panels confirm stable optimisation with no divergence.}
+\label{fig:hgt_curves_app}
+\end{center}
+
+% ─────────────────────────────────────────────
+\section{Multi-\texorpdfstring{$K$}{K} Model Comparison}
+
+\begin{center}
+\includegraphics[width=0.92\linewidth]{multi_k_comparison.png}
+\captionof{figure}{Key metrics at $K\in\{5,10,20,50,100\}$ for all models. KNN-CF's Overall Score advantage grows with $K$ as its catalogue-coverage advantage compounds. MostPopular leads on Recall and NDCG at every $K$ but achieves near-zero coverage throughout.}
+\label{fig:multik_app}
+\end{center}
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{user_distribution.png}
+\captionof{figure}{Per-user NDCG@10 and Recall@10 score distributions across all test users. KNN-CF and MostPopular show contrasting shapes: MostPopular concentrates scores at a narrow high peak; KNN-CF distributes mass more broadly at lower per-user NDCG but reaches more users.}
+\label{fig:user_dist_app}
+\end{center}
+
+% ─────────────────────────────────────────────
+\section{Population-Level Qualitative Comparison}
+
+\begin{center}
+\includegraphics[width=0.96\linewidth]{population_summary.png}
+\captionof{figure}{Population-level summary comparing all models (including HGT in self-evaluation mode) across genre diversity, decade coverage, and popularity of recommendations. The HGT produces the most musically diverse recommendations of all evaluated models, consistent with its low Popularity Bias.}
+\label{fig:pop_summary_app}
+\end{center}
+
+% ─────────────────────────────────────────────
+\section{XGBoost Explainability}
+
+\begin{center}
+\includegraphics[width=0.72\linewidth]{xgb_feature_importance.png}
+\captionof{figure}{Top-20 XGBoost features by cumulative gain. AE embedding dimensions dominate, with the user-profile AE dimensions contributing more than track-side dimensions, indicating that user preference representation is the primary driver of re-ranking decisions.}
+\label{fig:xgb_importance}
+\end{center}
+
+\begin{center}
+\includegraphics[width=\linewidth]{shap_summary.png}
+\captionof{figure}{SHAP beeswarm summary over 1,000 sampled test users. Each point is one (user, track) pair; colour encodes feature value. AE embedding dimensions concentrate the largest SHAP magnitudes, confirming that the autoencoder bottleneck is the primary information carrier for re-ranking. Categorical features (genre, key, tempo class) contribute more modestly.}
+\label{fig:shap_summary}
+\end{center}
+
+% ─────────────────────────────────────────────
+\section{HGT Attention Rationales}
+
+The following figures show HGT recommendation explanations for three qualitative case studies: a \emph{success-heavy} user (all top recommendations are hits), a \emph{failure} user (top recommendation is a miss), and a \emph{mixed} user. For each case, the first panel traces which of the user's previously listened tracks activated the recommendation via shared attributes; the second panel shows the KG neighbourhood context used by attention.
+
+\begin{center}
+\includegraphics[width=0.96\linewidth]{hgt_attention_success.png}
+\captionof{figure}{HGT attention rationale — success case: \textit{Toxic} by Britney Spears recommended to user\#161346 (HIT $\checkmark$, score $+0.459$). Attention concentrates on tracks sharing the \textit{pop/dance pop} genre and \textit{Allegro} tempo class.}
+\label{fig:hgt_exp_success}
+\end{center}
+
+\begin{center}
+\includegraphics[width=0.96\linewidth]{hgt_neighbour_success.png}
+\captionof{figure}{KG neighbourhood context for the success case above, showing the entity types and edge types that contributed most attention mass.}
+\label{fig:hgt_neighbour_success}
+\end{center}
+
+\begin{center}
+\includegraphics[width=0.96\linewidth]{hgt_attention_failure.png}
+\captionof{figure}{HGT attention rationale — failure case: \textit{Your Woman} by White Town recommended to user\#46937 (miss $\times$, score $+0.465$). The model latches onto an \textit{Andante/F minor} signature shared with several listened tracks, but the user's preferences do not align with the \textit{indie/alternative hip-hop} genre cluster of the recommended track.}
+\label{fig:hgt_exp_failure}
+\end{center}
+
+\begin{center}
+\includegraphics[width=0.96\linewidth]{hgt_attention_mixed.png}
+\captionof{figure}{HGT attention rationale — mixed case: \textit{Smooth Criminal} by Alien Ant Farm recommended to user\#65706 (miss $\times$, score $+0.359$). Attention is spread across multiple edge types, indicating that no single strong signal drove the recommendation.}
+\label{fig:hgt_exp_mixed}
+\end{center}
+
+% ─────────────────────────────────────────────
+\section{Latent Space Analysis}
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{umap_all_nodes.png}
+\captionof{figure}{UMAP projection of HGT latent embeddings for all node types. Users (grey), tracks (blue), artists (orange), genres (green), and structural nodes (keys, tempo classes, decades, instruments) occupy distinct but partially overlapping regions, indicating that the HGT learns type-aware representations while preserving semantic proximity.}
+\label{fig:umap_all_app}
+\end{center}
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{umap_clusters.png}
+\captionof{figure}{GMM cluster assignments overlaid on the UMAP projection. The BIC-optimal GMM partitions the latent space into interpretable clusters that cross node-type boundaries, suggesting that the HGT has learned shared musical concepts (e.g., genre communities) rather than purely instance-level representations.}
+\label{fig:umap_clusters_app}
+\end{center}
+
+% ─────────────────────────────────────────────
+\section{Qualitative Per-User Model Comparison}
+\label{sec:qualitative_table}
+
+Table~\ref{tab:qualitative_cos} reports the quantitative profile of five selected users across all models. \textbf{cos\_mean} and \textbf{cos\_max} are cosine similarities between the user's HGT embedding and the recommended tracks' HGT embeddings (computed uniformly in the HGT latent space for all models). \textbf{js\_genre} is Jaccard similarity of dominant genre sets between the user's training profile and the recommended list. \textbf{Hits} is the number of test-set ground-truth items appearing in the top-10 recommendation list. The pattern holds across all five cases: HGT achieves substantially higher embedding similarity and genre alignment than any baseline, despite producing fewer or equal hits.
+
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.15}
+\begin{longtable}{llcccc}
+\caption{Per-user qualitative comparison across all models. cos\_mean/cos\_max: mean/max cosine similarity (HGT latent space); js\_genre: genre Jaccard similarity; Hits: \#test-set hits in top-10.}
+\label{tab:qualitative_cos}\\
+\toprule
+\textbf{Case} & \textbf{Model} & \textbf{Hits} & \textbf{cos\_mean} & \textbf{cos\_max} & \textbf{js\_genre}\\
+\midrule
+\endfirsthead
+\toprule
+\textbf{Case} & \textbf{Model} & \textbf{Hits} & \textbf{cos\_mean} & \textbf{cos\_max} & \textbf{js\_genre}\\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+\multirow{4}{*}{\shortstack[l]{success-heavy\\(u=27917\\n\_train=47)}}
+  & MostPopular   & 4 & 0.00246 & 0.00673 & 0.447\\
+  & KNN-CF        & 4 & 0.00273 & 0.00673 & 0.457\\
+  & XGBoost       & 3 & 0.00857 & 0.03933 & 0.462\\
+  & \textbf{HGT}  & 1 & \textbf{0.03826} & \textbf{0.10988} & \textbf{0.639}\\
+\midrule
+\multirow{4}{*}{\shortstack[l]{failure-1\\(u=155906\\n\_train=81)}}
+  & MostPopular   & 0 & 0.00230 & 0.00691 & 0.536\\
+  & KNN-CF        & 0 & 0.00811 & 0.03917 & 0.604\\
+  & XGBoost       & 0 & 0.00382 & 0.01888 & 0.452\\
+  & \textbf{HGT}  & 0 & \textbf{0.07321} & \textbf{0.28695} & \textbf{0.534}\\
+\midrule
+\multirow{4}{*}{\shortstack[l]{failure-2\\(u=173477\\n\_train=67)}}
+  & MostPopular   & 0 & 0.00218 & 0.00590 & 0.478\\
+  & KNN-CF        & 0 & 0.00652 & 0.01837 & 0.497\\
+  & XGBoost       & 0 & 0.01426 & 0.07578 & 0.516\\
+  & \textbf{HGT}  & 0 & \textbf{0.09791} & \textbf{0.50601} & \textbf{0.626}\\
+\midrule
+\multirow{4}{*}{\shortstack[l]{mixed-1\\(u=86839\\n\_train=134)}}
+  & MostPopular   & 6 & 0.00271 & 0.00711 & 0.509\\
+  & KNN-CF        & 4 & 0.00635 & 0.02262 & 0.498\\
+  & XGBoost       & 1 & 0.00698 & 0.01664 & 0.551\\
+  & \textbf{HGT}  & 0 & \textbf{0.11951} & \textbf{0.70869} & \textbf{0.611}\\
+\midrule
+\multirow{4}{*}{\shortstack[l]{mixed-2\\(u=266206\\n\_train=112)}}
+  & MostPopular   & 0 & 0.00214 & 0.00582 & 0.507\\
+  & KNN-CF        & 1 & 0.00537 & 0.01281 & 0.478\\
+  & XGBoost       & 1 & 0.00296 & 0.01086 & 0.491\\
+  & \textbf{HGT}  & 1 & \textbf{0.01403} & \textbf{0.03824} & \textbf{0.665}\\
+\end{longtable}
+
+\noindent\textit{Note:} All cosine similarities are computed in the HGT's 64-dimensional $\ell_2$-normalised output space. For non-HGT models, this measures how well the recommended items map into the region the HGT associates with the user's preferences — not a metric those models were optimised for. The consistent advantage of HGT in both embedding similarity and genre alignment, despite lower hit counts, indicates that the model has learned a well-structured preference representation whose quality is not fully captured by offline hit-rate evaluation.

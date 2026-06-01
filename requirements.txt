@@ -3,6 +3,7 @@ numpy>=1.26
 pandas>=2.2
 pyarrow>=14.0          # Parquet I/O
 tqdm>=4.66
+umap-learn>=0.5.3     
 
 # ── MSD / MIDI reading ────────────────────────────────────────────────────────
 h5py>=3.10             # MSD HDF5 reader (no pytables needed)
@@ -10,6 +11,7 @@ h5py>=3.10             # MSD HDF5 reader (no pytables needed)
 # ── Symbolic music feature extraction ────────────────────────────────────────
 musif>=1.2.4            # DIDONE symbolic feature library (MIDI-native)
 music21>=9.1            # fallback analysis / MusicXML export
+pretty_midi>=0.2.10        # MIDI parsing
 
 # ── Knowledge Graph ───────────────────────────────────────────────────────────
 rdflib>=6.3
@@ -25,6 +27,15 @@ matplotlib>=3.8
 seaborn>=0.13
 ipykernel>=6.29
 jupyterlab>=4.0
+plotly>=5.15
+ipywidgets>=7.7         
 
 # ── Dev utilities ─────────────────────────────────────────────────────────────
 scikit-learn>=1.4       # PCA, cosine similarity helpers
+dotenv
+
+# ── Experiment tracking (optional — code guards the import) ──────────────────
+wandb>=0.16
+pykeen
+xgboost
+shap
