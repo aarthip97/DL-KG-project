@@ -29,6 +29,7 @@ from .context import HGTContext, ensure_hgt_context
 from .explain import UserExplainer, build_track_label_fn, build_user_explainer
 from .personas import assemble_persona_pack, build_cold_start
 from .training_inputs import HGTTrainingInputs, ensure_hgt_training_inputs
+from .gpu import gpu_free_gb, suggest_user_batch_size
 
 __all__ = [
     # checkpoints
@@ -51,4 +52,6 @@ __all__ = [
     "assemble_persona_pack", "build_cold_start",
     # training inputs (§8 standalone)
     "HGTTrainingInputs", "ensure_hgt_training_inputs",
+    # gpu helpers
+    "gpu_free_gb", "suggest_user_batch_size",
 ]

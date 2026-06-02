@@ -57,6 +57,8 @@ def run_phase1_ablation(
     out_csv: Optional[Path] = None,
     out_json: Optional[Path] = None,
     int_keys: Sequence[str] = _INT_KEYS,
+    progress: bool = True,
+    per_run_verbose: bool = False,
     verbose: bool = True,
 ) -> tuple[pd.DataFrame, dict]:
     """Phase-1 sweep: short runs scored by Overall_Score@``primary_k``.
@@ -66,6 +68,11 @@ def run_phase1_ablation(
     (``val_gt``/``test_gt`` must be inside ``train_inputs``) → leak-free and
     comparable. The winner seeds the long Phase-2 run.
 
+    Candidates run **sequentially** (each ``train_fn`` already saturates the GPU
+    with full-graph matmuls). ``progress=True`` shows one tqdm bar over all
+    candidates with the live current/best Overall_Score; ``per_run_verbose=True``
+    additionally shows each run's own epoch bar.
+
     Returns:
         ``(abl_df, best_params)`` — the full sorted sweep table and the winning
         tunable arch/loss config (arch dims cast back to ``int``). Persisted to
@@ -73,23 +80,38 @@ def run_phase1_ablation(
     """
     axes = dict(axes or default_ablation_axes())
     score_col = f"overall@{primary_k}"
+    candidates = [(ax, ov) for ax, ovs in axes.items() for ov in ovs]
     rows: list[dict] = []
-    for axis, overrides in axes.items():
+
+    _bar = None
+    if progress:
+        try:
+            from tqdm.auto import tqdm
+            _bar = tqdm(total=len(candidates), desc="Phase-1 sweep", unit="run")
+        except Exception:       # noqa: BLE001
+            _bar = None
+    _write = _bar.write if _bar is not None else print
+
+    best_so_far = -float("inf")
+    for axis, ov in candidates:
+        cfg = {**base_cfg, **ov}
+        r = train_fn(data, **train_inputs, epochs=epochs,
+                     early_stopping_patience=None, eval_every=eval_every,
+                     verbose=per_run_verbose, **cfg)
+        score = _overall_at_k(r.best_val, primary_k)
+        best_so_far = max(best_so_far, score)
         if verbose:
-            print(f"\n── axis: {axis} ──")
-        for ov in overrides:
-            cfg = {**base_cfg, **ov}
-            r = train_fn(data, **train_inputs, epochs=epochs,
-                         early_stopping_patience=None, eval_every=eval_every,
-                         verbose=False, **cfg)
-            score = _overall_at_k(r.best_val, primary_k)
-            if verbose:
-                print(f"  [{axis}] {ov}  →  Overall@{primary_k}={score:.4f}  "
-                      f"(ndcg={r.best_val.get(f'ndcg@{primary_k}', 0):.4f}, "
-                      f"cov={r.best_val.get(f'coverage@{primary_k}', 0):.4f}, "
-                      f"pop={r.best_val.get(f'pop_bias@{primary_k}', 0):.4f})")
-            rows.append({"axis": axis, **cfg, score_col: score,
-                         **{f"val_{kk}": vv for kk, vv in r.best_val.items()}})
+            _write(f"[{axis}] {ov}  →  Overall@{primary_k}={score:.4f}  "
+                   f"(ndcg={r.best_val.get(f'ndcg@{primary_k}', 0):.4f}, "
+                   f"cov={r.best_val.get(f'coverage@{primary_k}', 0):.4f}, "
+                   f"pop={r.best_val.get(f'pop_bias@{primary_k}', 0):.4f})")
+        rows.append({"axis": axis, **cfg, score_col: score,
+                     **{f"val_{kk}": vv for kk, vv in r.best_val.items()}})
+        if _bar is not None:
+            _bar.set_postfix_str(f"{axis} {score:.3f} | best {best_so_far:.3f}")
+            _bar.update(1)
+    if _bar is not None:
+        _bar.close()
 
     abl_df = (pd.DataFrame(rows)
               .sort_values(score_col, ascending=False).reset_index(drop=True))
