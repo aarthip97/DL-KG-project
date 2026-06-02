@@ -1296,6 +1296,45 @@ def launch_persona_gui(pack: PersonaPack, *, cold_start: "ColdStartHGT | None" =
 
 # ─── Gradio web app (separate browser tab; public link via share=True) ─────────
 
+def _show_share_qr(url: Optional[str]) -> None:
+    """Render a scannable QR code for the public share URL (live-demo friendly).
+
+    Shows the QR as an image in a notebook (and an ASCII fallback to stdout), so
+    in a live demo people can scan the *.gradio.live link with a phone instead of
+    typing it. Best-effort: auto-installs ``qrcode`` and degrades to just printing
+    the URL if anything is unavailable.
+    """
+    if not url:
+        return
+    try:
+        import qrcode
+    except ImportError:
+        try:
+            import subprocess, sys as _sys
+            subprocess.run([_sys.executable, "-m", "pip", "install", "-q", "qrcode[pil]"],
+                           check=True)
+            import qrcode
+        except Exception as e:  # noqa: BLE001
+            print(f"[app] QR code unavailable ({e}); open this link instead:\n  {url}")
+            return
+    qr = qrcode.QRCode(border=2)
+    qr.add_data(url)
+    qr.make(fit=True)
+    print(f"\n[app] 📱 Scan to open the demo on any device — {url}\n")
+    shown = False
+    try:                                              # crisp image in notebooks
+        from IPython.display import display
+        display(qr.make_image(fill_color="black", back_color="white"))
+        shown = True
+    except Exception:                                 # noqa: BLE001
+        pass
+    if not shown:                                     # ASCII fallback (terminal)
+        import io
+        buf = io.StringIO()
+        qr.print_ascii(out=buf)
+        print(buf.getvalue())
+
+
 def launch_persona_app(
     pack: PersonaPack,
     *,
@@ -1306,6 +1345,8 @@ def launch_persona_app(
     default_k: int = 10,
     default_seed_k: int = 8,
     default_weight: int = 7,
+    max_picks: int = 16,
+    qr: bool = True,
     **launch_kwargs,
 ):
     """Serve the cold-start recommender as a **Gradio web app** (not inline).
@@ -1410,6 +1451,20 @@ def launch_persona_app(
         recs, e = pack.recommend(selections, k=k)
         return _recs_table_html(recs, "sim"), format_explanation_html(e), None
 
+    # ── per-pick weight wiring ───────────────────────────────────────────────────
+    # A FIXED pool of weight sliders (shown/hidden by a dropdown `.change`) instead
+    # of `gr.render` dynamic components. `gr.render` re-registers the button's click
+    # on every edit — stacking stale handlers that fire with old selections (same
+    # recs regardless of preferences) and double-write the outputs (duplicate
+    # table). One pool + one click handler + a State map fixes all of that, and
+    # lets the sliders sit directly under the dropdowns.
+    def _meta_from_dropdowns(picks_per_type):
+        meta: List[Tuple[str, str]] = []
+        for nt, picks in zip(attr_types, picks_per_type):
+            for lab in (picks or []):
+                meta.append((nt, lab))
+        return meta[:max_picks]
+
     # ── UI ──────────────────────────────────────────────────────────────────────
     with gr.Blocks(title="Persona cold-start recommender") as demo:
         gr.Markdown("# 🎧 Persona cold-start recommender\n"
@@ -1423,7 +1478,20 @@ def launch_persona_app(
                     choices=pack.options(nt), label=nt, multiselect=True,
                     filterable=True, allow_custom_value=False)
 
+        # Per-pick weights, RIGHT BELOW the selections they belong to.
         gr.Markdown("#### Importance of each pick (1–10)")
+        weight_hint = gr.Markdown(
+            "*Select at least one preference above to set its weight.*")
+        sliders: List[object] = []
+        with gr.Row():
+            for j in range(max_picks):
+                sliders.append(gr.Slider(
+                    1, 10, value=default_weight, step=1,
+                    label=f"slot {j}", visible=False))
+        # ordered [(node_type, label), ...] currently mapped onto the slider slots
+        sel_state = gr.State([])
+
+        gr.Markdown("#### How to build & explain")
         with gr.Row():
             w_mode = gr.Radio(sources, value=sources[0], label="recommend via")
             w_explain = gr.Radio(explains, value=explains[0], label="explain via",
@@ -1440,45 +1508,59 @@ def launch_persona_app(
         out_why = gr.HTML(label="Why these?")
         out_plot = gr.Plot(label="How the HGT built it", visible=has_hgt)
 
-        # Dynamic per-pick weight sliders: one appears for every selected label.
-        @gr.render(inputs=list(dropdowns.values()))
-        def _weights(*selected_per_type):
-            meta: List[Tuple[str, str]] = []
-            sliders = []
-            any_pick = any(selected_per_type)
-            if any_pick:
-                with gr.Row():
-                    for nt, picks in zip(dropdowns.keys(), selected_per_type):
-                        for lab in (picks or []):
-                            sliders.append(gr.Slider(
-                                1, 10, value=default_weight, step=1,
-                                label=f"{nt} · {lab}"))
-                            meta.append((nt, lab))
-            else:
-                gr.Markdown("*Select at least one preference above to set its weight.*")
+        # Dropdown edits reconfigure the slider pool: relabel/show one slider per
+        # pick (carrying any weight the user already set for that label forward),
+        # hide the rest, and store the slot→(type,label) map in State.
+        def _sync(*args):
+            n_dd = len(attr_types)
+            picks_per_type = args[:n_dd]
+            cur_vals = args[n_dd:n_dd + max_picks]
+            prev_meta = args[-1] or []
+            prev_w = {tuple(m): v for m, v in zip(prev_meta, cur_vals)}
+            new_meta = _meta_from_dropdowns(picks_per_type)
+            updates = []
+            for j in range(max_picks):
+                if j < len(new_meta):
+                    nt, lab = new_meta[j]
+                    updates.append(gr.update(
+                        visible=True, label=f"{nt} · {lab}",
+                        value=prev_w.get((nt, lab), default_weight)))
+                else:
+                    updates.append(gr.update(visible=False))
+            hint = gr.update(visible=(len(new_meta) == 0))
+            return updates + [hint, new_meta]
 
-            def _run(*vals):
-                n = len(meta)
-                wvals, ctrl = vals[:n], vals[n:]
-                mode_v, expl_v, k_v, ku_v, sd_v = ctrl
-                selections: Dict[str, Dict[str, float]] = {}
-                for (nt, lab), wv in zip(meta, wvals):
-                    selections.setdefault(nt, {})[lab] = float(wv)
-                try:
-                    return _compute(selections, mode_v, expl_v,
-                                    int(k_v), int(ku_v), int(sd_v))
-                except Exception as err:  # noqa: BLE001
-                    return (f"<div style='color:#b00;font-family:sans-serif'>Failed: "
-                            f"{_html_escape(err)}</div>", "", None)
+        sync_inputs = list(dropdowns.values()) + sliders + [sel_state]
+        sync_outputs = sliders + [weight_hint, sel_state]
+        for dd in dropdowns.values():
+            dd.change(_sync, inputs=sync_inputs, outputs=sync_outputs)
 
-            w_btn.click(_run, inputs=sliders + [w_mode, w_explain, w_k, w_kusers, w_seed],
-                        outputs=[out_recs, out_why, out_plot])
+        # One click handler, reading the State map + the full slider pool.
+        def _run(meta, *vals):
+            slider_vals = vals[:max_picks]
+            mode_v, expl_v, k_v, ku_v, sd_v = vals[max_picks:]
+            selections: Dict[str, Dict[str, float]] = {}
+            for (nt, lab), wv in zip(meta or [], slider_vals):
+                selections.setdefault(nt, {})[lab] = float(wv)
+            try:
+                return _compute(selections, mode_v, expl_v,
+                                int(k_v), int(ku_v), int(sd_v))
+            except Exception as err:  # noqa: BLE001
+                return (f"<div style='color:#b00;font-family:sans-serif'>Failed: "
+                        f"{_html_escape(err)}</div>", "", None)
+
+        w_btn.click(
+            _run,
+            inputs=[sel_state] + sliders + [w_mode, w_explain, w_k, w_kusers, w_seed],
+            outputs=[out_recs, out_why, out_plot])
 
     demo.queue()
     launch_kwargs.setdefault("show_error", True)
     if server_port is not None:
         launch_kwargs["server_port"] = server_port
     demo.launch(share=share, inline=inline, **launch_kwargs)
+    if qr and share:
+        _show_share_qr(getattr(demo, "share_url", None) or getattr(demo, "local_url", None))
     return demo
 
 

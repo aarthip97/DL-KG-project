@@ -281,6 +281,22 @@ def train_hgt(
     _pop = track_listen_counts.detach().float()
     pop_norm = (_pop / (_pop.max() + 1e-9)).to(dev)
 
+    # Held-out VALIDATION listwise loss (same objective + lambda_reg/temperature as
+    # training, but with the val positives as targets) — a diagnostic that exposes
+    # the train↔val gap (overfitting). Model SELECTION still uses the val ranking
+    # metrics, not this loss. Built once as a sparse (U, I) target matrix; only the
+    # explicit-split regime (the notebook's stratified val_gt) supports it.
+    _val_counts = _val_users = None
+    if _explicit_split:
+        _vu_e, _vi_e = val_eval
+        if _vu_e.numel():
+            _val_counts = torch.sparse_coo_tensor(
+                torch.stack([_vu_e, _vi_e]),
+                torch.ones(_vu_e.numel(), device=dev),
+                size=(n_users, data[dst_t].num_nodes),
+            ).coalesce()
+            _val_users = torch.unique(_vu_e)
+
     # DataLoader over user indices for mini-batch loss accumulation
     user_loader = DataLoader(
         range(n_users), batch_size=user_batch_size, shuffle=True
@@ -454,8 +470,18 @@ def train_hgt(
 
         if ep % eval_every == 0 or ep == epochs:
             model.eval()
+            _val_loss = None
             with torch.inference_mode():
                 out_eval = model(train_data.x_dict, train_data.edge_index_dict)
+                # Held-out listwise loss on the val positives (diagnostic only).
+                if _val_counts is not None and _val_users.numel():
+                    _ue, _te = out_eval[src_t], out_eval[dst_t]
+                    _val_loss = 0.0
+                    for _vb in torch.split(_val_users, user_batch_size):
+                        _bl = debiased_listwise_loss(
+                            _ue[_vb], _te, _vb, _val_counts, log_track_pop,
+                            lambda_reg=lambda_reg, temperature=temperature)
+                        _val_loss += float(_bl) * (_vb.numel() / _val_users.numel())
 
             if _explicit_split:
                 _vu, _vi = val_eval
@@ -481,6 +507,8 @@ def train_hgt(
             monitor_score = _monitor_score(val_metrics)
             log.update({f"val/{k}": v for k, v in val_metrics.items()})
             log["val/monitor_score"] = monitor_score
+            if _val_loss is not None:
+                log["val/listwise_loss"] = _val_loss
 
             if monitor_score > best_monitor:
                 best_monitor = monitor_score

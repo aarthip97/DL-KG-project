@@ -675,3 +675,215 @@ def load_latent_analysis(out_dir) -> dict:
     if p.exists():
         out["user_subsample"] = pd.read_parquet(p)
     return out
+
+
+# ─── high-level orchestration (used by the §13 notebook cell) ─────────────────
+
+@dataclass
+class LatentAnalysis:
+    """A full latent-space analysis: all-type GMM + users-only GMM + 2-D layouts.
+
+    Bundles everything the §13 cell produces / reloads so the notebook can
+    compute, persist, reload and redraw it through one object.
+    """
+    emb_df: pd.DataFrame
+    gmm: "GMMResult"
+    centers_2d: Optional[np.ndarray] = None
+    subsample: Optional[pd.DataFrame] = None
+    composition: Optional[pd.DataFrame] = None
+    k_range: Optional[Iterable[int]] = None
+    gmm_users: Optional["GMMResult"] = None
+    user_composition: Optional[pd.DataFrame] = None
+    user_subsample: Optional[pd.DataFrame] = None
+    user_centers_2d: Optional[np.ndarray] = None
+
+    def save(self, out_dir) -> Path:
+        """Persist via :func:`save_latent_analysis` (reloadable without a model)."""
+        return save_latent_analysis(
+            out_dir, emb_df=self.emb_df, gmm=self.gmm, centers_2d=self.centers_2d,
+            subsample=self.subsample, composition=self.composition,
+            k_range=self.k_range, gmm_users=self.gmm_users,
+            user_composition=self.user_composition,
+            user_subsample=self.user_subsample, user_centers_2d=self.user_centers_2d)
+
+    @classmethod
+    def load(cls, out_dir) -> "LatentAnalysis":
+        """Reload a persisted analysis (no model, no forward pass)."""
+        a = load_latent_analysis(out_dir)
+        return cls(
+            emb_df=a["emb_df"], gmm=a["gmm"], centers_2d=a.get("centers_2d"),
+            subsample=a.get("subsample"), composition=a.get("composition"),
+            k_range=a.get("k_range"), gmm_users=a.get("gmm_users"),
+            user_composition=a.get("user_composition"),
+            user_subsample=a.get("user_subsample"),
+            user_centers_2d=a.get("user_centers_2d"))
+
+
+def compute_latent_analysis(
+    model,
+    data,
+    *,
+    device: str = "cpu",
+    k_range: Iterable[int] = range(2, 21),
+    cv_types: Sequence[str] = ("full", "diag", "spherical"),
+    max_per_type: int = 5000,
+    max_total: int = 40000,
+    verbose: bool = True,
+) -> LatentAnalysis:
+    """Fit the all-type and users-only GMMs on the FULL node set + 2-D UMAP views.
+
+    The GMMs are fit on every node (no subsampling); the subsamples are only a
+    readable view for the UMAP scatter, coloured by the full-fit labels. Uses the
+    training-consistent undirected forward pass — pure inference, no retraining.
+    """
+    import torch_geometric.transforms as T
+
+    log = print if verbose else (lambda *_: None)
+    krange = list(k_range)
+
+    data_u = T.ToUndirected(merge=False)(data)
+    emb_df = extract_node_embeddings(model, data_u, device)
+    log("Nodes per type:")
+    log(emb_df["Node_Type"].value_counts().to_string())
+
+    X = np.vstack(emb_df["Embedding"].values).astype(np.float32)
+    log(f"\nClustering ALL {X.shape[0]:,} nodes x {X.shape[1]} dims (full set, no subsampling)")
+    gmm = fit_gmm_bic(X, n_components_range=krange, cv_types=cv_types,
+                      device="auto", n_jobs=-1)
+    log(f"[GMM] backend={gmm.backend}  best={gmm.best_params}  BIC={gmm.best_bic:,.0f}")
+    emb_df = emb_df.assign(Cluster_ID=gmm.labels)
+
+    emb_s = balanced_subsample(emb_df, max_per_type=max_per_type, max_total=max_total)
+    coords, reducer = umap_project(
+        np.vstack(emb_s["Embedding"].values).astype(np.float32),
+        n_components=2, return_reducer=True)
+    centers_2d = reducer.transform(gmm.means)
+    emb_s = emb_s.assign(X=coords[:, 0], Y=coords[:, 1])
+    comp = pd.crosstab(emb_df["Cluster_ID"], emb_df["Node_Type"])
+
+    # users-only sweep → listener-archetype centroids (drive the §14 cold-start)
+    u_all = emb_df[emb_df["Node_Type"].str.lower() == "user"].copy()
+    Xu = np.vstack(u_all["Embedding"].values).astype(np.float32)
+    log(f"\nClustering ALL {Xu.shape[0]:,} USER nodes x {Xu.shape[1]} dims (full users-only set)")
+    gmm_users = fit_gmm_bic(Xu, n_components_range=krange, cv_types=cv_types,
+                            device="auto", n_jobs=-1)
+    log(f"[GMM-users] backend={gmm_users.backend}  best={gmm_users.best_params}  "
+        f"BIC={gmm_users.best_bic:,.0f}")
+    u_all = u_all.assign(Cluster_ID=gmm_users.labels)
+    user_comp = pd.crosstab(u_all["Cluster_ID"], u_all["Node_Type"])
+    u_s = subsample_embeddings(u_all, max_total)
+    ucoords, ureducer = umap_project(
+        np.vstack(u_s["Embedding"].values).astype(np.float32),
+        n_components=2, return_reducer=True)
+    ucenters_2d = ureducer.transform(gmm_users.means)
+    u_s = u_s.assign(X=ucoords[:, 0], Y=ucoords[:, 1])
+
+    return LatentAnalysis(
+        emb_df=emb_df, gmm=gmm, centers_2d=centers_2d, subsample=emb_s,
+        composition=comp, k_range=krange, gmm_users=gmm_users,
+        user_composition=user_comp, user_subsample=u_s, user_centers_2d=ucenters_2d)
+
+
+def resolve_latent_analysis(
+    *,
+    latent_dir,
+    model=None,
+    data=None,
+    device: str = "cpu",
+    force: bool = False,
+    in_memory: Optional[LatentAnalysis] = None,
+    persist: bool = True,
+    verbose: bool = True,
+    **compute_kwargs,
+) -> Optional[LatentAnalysis]:
+    """Get the latent analysis via the no-recompute ladder: memory → compute → disk.
+
+    Priority mirrors the §13 cell: reuse an in-memory :class:`LatentAnalysis`
+    (re-persisting it); else compute from the live model when ``force`` or no
+    cache exists; else reload the cached analysis; else compute if a model is
+    available. Returns ``None`` when neither a model nor a cache is available.
+    """
+    latent_dir = Path(latent_dir)
+    disk = ((latent_dir / "node_embeddings.npz").exists()
+            and (latent_dir / "gmm.pkl").exists())
+    log = print if verbose else (lambda *_: None)
+    have_model = model is not None and data is not None
+
+    def _compute_and_persist():
+        a = compute_latent_analysis(model, data, device=device, verbose=verbose,
+                                    **compute_kwargs)
+        if persist:
+            a.save(latent_dir)
+            log(f"[latent] persisted → {latent_dir}/")
+        return a
+
+    if not force and isinstance(in_memory, LatentAnalysis):
+        if persist:
+            in_memory.save(latent_dir)
+            log(f"[latent] persisted in-memory results → {latent_dir}/")
+        return in_memory
+    if force and have_model:
+        return _compute_and_persist()
+    if disk:
+        a = LatentAnalysis.load(latent_dir)
+        log(f"[latent] reloaded ← {latent_dir}/ (best={a.gmm.best_params}; "
+            "no forward pass)")
+        return a
+    if have_model:
+        return _compute_and_persist()
+    return None
+
+
+def show_latent_clusters(analysis: LatentAnalysis, *, bic_save_path=None) -> None:
+    """Draw the all-type BIC curves + 2-D UMAP scatter + composition table."""
+    import matplotlib.pyplot as plt
+
+    g = analysis.gmm
+    krange = list(analysis.k_range or g.n_components_range)
+    plot_gmm_bic_curves(g.bic_matrix, krange, g.best_params, save_path=bic_save_path)
+    plt.show()
+    s = analysis.subsample
+    if s is not None and {"X", "Y", "Cluster_ID"} <= set(s.columns):
+        plot_latent_2d(s[["X", "Y"]].to_numpy(), s["Node_Type"].values,
+                       labels=s["Cluster_ID"].to_numpy(),
+                       centers_2d=analysis.centers_2d, best_params=g.best_params)
+        plt.show()
+    if analysis.composition is not None:
+        print("\nCluster x node-type composition (all nodes):")
+        print(analysis.composition.to_string())
+
+
+def show_user_archetypes(analysis: LatentAnalysis) -> None:
+    """Draw the users-only BIC curves + archetype UMAP scatter + per-cluster counts."""
+    import matplotlib.pyplot as plt
+
+    g = analysis.gmm_users
+    if g is None:
+        return
+    krange = list(analysis.k_range or g.n_components_range)
+    plot_gmm_bic_curves(g.bic_matrix, krange, g.best_params)
+    plt.show()
+    s = analysis.user_subsample
+    if s is not None and {"X", "Y", "Cluster_ID"} <= set(s.columns):
+        plot_latent_2d(s[["X", "Y"]].to_numpy(), s["Node_Type"].values,
+                       labels=s["Cluster_ID"].to_numpy(),
+                       centers_2d=analysis.user_centers_2d, best_params=g.best_params)
+        plt.show()
+    if analysis.user_composition is not None:
+        print("\nListener archetypes (users per cluster):")
+        print(analysis.user_composition.to_string())
+
+
+def plotly_3d_figure(analysis: LatentAnalysis):
+    """Interactive 3-D UMAP scatter of the subsample, or ``None`` if unavailable.
+
+    Needs the subsample's embeddings (present after a fresh compute, dropped on
+    a disk reload), so it silently returns ``None`` when they are absent.
+    """
+    s = analysis.subsample
+    if s is None or "Embedding" not in s.columns:
+        return None
+    X_sub = np.vstack(s["Embedding"].values).astype(np.float32)
+    c3 = umap_project(X_sub, n_components=3)
+    df3 = s.assign(X=c3[:, 0], Y=c3[:, 1], Z=c3[:, 2])
+    return build_latent_plotly_figure(df3, analysis.gmm.best_params)
