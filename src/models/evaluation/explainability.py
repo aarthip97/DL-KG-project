@@ -156,6 +156,298 @@ def capture_hgt_attention(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  1b. Faithful, PREDICTION-LEVEL attribution (occlusion + optional IG)
+# ─────────────────────────────────────────────────────────────────────────────
+# Attention says what the model *looked at*; it does not say how much each input
+# *moved the recommendation score*.  Here we attribute the actual score
+# ``s(u,t) = <z_u, z_t>`` (z = the model's L2-normalised output) back to edges by
+# re-running the model with one connection removed at a time (occlusion) — a
+# faithful counterfactual, not a surrogate.  The result is EdgeAttention-shaped,
+# so it drops straight into HGTExplainer / the existing plots.
+
+@dataclass
+class FaithfulAttribution:
+    """Prediction-level edge importances for one ``(user, track)`` rec.
+
+    EdgeAttention-compatible: ``by_edge_type[et]`` is a per-edge tensor aligned to
+    ``data[et].edge_index`` columns, so it can replace captured attention inside
+    :class:`HGTExplainer`.  An edge's value is its **Δscore** — how much the rec
+    score drops when that connection (both directions) is removed and the model is
+    re-run.  Positive ⇒ the edge *supported* the rec; **negative ⇒ it pushed
+    against it** (counter-evidence attention can never express).
+
+    Attributes:
+        by_edge_type:   per-edge Δscore, EdgeAttention-aligned.
+        edge_type_delta: Δscore when a whole relation (both directions) is dropped.
+        score:          ``s(u, T)``.
+        contrast_score: ``s(u, T′)`` when a contrastive target was given.
+        contrastive:    True ⇒ every Δ is attributed to the gap ``s(u,T)−s(u,T′)``.
+    """
+
+    by_edge_type: Dict[EdgeType, Tensor]
+    edge_type_delta: Dict[EdgeType, float]
+    score: float
+    contrast_score: Optional[float] = None
+    contrastive: bool = False
+
+    def __getitem__(self, et: EdgeType) -> Tensor:
+        return self.by_edge_type[et]
+
+    def __contains__(self, et: EdgeType) -> bool:
+        return et in self.by_edge_type
+
+
+def _reverse_et(edge_types, et: EdgeType) -> Optional[EdgeType]:
+    """Find the ToUndirected reverse of ``et`` (so we can drop both directions)."""
+    a, r, b = et
+    for cand in ((b, f"rev_{r}", a), (b, r, a)):
+        if cand in edge_types:
+            return cand
+    for e2 in edge_types:                       # generic mirror fallback
+        if e2 != et and e2[0] == b and e2[2] == a:
+            return e2
+    return None
+
+
+def faithful_attribution(
+    model: torch.nn.Module,
+    data,
+    user_kg: int,
+    track_kg: int,
+    *,
+    contrast_track_kg: Optional[int] = None,
+    k_anchor_candidates: int = 12,
+    eval_undirected: bool = True,
+    user_type: str = "user",
+    item_type: str = "track",
+    device: Optional[torch.device | str] = None,
+) -> FaithfulAttribution:
+    """Occlusion-based, model-faithful attribution for one recommendation.
+
+    Re-runs the HGT with one connection removed at a time and records the drop in
+    the recommendation score ``s(u,t)=<z_u, z_t>``.  Cheap (≈ one forward per
+    occluded edge — a dozen or so) and exact (the model's real behaviour).  Two
+    granularities are returned together:
+
+    * ``edge_type_delta`` — drop each *relation* (both directions) → "which edge
+      types drove this rec".
+    * ``by_edge_type`` — drop each individual edge in the explanation subgraph
+      (the user's most-attended listened tracks + the track's attribute
+      neighbours) → per-edge "Δscore if removed", EdgeAttention-shaped.
+
+    With ``contrast_track_kg`` every Δ is attributed to the **gap**
+    ``s(u,T) − s(u,T′)`` — a contrastive "why T and not T′" explanation.
+
+    The model is run on the **undirected** graph (training-consistent), matching
+    how recommendations are scored.  Pure inference — no retraining.
+    """
+    import torch_geometric.transforms as T
+
+    g = T.ToUndirected(merge=False)(data) if eval_undirected else data
+    device = device or next(model.parameters()).device
+    x_dict = {nt: g[nt].x.to(device) for nt in g.node_types
+              if g[nt].get("x") is not None}
+    base_eid = {et: g[et].edge_index.to(device) for et in g.edge_types}
+    u, t = int(user_kg), int(track_kg)
+    tc = None if contrast_track_kg is None else int(contrast_track_kg)
+    model.eval()
+
+    @torch.no_grad()
+    def _val(eid) -> float:
+        emb = model(x_dict, eid)
+        s = float(torch.dot(emb[user_type][u], emb[item_type][t]))
+        if tc is not None:
+            s -= float(torch.dot(emb[user_type][u], emb[item_type][tc]))
+        return s
+
+    with torch.no_grad():
+        base_emb = model(x_dict, base_eid)
+        raw_sT = float(torch.dot(base_emb[user_type][u], base_emb[item_type][t]))
+        raw_sTc = (None if tc is None
+                   else float(torch.dot(base_emb[user_type][u], base_emb[item_type][tc])))
+    s_full = raw_sT - (raw_sTc if tc is not None else 0.0)
+
+    def _drop(eid, removals):
+        out = dict(eid)
+        for et, cols in removals.items():
+            keep = torch.ones(eid[et].size(1), dtype=torch.bool, device=device)
+            keep[cols] = False
+            out[et] = eid[et][:, keep]
+        return out
+
+    def _with_reverse(et, cols):
+        """Removal dict for ``cols`` of ``et`` plus the mirrored reverse edges."""
+        removals = {et: cols if torch.is_tensor(cols)
+                    else torch.as_tensor(cols, device=device)}
+        rev = _reverse_et(g.edge_types, et)
+        if rev is not None:
+            ei, rei = base_eid[et], base_eid[rev]
+            src = ei[0, removals[et]]; dst = ei[1, removals[et]]
+            mask = torch.zeros(rei.size(1), dtype=torch.bool, device=device)
+            for sgl, dgl in zip(src.tolist(), dst.tolist()):
+                mask |= (rei[0] == dgl) & (rei[1] == sgl)
+            rc = mask.nonzero(as_tuple=True)[0]
+            if rc.numel():
+                removals[rev] = rc
+        return removals
+
+    # ── edge-TYPE importance: drop each relation + its reverse together ───────
+    edge_type_delta: Dict[EdgeType, float] = {}
+    done: set = set()
+    for et in g.edge_types:
+        if et in done:
+            continue
+        rev = _reverse_et(g.edge_types, et)
+        removals = {et: torch.arange(base_eid[et].size(1), device=device)}
+        done.add(et)
+        if rev is not None:
+            removals[rev] = torch.arange(base_eid[rev].size(1), device=device)
+            done.add(rev)
+        edge_type_delta[et] = s_full - _val(_drop(base_eid, removals))
+
+    # ── per-EDGE importance over the explanation subgraph ─────────────────────
+    by_et: Dict[EdgeType, Tensor] = {
+        et: torch.zeros(base_eid[et].size(1)) for et in g.edge_types}
+    candidates: List[Tuple[EdgeType, int]] = []
+
+    # (1) anchors — reverse-listened edges into the user; rank by attention and
+    #     cap, so a heavy listener doesn't blow up the forward-pass budget.
+    anchor_ets = [et for et in g.edge_types
+                  if et[2] == user_type and et[0] == item_type]
+    attn_rank = None
+    if anchor_ets:
+        try:
+            _, _layers = capture_hgt_attention(model, x_dict, base_eid)
+            attn_rank = _layers[-1]
+        except Exception:                       # noqa: BLE001
+            attn_rank = None
+    for et in anchor_ets:
+        cols = (base_eid[et][1] == u).nonzero(as_tuple=True)[0]
+        if (attn_rank is not None and et in attn_rank
+                and cols.numel() > k_anchor_candidates):
+            w = attn_rank[et][cols.cpu()]
+            cols = cols[torch.topk(w, k_anchor_candidates).indices.to(device)]
+        candidates += [(et, int(c)) for c in cols.tolist()]
+
+    # (2) drivers — the track's attribute neighbours (non-user sources), all.
+    for et in g.edge_types:
+        if et[2] == item_type and et[0] != user_type:
+            cols = (base_eid[et][1] == t).nonzero(as_tuple=True)[0]
+            candidates += [(et, int(c)) for c in cols.tolist()]
+
+    for et, col in candidates:
+        by_et[et][col] = s_full - _val(_drop(base_eid, _with_reverse(
+            et, torch.tensor([col], device=device))))
+
+    return FaithfulAttribution(
+        by_edge_type=by_et, edge_type_delta=edge_type_delta,
+        score=raw_sT, contrast_score=raw_sTc, contrastive=tc is not None)
+
+
+def faithful_attribution_ig(
+    model: torch.nn.Module,
+    data,
+    user_kg: int,
+    track_kg: int,
+    *,
+    steps: int = 24,
+    contrast_track_kg: Optional[int] = None,
+    eval_undirected: bool = True,
+    user_type: str = "user",
+    item_type: str = "track",
+    device: Optional[torch.device | str] = None,
+) -> FaithfulAttribution:
+    """Integrated-Gradients edge attribution (additive; sums to the score gap).
+
+    Injects a per-edge mask ``m_e ∈ [0,1]`` into every ``HGTConv.message`` (the
+    same patch trick as :func:`capture_hgt_attention`, but scaling the message),
+    then integrates ``∂s/∂m`` along ``m: 0 → 1``.  By the completeness axiom the
+    per-edge attributions **sum to** ``s(m=1) − s(m=0)`` (m=0 = no message
+    passing), giving faithful additive shares.  Heavier than occlusion (``steps``
+    forward+backward passes on the full graph); use when you want shares that add
+    up rather than independent counterfactuals.  Returns the same
+    :class:`FaithfulAttribution` shape (``edge_type_delta`` left empty).
+    """
+    import torch_geometric.transforms as T
+
+    g = T.ToUndirected(merge=False)(data) if eval_undirected else data
+    device = device or next(model.parameters()).device
+    x_dict = {nt: g[nt].x.to(device) for nt in g.node_types
+              if g[nt].get("x") is not None}
+    eid = {et: g[et].edge_index.to(device) for et in g.edge_types}
+    edge_types = list(eid.keys())
+    counts = [int(eid[et].size(1)) for et in edge_types]
+    offsets = np.cumsum([0] + counts)
+    u, t = int(user_kg), int(track_kg)
+    tc = None if contrast_track_kg is None else int(contrast_track_kg)
+
+    convs = list(getattr(model, "convs"))
+    mask = torch.zeros(int(offsets[-1]), device=device, requires_grad=True)
+
+    def _make_patch(orig_message):
+        # Defer to the real message (correct shape / version-proof), then gate each
+        # edge's contribution by its mask value → differentiable edge-presence knob.
+        def patched(k_j, q_i, v_j, edge_attr, index, ptr, size_i):
+            msg = orig_message(k_j, q_i, v_j, edge_attr, index, ptr, size_i)
+            return msg * mask.view(-1, *([1] * (msg.dim() - 1)))
+        return patched
+
+    model.eval()
+    originals = [c.message for c in convs]
+    grad_accum = torch.zeros_like(mask)
+    try:
+        for c in convs:
+            c.message = _make_patch(c.message)   # type: ignore[assignment]
+        for step in range(steps):
+            a = (step + 0.5) / steps
+            mask.data.fill_(a)
+            if mask.grad is not None:
+                mask.grad.zero_()
+            emb = model(x_dict, eid)
+            s = torch.dot(emb[user_type][u], emb[item_type][t])
+            if tc is not None:
+                s = s - torch.dot(emb[user_type][u], emb[item_type][tc])
+            s.backward()
+            grad_accum += mask.grad.detach()
+    finally:
+        for c, orig in zip(convs, originals):
+            c.message = orig                     # type: ignore[assignment]
+
+    attributions = (grad_accum / steps).detach().cpu()      # × (1 − 0) edge mask
+    by_et = {et: attributions[offsets[i]:offsets[i + 1]].clone()
+             for i, et in enumerate(edge_types)}
+    return FaithfulAttribution(
+        by_edge_type=by_et, edge_type_delta={}, score=float("nan"),
+        contrastive=tc is not None)
+
+
+def plot_edge_type_importance(fa: FaithfulAttribution, *, top: Optional[int] = None,
+                              figsize=(7, 4), label_fn: Optional[Callable] = None):
+    """Horizontal bar of Δscore per relation type (occlusion).  >0 supported the rec."""
+    import matplotlib.pyplot as plt
+
+    items = sorted(fa.edge_type_delta.items(), key=lambda kv: abs(kv[1]), reverse=True)
+    if top:
+        items = items[:top]
+    items = items[::-1]
+    labs = [(label_fn(et) if label_fn else f"{et[0]} —{et[1]}→ {et[2]}")
+            for et, _ in items]
+    vals = [d for _, d in items]
+    cols = ["#2c7fb8" if v >= 0 else "#c0392b" for v in vals]
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.barh(range(len(labs)), vals, color=cols)
+    ax.set_yticks(range(len(labs))); ax.set_yticklabels(labs, fontsize=8)
+    ax.axvline(0, color="#888", lw=0.8)
+    ax.set_xlabel("Δ score if this relation is removed  ( > 0 → it supported the rec )")
+    ttl = "Which relation types drove this recommendation"
+    if fa.contrastive:
+        ttl += "  (contrastive: T vs T′)"
+    ax.set_title(ttl, fontsize=10)
+    fig.tight_layout()
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  2. Explanation containers
 # ─────────────────────────────────────────────────────────────────────────────
 @dataclass
@@ -255,6 +547,48 @@ class HGTExplainer:
             model, x_dict, edge_index_dict, head_reduce=head_reduce)
         return cls(data, layers[layer], node_mappings,
                    embeddings=emb if keep_embeddings else None, **kwargs)
+
+    @classmethod
+    def from_faithful(
+        cls,
+        model: torch.nn.Module,
+        data,
+        node_mappings: Mapping[str, Sequence[str]],
+        user_kg: int,
+        track_kg: int,
+        *,
+        contrast_track_kg: Optional[int] = None,
+        eval_undirected: bool = True,
+        **kwargs,
+    ) -> "HGTExplainer":
+        """Build an explainer whose edge weights are faithful **Δscore** values.
+
+        Runs :func:`faithful_attribution` for this one ``(user_kg, track_kg)`` pair
+        (occlusion on the undirected graph) and wraps the result so the *same*
+        :meth:`explain` / :meth:`plot_explanation_graph` work — every edge weight
+        is now "Δscore if removed" instead of attention.  The
+        :class:`FaithfulAttribution` is stored on ``.faithful`` (use it with
+        :func:`plot_edge_type_importance`).  Single-pair by construction, since
+        occlusion is specific to the recommendation being explained.
+        """
+        import torch_geometric.transforms as T
+
+        user_type = kwargs.get("user_type", "user")
+        item_type = kwargs.get("item_type", "track")
+        fa = faithful_attribution(
+            model, data, user_kg, track_kg, contrast_track_kg=contrast_track_kg,
+            eval_undirected=eval_undirected, user_type=user_type, item_type=item_type)
+        g = T.ToUndirected(merge=False)(data) if eval_undirected else data
+        dev = next(model.parameters()).device
+        x_dict = {nt: g[nt].x.to(dev) for nt in g.node_types
+                  if g[nt].get("x") is not None}
+        eid = {et: g[et].edge_index.to(dev) for et in g.edge_types}
+        model.eval()
+        with torch.no_grad():
+            emb = {k: v.detach().cpu() for k, v in model(x_dict, eid).items()}
+        self = cls(g, fa, node_mappings, embeddings=emb, **kwargs)
+        self.faithful = fa
+        return self
 
     # ── labels ───────────────────────────────────────────────────────────────
     @staticmethod
@@ -448,8 +782,13 @@ class HGTExplainer:
             lines.append(f"  • your taste anchors (attention on listened tracks): {top}")
         return "\n".join(lines)
 
-    def plot_explanation(self, expl: Explanation, *, figsize=(12, 5)):
-        """Two-panel matplotlib figure: anchor attention + reason strengths."""
+    def plot_explanation(self, expl: Explanation, *, figsize=(12, 5),
+                         attn_label: str = "attention"):
+        """Two-panel matplotlib figure: anchor weights + reason strengths.
+
+        ``attn_label`` renames the anchor-axis (pass e.g. ``"Δscore"`` when the
+        weights came from :func:`faithful_attribution` rather than attention).
+        """
         import matplotlib.pyplot as plt
 
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
@@ -464,7 +803,7 @@ class HGTExplainer:
             ax1.barh(range(len(labs)), vals, color=cols)
             ax1.set_yticks(range(len(labs)))
             ax1.set_yticklabels(labs, fontsize=8)
-            ax1.set_xlabel("attention U → listened track")
+            ax1.set_xlabel(f"{attn_label} U → listened track")
         ax1.set_title("Your taste anchors\n(green = shares an attribute with the rec)",
                       fontsize=9)
 
@@ -492,7 +831,9 @@ class HGTExplainer:
         return fig
 
     def plot_explanation_graph(self, expl: Explanation, *, top_k: int = 5,
-                               top_k_drivers: int = 5, figsize=(14, 8)):
+                               top_k_drivers: int = 5, figsize=(14, 8),
+                               attn_label: str = "attention",
+                               caption: Optional[str] = None):
         """Draw *how the HGT built this recommendation* as a left->right pipeline::
 
             [USER] ->attn-> tracks you played ->links-> shared attributes ->support-> [REC]
@@ -607,7 +948,7 @@ class HGTExplainer:
 
         legend = [
             Line2D([0], [0], color="#2c7fb8", lw=3,
-                   label="attention: how much each track defines you"),
+                   label=f"{attn_label}: how much each track defines you"),
             Line2D([0], [0], color="#bdbdbd", lw=2,
                    label="track carries this attribute"),
             Line2D([0], [0], color="#c97a14", lw=3,
@@ -624,10 +965,11 @@ class HGTExplainer:
             tot = c.get("total", 0.0) or 1.0
             return (f"top {shown_n} of {c.get('n_total', shown_n)} "
                     f"({c.get('shown', 0.0) / tot:.0%} of its attention)")
-        cap = ("Edge labels = genuine HGT softmax attention (averaged over heads). "
-               "USER->track = the track's share of your incoming message "
-               f"({_cov('anchors', len(anchors))}); attribute->rec = support, the "
-               "share of your attention on tracks that carry that attribute.")
+        cap = caption or (
+            "Edge labels = genuine HGT softmax attention (averaged over heads). "
+            "USER->track = the track's share of your incoming message "
+            f"({_cov('anchors', len(anchors))}); attribute->rec = support, the "
+            "share of your attention on tracks that carry that attribute.")
         fig.text(0.5, 0.01, cap, ha="center", va="bottom", fontsize=8, color="#555",
                  wrap=True)
 
@@ -641,6 +983,10 @@ class HGTExplainer:
 __all__ = (
     "EdgeAttention",
     "capture_hgt_attention",
+    "FaithfulAttribution",
+    "faithful_attribution",
+    "faithful_attribution_ig",
+    "plot_edge_type_importance",
     "Reason",
     "Explanation",
     "HGTExplainer",

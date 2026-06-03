@@ -42,7 +42,12 @@ from .explainability import (
     Reason,
     EdgeAttention,
     capture_hgt_attention,
+    FaithfulAttribution,
+    faithful_attribution,
+    faithful_attribution_ig,
+    plot_edge_type_importance,
 )
+from .training_panel import plot_hgt_panel, overall_at_k
 from .rehydrate import (
     rebuild_baselines_from_disk,
     rebuild_hgt_recommender_from_disk,
@@ -65,6 +70,9 @@ __all__ = [
     # explainability
     "HGTExplainer", "Explanation", "Reason", "EdgeAttention",
     "capture_hgt_attention",
+    "FaithfulAttribution", "faithful_attribution", "faithful_attribution_ig",
+    "plot_edge_type_importance",
+    "plot_hgt_panel", "overall_at_k",
     # rehydration
     "rebuild_baselines_from_disk", "rebuild_hgt_recommender_from_disk",
     "load_index_bridges_from_disk", "load_song_meta", "load_eval_ground_truth",
