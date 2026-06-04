@@ -482,6 +482,20 @@ def umap_project(
     return (coords, reducer) if return_reducer else coords
 
 
+def _qualitative_colors(n: int) -> list:
+    """``n`` visually distinct categorical colours (tab10 → tab20 → tab20b/c)."""
+    import matplotlib.pyplot as plt
+
+    if n <= 10:
+        base = list(plt.cm.tab10.colors)
+    elif n <= 20:
+        base = list(plt.cm.tab20.colors)
+    else:
+        base = (list(plt.cm.tab20.colors) + list(plt.cm.tab20b.colors)
+                + list(plt.cm.tab20c.colors))
+    return [base[i % len(base)] for i in range(max(n, 1))]
+
+
 def plot_latent_2d(
     coords: np.ndarray,
     node_types: Sequence[str],
@@ -489,14 +503,16 @@ def plot_latent_2d(
     labels: Optional[np.ndarray] = None,
     centers_2d: Optional[np.ndarray] = None,
     best_params: Optional[Mapping[str, object]] = None,
-    figsize: Tuple[int, int] = (15, 6),
-    point_size: int = 5,
-    alpha: float = 0.5,
+    figsize: Tuple[int, int] = (16, 6.6),
+    point_size: int = 8,
+    alpha: float = 0.6,
 ):
     """2-D latent scatter: one panel coloured by node type, one by GMM cluster.
 
-    ``centers_2d`` (the GMM means passed through the UMAP reducer) are drawn as
-    labelled black crosses so each cluster's location is explicit.
+    Both panels use a **distinct categorical palette** (tab10/tab20) so node types
+    and clusters are easy to tell apart. ``centers_2d`` (the GMM means through the
+    UMAP reducer) are drawn as **numbered white badges** ringed in the cluster's
+    colour, so each centroid's index reads clearly over the scatter.
     """
     import matplotlib.pyplot as plt
 
@@ -505,29 +521,42 @@ def plot_latent_2d(
     fig, axes = plt.subplots(1, ncols, figsize=figsize, squeeze=False)
     axes = axes[0]
 
+    # ── panel 1: coloured by node type ────────────────────────────────────────
     ax = axes[0]
-    for nt in pd.unique(node_types):
+    types = list(pd.unique(node_types))
+    tcolors = _qualitative_colors(len(types))
+    for nt, col in zip(types, tcolors):
         m = node_types == nt
-        ax.scatter(coords[m, 0], coords[m, 1], s=point_size, alpha=alpha, label=str(nt))
-    ax.set_title("Latent space — by node type")
+        ax.scatter(coords[m, 0], coords[m, 1], s=point_size, alpha=alpha,
+                   color=col, linewidths=0, label=str(nt))
+    ax.set_title("Latent space — by node type", fontsize=12, fontweight="bold")
     ax.set_xlabel("UMAP 1"); ax.set_ylabel("UMAP 2")
-    ax.legend(markerscale=3, fontsize=8, loc="best")
+    leg = ax.legend(markerscale=4, fontsize=9, loc="best", framealpha=0.92,
+                    title="node type")
+    leg.get_title().set_fontweight("bold")
 
+    # ── panel 2: coloured by GMM cluster + numbered centroid badges ────────────
     if labels is not None:
         ax = axes[1]
-        ax.scatter(coords[:, 0], coords[:, 1], c=labels, s=point_size,
-                   alpha=alpha, cmap="tab20")
+        labels = np.asarray(labels)
+        uniq = list(np.unique(labels))
+        ccolors = _qualitative_colors(len(uniq))
+        color_of = {int(c): ccolors[i] for i, c in enumerate(uniq)}
+        ax.scatter(coords[:, 0], coords[:, 1],
+                   c=[color_of[int(l)] for l in labels], s=point_size,
+                   alpha=alpha, linewidths=0)
         if centers_2d is not None:
-            ax.scatter(centers_2d[:, 0], centers_2d[:, 1], c="black", marker="X",
-                       s=140, edgecolor="white", linewidths=1.0, zorder=5)
             for i, (cx, cy) in enumerate(centers_2d):
-                ax.annotate(str(i), (cx, cy), fontsize=8, fontweight="bold",
-                            ha="center", va="center", color="white", zorder=6)
+                ring = color_of.get(int(i), "black")
+                ax.scatter([cx], [cy], s=340, facecolor="white", edgecolor=ring,
+                           linewidths=2.4, zorder=5)
+                ax.annotate(str(i), (cx, cy), fontsize=11, fontweight="bold",
+                            ha="center", va="center", color="black", zorder=6)
         title = "Latent space — GMM clusters"
         if best_params:
             title += (f"  (K={best_params['n_components']}, "
                       f"{best_params['covariance_type']})")
-        ax.set_title(title)
+        ax.set_title(title, fontsize=12, fontweight="bold")
         ax.set_xlabel("UMAP 1"); ax.set_ylabel("UMAP 2")
 
     fig.tight_layout()
@@ -840,8 +869,12 @@ def resolve_latent_analysis(
     return None
 
 
-def show_latent_clusters(analysis: LatentAnalysis, *, bic_save_path=None) -> None:
-    """Draw the all-type BIC curves + 2-D UMAP scatter + composition table."""
+def show_latent_clusters(analysis: LatentAnalysis, *, bic_save_path=None,
+                         scatter_save_path=None) -> None:
+    """Draw the all-type BIC curves + 2-D UMAP scatter + composition table.
+
+    ``bic_save_path`` / ``scatter_save_path`` persist the two figures as PNGs.
+    """
     import matplotlib.pyplot as plt
 
     g = analysis.gmm
@@ -850,30 +883,38 @@ def show_latent_clusters(analysis: LatentAnalysis, *, bic_save_path=None) -> Non
     plt.show()
     s = analysis.subsample
     if s is not None and {"X", "Y", "Cluster_ID"} <= set(s.columns):
-        plot_latent_2d(s[["X", "Y"]].to_numpy(), s["Node_Type"].values,
-                       labels=s["Cluster_ID"].to_numpy(),
-                       centers_2d=analysis.centers_2d, best_params=g.best_params)
+        fig = plot_latent_2d(s[["X", "Y"]].to_numpy(), s["Node_Type"].values,
+                             labels=s["Cluster_ID"].to_numpy(),
+                             centers_2d=analysis.centers_2d, best_params=g.best_params)
+        if scatter_save_path is not None:
+            fig.savefig(scatter_save_path, dpi=150, bbox_inches="tight")
         plt.show()
     if analysis.composition is not None:
         print("\nCluster x node-type composition (all nodes):")
         print(analysis.composition.to_string())
 
 
-def show_user_archetypes(analysis: LatentAnalysis) -> None:
-    """Draw the users-only BIC curves + archetype UMAP scatter + per-cluster counts."""
+def show_user_archetypes(analysis: LatentAnalysis, *, bic_save_path=None,
+                         scatter_save_path=None) -> None:
+    """Draw the users-only BIC curves + archetype UMAP scatter + per-cluster counts.
+
+    ``bic_save_path`` / ``scatter_save_path`` persist the two figures as PNGs.
+    """
     import matplotlib.pyplot as plt
 
     g = analysis.gmm_users
     if g is None:
         return
     krange = list(analysis.k_range or g.n_components_range)
-    plot_gmm_bic_curves(g.bic_matrix, krange, g.best_params)
+    plot_gmm_bic_curves(g.bic_matrix, krange, g.best_params, save_path=bic_save_path)
     plt.show()
     s = analysis.user_subsample
     if s is not None and {"X", "Y", "Cluster_ID"} <= set(s.columns):
-        plot_latent_2d(s[["X", "Y"]].to_numpy(), s["Node_Type"].values,
-                       labels=s["Cluster_ID"].to_numpy(),
-                       centers_2d=analysis.user_centers_2d, best_params=g.best_params)
+        fig = plot_latent_2d(s[["X", "Y"]].to_numpy(), s["Node_Type"].values,
+                             labels=s["Cluster_ID"].to_numpy(),
+                             centers_2d=analysis.user_centers_2d, best_params=g.best_params)
+        if scatter_save_path is not None:
+            fig.savefig(scatter_save_path, dpi=150, bbox_inches="tight")
         plt.show()
     if analysis.user_composition is not None:
         print("\nListener archetypes (users per cluster):")
