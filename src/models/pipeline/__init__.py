@@ -27,7 +27,8 @@ from .benchmark import (
 from .qualitative_cases import ensure_qual_arrays, select_contrastive_cases
 from .context import HGTContext, ensure_hgt_context
 from .explain import UserExplainer, build_track_label_fn, build_user_explainer
-from .personas import assemble_persona_pack, build_cold_start
+from .personas import (
+    assemble_persona_pack, profile_user_archetypes, build_cold_start)
 from .training_inputs import HGTTrainingInputs, ensure_hgt_training_inputs
 from .gpu import gpu_free_gb, suggest_user_batch_size
 
@@ -49,7 +50,7 @@ __all__ = [
     "HGTContext", "ensure_hgt_context",
     "UserExplainer", "build_track_label_fn", "build_user_explainer",
     # personas
-    "assemble_persona_pack", "build_cold_start",
+    "assemble_persona_pack", "profile_user_archetypes", "build_cold_start",
     # training inputs (§8 standalone)
     "HGTTrainingInputs", "ensure_hgt_training_inputs",
     # gpu helpers

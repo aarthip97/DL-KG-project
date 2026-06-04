@@ -166,10 +166,14 @@ def evaluate_recs_per_user(
         top = list(rec[:k])
         h = [1 if s in gt else 0 for s in top]
         ndcg_val = dcg(h) / (dcg(sorted(h, reverse=True)) + 1e-9)
+        recall = len(set(top) & gt) / min(len(gt), k)
+        prec   = precision_at_k(h, k)
+        f1     = (2 * prec * recall / (prec + recall)) if (prec + recall) > 0 else 0.0
         rows.append({
             "u_idx":          u,
-            "Recall@K":       len(set(top) & gt) / min(len(gt), k),
-            "Precision@K":    precision_at_k(h, k),
+            "Recall@K":       recall,
+            "Precision@K":    prec,
+            "F1@K":           float(f1),
             "NDCG@K":         float(ndcg_val),
             "HitRate@K":      float(any(s in gt for s in top)),
             "MRR":            next((1.0 / (r + 1) for r, s in enumerate(top) if s in gt), 0.0),
@@ -209,12 +213,14 @@ def evaluate_recs(
     df = evaluate_recs_per_user(recs_dict, ground_truth, pop_norm, k)
     if df.empty:
         return dict.fromkeys(
-                (f"Mean_Recall@{k}", f"Mean_Precision@{k}", f"Mean_NDCG@{k}",
-                 f"Mean_HitRate@{k}", "MRR", "Coverage", f"Mean_PopularityBias@{k}"), 0.0)
+                (f"Mean_Recall@{k}", f"Mean_Precision@{k}", f"Mean_F1@{k}",
+                 f"Mean_NDCG@{k}", f"Mean_HitRate@{k}", "MRR", "Coverage",
+                 f"Mean_PopularityBias@{k}"), 0.0)
     rec_set = {s for rec in recs_dict.values() for s in rec[:k]}
     return {
         f"Mean_Recall@{k}":         float(df["Recall@K"].mean()),
         f"Mean_Precision@{k}":      float(df["Precision@K"].mean()),
+        f"Mean_F1@{k}":             float(df["F1@K"].mean()),
         f"Mean_NDCG@{k}":           float(df["NDCG@K"].mean()),
         f"Mean_HitRate@{k}":        float(df["HitRate@K"].mean()),
         "MRR":                      float(df["MRR"].mean()),

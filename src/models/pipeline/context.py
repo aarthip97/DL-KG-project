@@ -49,6 +49,7 @@ def ensure_hgt_context(
     kge_rotate_path,
     edge_dict_path,
     ae_embeddings_path,
+    num_heads: Optional[int] = None,
     device: str = "cpu",
     verbose: bool = True,
 ) -> Optional[HGTContext]:
@@ -56,6 +57,11 @@ def ensure_hgt_context(
 
     Returns ``None`` when the HGT weights are absent (``model.pt`` missing) and
     nothing is in memory — the caller should then fall back to a no-HGT path.
+
+    ``num_heads`` is forwarded to :func:`rebuild_hgt_recommender_from_disk` when a
+    rebuild is needed. It is the only architecture knob that cannot be recovered
+    from the saved ``state_dict`` (HGTConv folds heads into ``out_channels``), so
+    it should come from the HGT training best params; ``None`` keeps the default.
     """
     from ..evaluation import (
         load_song_meta, load_eval_ground_truth, rebuild_hgt_recommender_from_disk)
@@ -85,7 +91,8 @@ def ensure_hgt_context(
             hgt_model_path=hgt_model_path, kge_rotate_path=kge_rotate_path,
             edge_dict_path=edge_dict_path, kg_input_path=kg_input_path,
             ae_embeddings_path=ae_embeddings_path, splits_dir=splits_dir,
-            device=device)
+            device=device,
+            **({} if num_heads is None else {"num_heads": int(num_heads)}))
         data, edge_dict, idx2song = h["data"], h["edge_dict"], h["idx2song"]
         u2k, s2k, tk2s = h["user_to_kg"], h["song2kg"], h["track_kg_to_song"]
         result = g.get("result")

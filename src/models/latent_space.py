@@ -826,6 +826,12 @@ def resolve_latent_analysis(
         return _compute_and_persist()
     if disk:
         a = LatentAnalysis.load(latent_dir)
+        # Guard against a stale cache saved before the users-only GMM existed: if
+        # the reload has no listener archetypes but a live model is available,
+        # recompute so the §14 persona profiling never silently disappears.
+        if a.gmm_users is None and have_model:
+            log("[latent] cached analysis lacks the users-only GMM → recomputing")
+            return _compute_and_persist()
         log(f"[latent] reloaded ← {latent_dir}/ (best={a.gmm.best_params}; "
             "no forward pass)")
         return a

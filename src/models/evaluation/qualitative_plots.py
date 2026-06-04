@@ -62,6 +62,12 @@ def plot_population_summary(
             ax.hist(df["cos_mean"].dropna(), bins=40, color="steelblue", alpha=0.8)
             ax.axvline(df["cos_mean"].mean(), color="tomato", linestyle="--",
                        label=f"mean={df['cos_mean'].mean():.3f}")
+            # Log-scale the cosine axis itself. cos∈[-1,1] (can be negative and
+            # passes through 0), so a plain log is undefined; `symlog` is the
+            # negative-safe signed-log — linear within |cos|<linthresh (no blow-up
+            # at 0) and signed-log in the tails — which spreads the sparse tails.
+            ax.set_xscale("symlog", linthresh=0.05)
+            ax.set_xlabel("cosine (symlog)")
             ax.set_title(f"{model}\ncosine(rec→profile)", fontsize=10)
             ax.legend(fontsize=8)
 
@@ -70,7 +76,8 @@ def plot_population_summary(
         if {"n_hits", "cos_mean"}.issubset(df.columns):
             hit = df["n_hits"] / top_n
             ax.scatter(df["cos_mean"], hit, alpha=0.25, s=8, color="steelblue")
-            ax.set_xlabel("cosine"); ax.set_ylabel(f"hits/{top_n}")
+            ax.set_xscale("symlog", linthresh=0.05)   # match the row-1 cosine axis
+            ax.set_xlabel("cosine (symlog)"); ax.set_ylabel(f"hits/{top_n}")
             ax.set_title(f"{model}\nhit-rate vs cosine", fontsize=10)
 
     fig.suptitle("Population-level qualitative comparison", fontsize=12, y=1.02)

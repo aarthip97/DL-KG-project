@@ -242,15 +242,24 @@ def run_benchmark(
     *,
     k_list: Sequence[int] = (5, 10, 20, 50),
     top_n: int = 10,
+    n_boot: int = 1000,
+    seed: int = 0,
 ) -> dict:
-    """Full multi-K evaluation + pairwise significance + Overall_Score selection.
+    """Full multi-K evaluation + Overall_Score@top_n significance + selection.
 
     Returns ``{bulk, multi_k, agg, pairwise, comparison, per_user, selection}``.
     ``selection`` ranks models by Overall_Score@``top_n`` — the §8 criterion,
     already computed per model/K by :func:`multi_k_evaluation`.
+
+    ``pairwise`` tests *only* the selection criterion and its components at
+    ``top_n`` (NDCG, Coverage, 1−PopularityBias, and the composite Overall_Score)
+    via :func:`overall_significance` — per-user Wilcoxon for the per-user
+    components, a paired user bootstrap for the set-level Coverage / composite.
+    ``comparison`` keeps the broader Wilcoxon/Friedman view over the per-user
+    ranking metrics for completeness.
     """
     from ..evaluation.metrics import multi_k_evaluation, evaluate_recs_per_user
-    from ..evaluation.comparison import summarise_comparison
+    from ..evaluation.comparison import summarise_comparison, overall_significance
 
     bulk = {r.name: r.recommend(ctx.test_users, max(k_list)) for r in recommenders}
     multi_k = pd.concat(
@@ -259,14 +268,19 @@ def run_benchmark(
          for n in bulk], ignore_index=True)
     per_user = {n: evaluate_recs_per_user(bulk[n], ctx.test_gt, ctx.pop_norm, k=top_n)
                 for n in bulk}
+    # Headline significance: the Overall_Score@top_n criterion + its components only.
+    pairwise = overall_significance(
+        bulk, ctx.test_gt, ctx.pop_norm, ctx.n_songs,
+        k=top_n, n_boot=n_boot, seed=seed)
+    # Broader per-user ranking view (Wilcoxon pairwise + Friedman/Nemenyi).
     comparison = summarise_comparison(
-        per_user, metrics=("Recall@K", "NDCG@K", "MRR", "HitRate@K"))
+        per_user, metrics=("Recall@K", "NDCG@K", "F1@K"))
     agg = (multi_k.groupby(["model", "K", "metric"])["value"]
            .mean().unstack("metric").round(4))
     selection = (multi_k[(multi_k["K"] == top_n) & (multi_k["metric"] == "Overall_Score")]
                  .set_index("model")["value"].sort_values(ascending=False))
     return {"bulk": bulk, "multi_k": multi_k, "agg": agg,
-            "pairwise": comparison["pairwise"], "comparison": comparison,
+            "pairwise": pairwise, "comparison": comparison,
             "per_user": per_user, "selection": selection}
 
 

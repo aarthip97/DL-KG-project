@@ -274,6 +274,46 @@ def summarise_clusters(
     return pd.DataFrame(rows).set_index("cluster")
 
 
+def characterize_user_archetypes(
+    analysis,
+    *,
+    edge_dict: Mapping,
+    track_kg_to_song: Mapping[int, int],
+    idx2song: Mapping[int, str],
+    song_meta: pd.DataFrame,
+    top_tracks: int = 200,
+) -> pd.DataFrame:
+    """Per-archetype musical profile for the **users-only** GMM.
+
+    Describes every users-only centroid (a listener archetype) by its dominant
+    genres / tempo / mode / decade, nearest semantic anchors and user count — the
+    same :func:`summarise_clusters` characterization the §14 persona pack uses, so
+    §13 can show exactly what the Gradio cold-start maps a brand-new user onto.
+
+    Args:
+        analysis: a :class:`models.latent_space.LatentAnalysis` carrying the
+            users-only GMM (``gmm_users``) and the node embeddings (``emb_df``).
+        edge_dict / track_kg_to_song / idx2song / song_meta: the index bridges
+            that turn KG track nodes into recommendable, labelled songs.
+
+    Returns:
+        One row per listener archetype (``summarise_clusters`` columns).
+
+    Raises:
+        ValueError: when the analysis carries no users-only GMM.
+    """
+    if getattr(analysis, "gmm_users", None) is None:
+        raise ValueError("analysis has no users-only GMM (gmm_users is None) — "
+                         "fit it in §13 before characterizing archetypes")
+    attr_vectors = build_attribute_vectors(analysis.emb_df, edge_dict)
+    track_emb, track_meta = build_track_table(
+        analysis.emb_df, track_kg_to_song=track_kg_to_song,
+        idx2song=idx2song, song_meta=song_meta)
+    return summarise_clusters(
+        analysis.gmm_users.means, track_emb, track_meta, attr_vectors,
+        composition=analysis.user_composition, top_tracks=top_tracks)
+
+
 # ─── 4-5. taste vector → persona → recommendations ────────────────────────────
 
 def taste_vector_from_selections(
@@ -1567,7 +1607,8 @@ def launch_persona_app(
 __all__ = [
     "ATTR_TYPES", "DEFAULT_WEIGHTS", "PersonaPack", "ColdStartHGT",
     "type_embedding_matrix", "build_attribute_vectors", "build_track_table",
-    "nearest_anchors", "summarise_clusters", "taste_vector_from_selections",
+    "nearest_anchors", "summarise_clusters", "characterize_user_archetypes",
+    "taste_vector_from_selections",
     "nearest_users", "blend_user_embedding", "neighbor_dispersion",
     "assign_persona", "recommend_for_vector", "explain_recommendations",
     "format_explanation_text", "format_explanation_html",

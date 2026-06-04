@@ -68,17 +68,88 @@ def assemble_persona_pack(
         song_meta = load_song_meta(kg_input_path)
         log("[rehydrate] song_meta ← kg_input.parquet")
 
+    # Downstream recommendations use SOLELY the users-only archetypes: the §13
+    # all-type GMM is kept for latent-space observation only and never drives a
+    # recommendation. Fall back to the all-type GMM only when no users-only GMM
+    # was fit (so the pack stays usable on legacy latent artefacts).
+    if la.gmm_users is not None:
+        primary, primary_comp = la.gmm_users, la.user_composition
+    else:
+        primary, primary_comp = la.gmm, la.composition
+        log("[persona] no users-only GMM found — falling back to all-type centroids")
+
     pack = build_persona_pack(
-        la.emb_df, edge_dict, la.gmm.means, la.gmm.best_params,
+        la.emb_df, edge_dict, primary.means, primary.best_params,
         track_kg_to_song=tk2s, idx2song=i2s, song_meta=song_meta,
-        composition=la.composition,
+        composition=primary_comp,
         user_centroids=(None if la.gmm_users is None else la.gmm_users.means),
         user_composition=la.user_composition)
     save_persona_pack(pack, save_path)
-    n_user = 0 if pack.user_centroids is None else pack.user_centroids.shape[0]
-    log(f"[persona] {pack.centroids.shape[0]} all-type personas · {n_user} user "
-        f"archetypes · {len(pack.track_meta):,} tracks → {save_path.name}")
+    log(f"[persona] {pack.centroids.shape[0]} user-archetype personas · "
+        f"{len(pack.track_meta):,} tracks → {save_path.name}")
     return pack
+
+
+def profile_user_archetypes(
+    *,
+    latent_analysis=None,
+    latent_dir,
+    in_memory: Optional[Mapping[str, Any]] = None,
+    edge_dict_path,
+    kg_input_path,
+    splits_dir,
+    save_csv=None,
+    top_tracks: int = 200,
+    verbose: bool = True,
+):
+    """Characterize the users-only GMM archetypes (one musical profile per cluster).
+
+    Returns a one-row-per-archetype DataFrame (top genres / tempo / mode / decade
+    + semantic anchors + user counts) — the listener profiles the §14 Gradio
+    cold-start maps a brand-new user onto. Resolves the latent analysis from
+    ``latent_analysis`` → ``in_memory`` → ``latent_dir`` on disk, self-heals the
+    index bridges + ``song_meta`` from disk when they are not already in
+    ``in_memory`` (no model needed), and optionally writes the table to
+    ``save_csv``. Returns ``None`` when no users-only GMM is available.
+    """
+    from ..latent_personas import characterize_user_archetypes
+    from ..latent_space import LatentAnalysis
+    from ..evaluation import load_index_bridges_from_disk, load_song_meta
+
+    g = in_memory or {}
+    log = print if verbose else (lambda *_: None)
+    latent_dir = Path(latent_dir)
+
+    la = latent_analysis if latent_analysis is not None else g.get("latent_analysis")
+    if la is None and (latent_dir / "gmm.pkl").exists():
+        la = LatentAnalysis.load(latent_dir)
+    if la is None or la.gmm_users is None:
+        log("[archetypes] no users-only GMM available — run the §13 clustering first")
+        return None
+
+    if all(n in g for n in ("edge_dict", "_track_kg_to_song", "idx2song")):
+        edge_dict, tk2s, i2s = g["edge_dict"], g["_track_kg_to_song"], g["idx2song"]
+    else:
+        b = load_index_bridges_from_disk(
+            edge_dict_path=edge_dict_path, kg_input_path=kg_input_path,
+            splits_dir=splits_dir)
+        edge_dict, tk2s, i2s = b["edge_dict"], b["track_kg_to_song"], b["idx2song"]
+        log("[rehydrate] index bridges ← node_dict.json + splits (no model)")
+
+    song_meta = g.get("song_meta")
+    if song_meta is None:
+        song_meta = load_song_meta(kg_input_path)
+        log("[rehydrate] song_meta ← kg_input.parquet")
+
+    profiles = characterize_user_archetypes(
+        la, edge_dict=edge_dict, track_kg_to_song=tk2s, idx2song=i2s,
+        song_meta=song_meta, top_tracks=top_tracks)
+    if save_csv is not None:
+        save_csv = Path(save_csv)
+        save_csv.parent.mkdir(parents=True, exist_ok=True)
+        profiles.to_csv(save_csv)
+        log(f"[archetypes] {len(profiles)} listener archetypes → {save_csv.name}")
+    return profiles
 
 
 def build_cold_start(
@@ -91,6 +162,7 @@ def build_cold_start(
     kge_rotate_path,
     edge_dict_path,
     ae_embeddings_path,
+    num_heads: Optional[int] = None,
     device: str = "cpu",
     verbose: bool = True,
 ):
@@ -100,6 +172,10 @@ def build_cold_start(
     disk (no retraining). Returns ``(cold_start, exposed)`` where ``cold_start``
     is ``None`` when the HGT weights are unavailable (the GUI then runs in
     cosine-only mode) and ``exposed`` are any globals rebuilt for reuse.
+
+    ``num_heads`` (the one architecture knob that cannot be recovered from the
+    saved weights) is forwarded to the rehydration so it tracks the HGT training
+    config instead of a hardcoded default; ``None`` keeps the documented default.
     """
     from ..latent_personas import ColdStartHGT
 
@@ -116,7 +192,7 @@ def build_cold_start(
             g, kg_input_path=kg_input_path, splits_dir=splits_dir,
             hgt_model_path=hgt_model_path, kge_rotate_path=kge_rotate_path,
             edge_dict_path=edge_dict_path, ae_embeddings_path=ae_embeddings_path,
-            device=device, verbose=verbose)
+            num_heads=num_heads, device=device, verbose=verbose)
         if hctx is None:
             return None, exposed
         exposed = hctx.exposed()
@@ -132,4 +208,4 @@ def build_cold_start(
     return cold_start, exposed
 
 
-__all__ = ["assemble_persona_pack", "build_cold_start"]
+__all__ = ["assemble_persona_pack", "profile_user_archetypes", "build_cold_start"]

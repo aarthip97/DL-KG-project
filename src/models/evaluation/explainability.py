@@ -447,6 +447,97 @@ def plot_edge_type_importance(fa: FaithfulAttribution, *, top: Optional[int] = N
     return fig
 
 
+def plot_attention_vs_faithful(
+    attn: "EdgeAttention",
+    fa: FaithfulAttribution,
+    *,
+    label_fn: Optional[Callable] = None,
+    top: Optional[int] = None,
+    figsize=(9.0, 4.8),
+    title: Optional[str] = None,
+):
+    """Side-by-side **attention vs faithful Δscore** for the *same* recommendation.
+
+    The attention graph and the Δscore graph look almost identical (same anchors,
+    same layout), so the *difference between the two rationales* is hard to see.
+    This collapses both onto one axis: per relation type, the attention the HGT
+    put on that relation's explanation edges versus the Δscore that relation
+    actually contributed (drop-it-and-re-run). Bars are each normalised to their
+    own max magnitude so the two very different scales are visually comparable;
+    the **raw** value of each is annotated next to its bar, so you read the actual
+    numbers. Where a tall attention bar sits next to a short/opposite Δscore bar,
+    attention attended to something that did not move the score — the precise
+    "attention ≠ explanation" gap.
+
+    ``attn`` is the :class:`EdgeAttention` from :meth:`HGTExplainer.from_model`'s
+    capture (``explainer.attn``); ``fa`` is the :class:`FaithfulAttribution` for
+    the same ``(user, track)`` (``faithful_explainer.faithful``). Both index edges
+    the same way, so attention is summed over exactly the edges Δscore scored.
+    """
+    import matplotlib.pyplot as plt
+
+    ets_all = list(fa.by_edge_type)
+    att = {et: 0.0 for et in fa.edge_type_delta}
+    for et in ets_all:
+        dvec = fa.by_edge_type[et]
+        mask = dvec != 0
+        if not bool(mask.any()):
+            continue
+        avec = getattr(attn, "by_edge_type", {}).get(et)
+        if avec is None:
+            continue
+        a_sum = float(avec[mask].abs().sum())
+        # Route onto the canonical relation that edge_type_delta keys on (it folds
+        # each forward/reverse pair into one), via the reverse-relation finder.
+        key = et if et in att else _reverse_et(ets_all, et)
+        if key in att:
+            att[key] += a_sum
+
+    rows = [(et, att.get(et, 0.0), float(fa.edge_type_delta[et]))
+            for et in fa.edge_type_delta]
+    rows = [r for r in rows if r[1] != 0.0 or r[2] != 0.0]
+    rows.sort(key=lambda r: abs(r[2]), reverse=True)
+    if top:
+        rows = rows[:top]
+    rows = rows[::-1]
+    if not rows:
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.text(0.5, 0.5, "no shared attention / Δscore edges to compare",
+                ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    labs = [(label_fn(et) if label_fn else f"{et[0]} —{et[1]}→ {et[2]}")
+            for et, _, _ in rows]
+    a = np.array([r[1] for r in rows], dtype=float)
+    d = np.array([r[2] for r in rows], dtype=float)
+    an = a / (np.abs(a).max() or 1.0)
+    dn = d / (np.abs(d).max() or 1.0)
+
+    y = np.arange(len(rows))
+    h = 0.38
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.barh(y + h / 2, an, height=h, color="#9ecae1", label="attention (∑ on these edges)")
+    ax.barh(y - h / 2, dn, height=h,
+            color=["#2c7fb8" if v >= 0 else "#c0392b" for v in dn],
+            label="faithful Δscore (drop & re-run)")
+    for yi, (av, dv, avn, dvn) in enumerate(zip(a, d, an, dn)):
+        ax.text(avn + 0.02 * (1 if avn >= 0 else -1), yi + h / 2, f"{av:.3g}",
+                va="center", ha="left" if avn >= 0 else "right", fontsize=7, color="#225577")
+        ax.text(dvn + 0.02 * (1 if dvn >= 0 else -1), yi - h / 2, f"{dv:+.3g}",
+                va="center", ha="left" if dvn >= 0 else "right", fontsize=7, color="#222")
+    ax.axvline(0, color="#888", lw=0.8)
+    ax.set_yticks(y)
+    ax.set_yticklabels(labs, fontsize=8)
+    ax.set_xlim(-1.25, 1.25)
+    ax.set_xlabel("normalised magnitude (bar = signal ÷ its own max; text = raw value)")
+    ax.set_title(title or "Same recommendation, two rationales: attention vs faithful Δscore",
+                 fontsize=10)
+    ax.legend(fontsize=8, loc="lower right")
+    fig.tight_layout()
+    return fig
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  2. Explanation containers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -791,9 +882,15 @@ class HGTExplainer:
         """
         import matplotlib.pyplot as plt
 
+        # The weights are *attention shares* (0–1) or *signed Δscores* depending on
+        # the strategy — derive the number format from the supplied label so the
+        # attention and faithful figures read differently (and show real values).
+        is_share = any(t in attn_label.lower() for t in ("attention", "share", "%"))
+        fmt_w = (lambda v: f"{v:.0%}") if is_share else (lambda v: f"{v:+.3f}")
+
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
 
-        # Panel 1 — user anchors by attention, flagged if they back a reason.
+        # Panel 1 — user anchors by the strategy's weight, flagged if they back a reason.
         backing = {lab for r in expl.reasons for lab, _ in r.anchors}
         labs = [a["label"][:34] for a in expl.anchors][::-1]
         vals = [a["attn"] for a in expl.anchors][::-1]
@@ -803,9 +900,16 @@ class HGTExplainer:
             ax1.barh(range(len(labs)), vals, color=cols)
             ax1.set_yticks(range(len(labs)))
             ax1.set_yticklabels(labs, fontsize=8)
-            ax1.set_xlabel(f"{attn_label} U → listened track")
-        ax1.set_title("Your taste anchors\n(green = shares an attribute with the rec)",
-                      fontsize=9)
+            ax1.set_xlabel(f"{attn_label}: U → listened track")
+            # Print the actual value at each bar tip so the two strategies are
+            # numerically comparable for the SAME anchors/recommendation.
+            _vmax = max((abs(v) for v in vals), default=1.0) or 1.0
+            for i, v in enumerate(vals):
+                ax1.text(v + (0.01 * _vmax if v >= 0 else -0.01 * _vmax), i, fmt_w(v),
+                         va="center", ha="left" if v >= 0 else "right", fontsize=7.5)
+            ax1.margins(x=0.18)
+        ax1.set_title(f"Your taste anchors — by {attn_label}\n"
+                      "(green = shares an attribute with the rec)", fontsize=9)
 
         # Panel 2 — reasons (shared attributes) by support (normalised share).
         rlabs = [f"{r.kind}: {r.value}"[:34] for r in expl.reasons][:8][::-1]
@@ -816,7 +920,7 @@ class HGTExplainer:
             ax2.set_yticklabels(rlabs, fontsize=8)
             ax2.set_xlim(0, 1)
             ax2.xaxis.set_major_formatter(lambda x, _: f"{x:.0%}")
-            ax2.set_xlabel("support — share of your attention on tracks that share it")
+            ax2.set_xlabel(f"support — share of your {attn_label} on tracks that share it")
         else:
             ax2.text(0.5, 0.5, "no shared-attribute reasons", ha="center",
                      va="center", fontsize=10, style="italic")
@@ -825,8 +929,8 @@ class HGTExplainer:
 
         verdict = ("" if expl.is_hit is None else
                    "  [HIT]" if expl.is_hit else "  [miss]")
-        fig.suptitle(f"HGT explanation — “{expl.track_label}” → user#{expl.user_kg}"
-                     f"{verdict}", fontsize=11)
+        fig.suptitle(f"HGT explanation [{attn_label}] — “{expl.track_label}” "
+                     f"→ user#{expl.user_kg}{verdict}", fontsize=11)
         fig.tight_layout()
         return fig
 
@@ -856,6 +960,11 @@ class HGTExplainer:
         anchors = expl.anchors[:top_k]
         reasons = expl.reasons[:top_k_drivers]          # shared attributes, by support
         backing = {lab for r in reasons for lab, _ in r.anchors}
+
+        # Attention shares (0–1) print as %, signed Δscores print with a sign — so
+        # the faithful graph never looks like a relabelled copy of the attention one.
+        is_share = any(t in attn_label.lower() for t in ("attention", "share", "%"))
+        fmt_w = (lambda v: f"{v:.0%}") if is_share else (lambda v: f"{v:+.3f}")
 
         xU, xA, xS, xT = 0.0, 1.9, 3.9, 5.7
         yU = yT = 0.5
@@ -889,10 +998,10 @@ class HGTExplainer:
                                   ec=color, lw=0.8))
 
         # 1) USER -> listened tracks (label = the track's attention share of U).
-        amax_a = max((a["attn"] for a in anchors), default=1.0) or 1.0
+        amax_a = max((abs(a["attn"]) for a in anchors), default=1.0) or 1.0
         for y, a in zip(yA, anchors):
-            _edge(xU, yU, xA, y, a["attn"] / amax_a, "#2c7fb8",
-                  f"{a['attn']:.0%}", shrinkA=34, shrinkB=26)
+            _edge(xU, yU, xA, y, abs(a["attn"]) / amax_a, "#2c7fb8",
+                  fmt_w(a["attn"]), shrinkA=34, shrinkB=26)
 
         # 2) listened track -> shared attribute (thin links: which track carries it)
         #    and 3) shared attribute -> rec (label = support = weight on selection).
@@ -937,7 +1046,7 @@ class HGTExplainer:
                               ec="#9c2b2b", lw=0.7))
 
         # column headers
-        for x, lab in [(xU, "listener"), (xA, "tracks you played\n(attention)"),
+        for x, lab in [(xU, "listener"), (xA, f"tracks you played\n({attn_label})"),
                        (xS, "shared attributes"), (xT, "recommended track")]:
             ax.text(x, 0.99, lab, fontsize=9, ha="center", va="bottom",
                     fontweight="bold", color="#333")
@@ -965,17 +1074,24 @@ class HGTExplainer:
             tot = c.get("total", 0.0) or 1.0
             return (f"top {shown_n} of {c.get('n_total', shown_n)} "
                     f"({c.get('shown', 0.0) / tot:.0%} of its attention)")
-        cap = caption or (
-            "Edge labels = genuine HGT softmax attention (averaged over heads). "
-            "USER->track = the track's share of your incoming message "
-            f"({_cov('anchors', len(anchors))}); attribute->rec = support, the "
-            "share of your attention on tracks that carry that attribute.")
+        if caption is not None:
+            cap = caption
+        elif is_share:
+            cap = ("Edge labels = genuine HGT softmax attention (averaged over heads). "
+                   "USER->track = the track's share of your incoming message "
+                   f"({_cov('anchors', len(anchors))}); attribute->rec = support, the "
+                   "share of your attention on tracks that carry that attribute.")
+        else:
+            cap = (f"Edge labels = {attn_label}: the counterfactual change in the "
+                   "recommendation score when that listened-track edge is removed "
+                   "(> 0 = it supported the rec). attribute->rec = support, the "
+                   "share of that signed weight sitting on tracks carrying the attribute.")
         fig.text(0.5, 0.01, cap, ha="center", va="bottom", fontsize=8, color="#555",
                  wrap=True)
 
         verdict = "" if expl.is_hit is None else ("  [HIT]" if expl.is_hit else "  [miss]")
-        ax.set_title(f"How the HGT built this recommendation{verdict}", fontsize=12,
-                     fontweight="bold")
+        ax.set_title(f"How the HGT built this recommendation — {attn_label}{verdict}",
+                     fontsize=12, fontweight="bold")
         fig.subplots_adjust(left=0.02, right=0.98, top=0.91, bottom=0.12)
         return fig
 
@@ -987,6 +1103,7 @@ __all__ = (
     "faithful_attribution",
     "faithful_attribution_ig",
     "plot_edge_type_importance",
+    "plot_attention_vs_faithful",
     "Reason",
     "Explanation",
     "HGTExplainer",

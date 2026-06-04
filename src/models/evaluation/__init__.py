@@ -33,6 +33,8 @@ from .recommenders import (
 from .qualitative import analyze_user, analyze_population, AttributeArrays
 from .comparison import (
     pairwise_significance,
+    overall_significance,
+    cosine_mean_comparison,
     friedman_nemenyi,
     summarise_comparison,
 )
@@ -46,6 +48,7 @@ from .explainability import (
     faithful_attribution,
     faithful_attribution_ig,
     plot_edge_type_importance,
+    plot_attention_vs_faithful,
 )
 from .training_panel import plot_hgt_panel, overall_at_k
 from .rehydrate import (
@@ -66,12 +69,13 @@ __all__ = [
     # qualitative
     "analyze_user", "analyze_population", "AttributeArrays",
     # comparison
-    "pairwise_significance", "friedman_nemenyi", "summarise_comparison",
+    "pairwise_significance", "overall_significance", "cosine_mean_comparison",
+    "friedman_nemenyi", "summarise_comparison",
     # explainability
     "HGTExplainer", "Explanation", "Reason", "EdgeAttention",
     "capture_hgt_attention",
     "FaithfulAttribution", "faithful_attribution", "faithful_attribution_ig",
-    "plot_edge_type_importance",
+    "plot_edge_type_importance", "plot_attention_vs_faithful",
     "plot_hgt_panel", "overall_at_k",
     # rehydration
     "rebuild_baselines_from_disk", "rebuild_hgt_recommender_from_disk",

@@ -70,13 +70,22 @@ def select_contrastive_cases(
 
     Returns ``(cases, overview_df, hits_all, hgt_name)``.
     """
-    hits_all, hit_cols = None, []
+    hits_all, hit_cols, cos_cols = None, [], []
     for name, dfq in pop_qual_dfs.items():
         col = f"hits_{name}"
         hit_cols.append(col)
-        h = dfq.set_index("u_idx").rename(columns={"n_hits": col})
-        hits_all = (h[["n_train", col]].copy() if hits_all is None
-                    else hits_all.join(h[[col]], how="inner"))
+        ren = {"n_hits": col}
+        keep = [col]
+        # Carry each model's per-user cosine-to-profile so the case table can
+        # show it even when a model (e.g. the HGT) retrieved no held-out track.
+        if "cos_mean" in dfq.columns:
+            ccol = f"cos_{name}"
+            ren["cos_mean"] = ccol
+            cos_cols.append(ccol)
+            keep.append(ccol)
+        h = dfq.set_index("u_idx").rename(columns=ren)
+        hits_all = (h[["n_train"] + keep].copy() if hits_all is None
+                    else hits_all.join(h[keep], how="inner"))
     n_models = len(hit_cols)
     hits_all["n_models_hit"] = (hits_all[hit_cols] > 0).sum(axis=1)
 
@@ -138,6 +147,12 @@ def select_contrastive_cases(
         row = hits_all.loc[u, hit_cols]
         return row.idxmax().replace("hits_", "") if row.max() > 0 else "(none)"
 
+    def _cos_leader(u):
+        if not cos_cols:
+            return "(n/a)"
+        row = hits_all.loc[u, cos_cols].astype(float)
+        return row.idxmax().replace("cos_", "") if row.notna().any() else "(n/a)"
+
     overview = []
     for label, u in cases.items():
         row = {"case": label, "u_idx": int(u),
@@ -145,6 +160,11 @@ def select_contrastive_cases(
                "profile": hits_all.at[u, "profile"], "winner": _winner(u)}
         for c in hit_cols:
             row[c.replace("hits_", "")] = int(hits_all.at[u, c])
+        # Per-model cosine-to-profile (shown even where hits=0) + the cosine leader.
+        for c in cos_cols:
+            row[c] = round(float(hits_all.at[u, c]), 4)
+        if cos_cols:
+            row["cos_leader"] = _cos_leader(u)
         overview.append(row)
     overview_df = pd.DataFrame(overview).set_index("case")
     return cases, overview_df, hits_all, hgt_name
