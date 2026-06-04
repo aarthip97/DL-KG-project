@@ -35,10 +35,10 @@
 
 % ── No paragraph indent, small skip ─────────────────────────
 \setlength{\parindent}{0pt}
-\setlength{\parskip}{4pt}
+\setlength{\parskip}{2pt}
 
 % ── Bullet style ─────────────────────────────────────────────
-\setlist[itemize]{leftmargin=1.4em, itemsep=2pt, topsep=2pt}
+\setlist[itemize]{leftmargin=1.3em, itemsep=1pt, topsep=1pt}
 
 % ── Section box style ────────────────────────────────────────
 \tcbset{
@@ -48,8 +48,8 @@
     colframe=sectionbg,
     boxrule=2pt,
     arc=2pt,
-    left=6pt, right=6pt, top=10pt, bottom=6pt,
-    fontupper=\color{bodytext}\LARGE,
+    left=5pt, right=5pt, top=6pt, bottom=4pt,
+    fontupper=\color{bodytext}\small,
     attach boxed title to top left={yshift=-2pt, xshift=4pt},
     boxed title style={
       colback=sectionbg,
@@ -59,9 +59,12 @@
       left=4pt, right=4pt, top=3pt, bottom=3pt,
     },
     coltitle=sectionfg,
-    fonttitle=\bfseries\normalsize,
+    fonttitle=\bfseries\large,
   }
 }
+
+% caption helper for figures inside boxes
+\newcommand{\fcap}[1]{{\small\itshape #1}}
 
 \pagestyle{empty}
 
@@ -84,7 +87,8 @@
   \end{minipage}%
   \hfill
   \begin{minipage}[c]{0.60\textwidth}\centering
-    {\Large\bfseries\itshape Semantically Supported Music Recommendations: Combining KG Representations of Musical Information with Heterogeneous Graph Transformers for Recommending New Music.}\\[10pt]
+    {\LARGE\bfseries Neuro-Symbolic Music Recommendation with a\\[3pt]
+     Knowledge-Graph-Informed Heterogeneous Graph Transformer}\\[10pt]
     {\normalsize\itshape Pedro Fanica$^{1}$, Aarthi Perumpillichira $^{2}$, Maja Skwaron$^{3}$}\\[5pt]
     {\small Student numbers: 54346, 66404, 66083}
   \end{minipage}%
@@ -97,123 +101,165 @@
 
 \vspace{2.5cm}
 
-% ── MAIN BODY (two columns) ──────────────────────────────────
-\begin{minipage}[c]{0.48\textwidth}
+% ============================================================
+%  TOP BAND — three columns: text | HGT diagram (centre) | KG
+%  When the tall diagram ends, the layout drops back to 2 columns.
+% ============================================================
+% -- TOP-LEFT: intro text ----
+\begin{minipage}[t]{0.42\textwidth}\vspace{0pt}
 
   % -- Objectives ----
   \begin{tcolorbox}[posterbox, title=Objectives]
     \begin{itemize}
-    \item Build a music recommendation system that enriches standard collaborative filtering (CF) with musical features such as audio characteristics, genre, artist relationships, and instrumentation.
-    \item Represent these features in a KG, capturing semantic relationships between users, tracks, artists, and genres that go beyond simple user-item interaction matrices.
-    \item Train a Heterogeneous Graph Transformer (HGT) over this KG to learn richer representations, improving recommendation diversity, interpretability, and cold-start robustness.
+    \item Recommend new music by enriching collaborative filtering (CF) with \textbf{symbolic + audio content} — genre, artist links, instrumentation, tempo.
+    \item Encode it as a typed \textbf{Knowledge Graph} relating users, tracks, artists and genres beyond a user–item matrix.
+    \item Learn over the KG with a \textbf{Heterogeneous Graph Transformer (HGT)}~[1] for diversity, cold-start robustness and \textbf{explainability}.
     \end{itemize}
-    \vspace{0.1cm} % placeholder space for optional figure
   \end{tcolorbox}
 
-  \vspace{0.4cm}
+  \vspace{0.16cm}
 
   % -- Problem ----
   \begin{tcolorbox}[posterbox, title=Problem]
     \begin{itemize}
-      \item Standard music recommendation collaborative filtering (CF) methods are based solely on user-item interaction history, ignoring the rich musical content of the songs themselves.
-      \item Common approaches such as user-user CF or matrix factorisation suffer from popularity bias and cold-start failures for users or songs
-      \item KG-enhanced methods address content sparsity by encoding musical relationships explicitly, but most prior work uses shallow KG embeddings without a GNN capable of propagating multi-hop relational structure.
-      \item Can that gap be addressed by combining symbolic musical features with a heterogeneous KG and an HGT, enabling the model to reason over typed relationships such as shared genre, artist, or instrumentation?
+      \item CF uses only interaction history~[11] → \textbf{popularity bias} and \textbf{cold-start} failures, ignoring musical content.
+      \item Most KG-enhanced work uses shallow embeddings~[8,\,10], without a GNN that propagates \textbf{multi-hop typed} structure~[9].
+      \item \textit{Can symbolic features + a heterogeneous KG + an HGT reason over shared genre / artist / instrumentation to close that gap?}
     \end{itemize}
-    \vspace{0.1cm} % placeholder space
   \end{tcolorbox}
 
-  \vspace{0.4cm}
+  \vspace{0.16cm}
 
   % -- Methodology ----
   \begin{tcolorbox}[posterbox, title=Methodology]
     \begin{center}
-      % Replace with your pipeline figure:
-    \includegraphics[width=0.97
-    \linewidth]{pipeline.png}
+      \includegraphics[width=0.74\linewidth]{pipeline.png}
     \end{center}
-    \vspace{4pt}
+    {\small \textbf{HGT}~[1] message-passing over the undirected KG; $\ell_2$-normalised embeddings $\to$ \textbf{cosine} scoring. Trained with a \textbf{custom listwise loss} — \emph{not} pointwise binary cross-entropy nor pairwise BPR~[11] — a soft cross-entropy over each user's candidate softmax with a logit-adjustment that down-weights popular tracks:}
+    {\small
+    \[ s_i = \tfrac{\hat{\mathbf{u}}^\top\hat{\mathbf{t}}_i}{\tau} + \lambda\log p_i,\qquad
+       \mathcal{L} = -\tfrac{1}{|B|}\sum_{u}\sum_i \tilde{p}_{ui}\,\log\mathrm{softmax}(\mathbf{s}_u)_i \]}
+    {\small $\tau{=}0.1$ sharpens the softmax; soft targets $\tilde{p}_{ui}\!\propto\!\log(1{+}c_{ui})$ encode engagement. As $\log p_i<0$, the $\lambda\log p_i$ term \textbf{boosts less-heard tracks} — directly driving the low popularity bias seen below.}
     \begin{itemize}
-    \item The composite \textbf{Overall Score} is defined as:
-\begin{equation}
-    \Large{\text{Overall Score@10} = 0.6 \cdot \text{NDCG@10} + 0.2 \cdot \text{Cov@10} + 0.2 \cdot (1 - \text{PB@10})}
-\end{equation}
-where Coverage rewards catalogue diversity and Popularity Bias is inverted so that lower bias yields a higher score. This formulation was chosen over a single ranking metric such as NDCG alone, as it jointly rewards relevance, catalogue diversity, and fairness, capturing the trade-offs inherent in a music recommender system where optimising purely for accuracy risks amplifying popularity bias and reducing coverage.
+    \item Model selected by composite \textbf{Overall Score@10}$=0.6\,$NDCG$+0.2\,$Cov$+0.2(1{-}$PB$)$.
+    \item Baselines: MostPopular, user–user KNN-CF, XGBoost-Hybrid.
     \end{itemize}
   \end{tcolorbox}
 
 \end{minipage}%
 \hfill
-\begin{minipage}[c]{0.48\textwidth}
+% -- CENTRE STRIP: HGT architecture (transparent, tall) ----
+\begin{minipage}[t]{0.14\textwidth}\vspace{0pt}\centering
+  \begin{tcolorbox}[posterbox, title=HGT Layer]
+    \includegraphics[width=0.99\linewidth]{hgt_combined.pdf}\\[2pt]
+    \fcap{HGTConv (exploded): per-edge-type K/Q/V, typed attention, aggregation.}
+  \end{tcolorbox}
+\end{minipage}%
+\hfill
+% -- TOP-RIGHT: KG ----
+\begin{minipage}[t]{0.42\textwidth}\vspace{0pt}
 
-  % -- Datasets ----
-% \begin{tcolorbox}[posterbox, title=Datasets]
-%   \begin{center}
-%     \begin{minipage}[t]{0.48\linewidth}
-%       \centering
-%       \includegraphics[width=\linewidth]{MSD_features.png}
-%       {\small\textit{Exploratory overview of MSD feature distributions.}}
-%     \end{minipage}
-%     \hfill
-%     \begin{minipage}[t]{0.48\linewidth}
-%       \centering
-%       \includegraphics[width=\linewidth]{user_statistics.png}
-%       {\small\textit{Play-count distribution, songs per user, users per song, and top-20 most-played tracks in the filtered Echo Nest Taste Profile.}}
-%     \end{minipage}
-%   \end{center}
-%   \begin{itemize}
-%     \item 286,889 users, 7,050 songs, aligned from Lakh MIDI + Million Song Dataset using DTW (threshold 0.55)
-%     \item Songs described by both audio/metadata features (e.g. tempo, key, mode, genre, release year) and 1,525 numerical, symbolic music descriptors spanning seven categories: pitch, melodic, harmonic, rhythmic, dynamics, textural, and instrumentation.
-%     \item User interactions from Echo Nest Taste Profile filtered to users with $\geq 5$ song interactions to address cold-start.
-%     \end{itemize}
-% \end{tcolorbox}
-
-  % -- KG Results ----
-  \begin{tcolorbox}[posterbox, title=KG Results]
-  \vspace{6pt}
-  \begin{center}
-    % TBox — full width
-    \begin{minipage}[t]{0.97\linewidth}
-      \centering
-      \includegraphics[width=\linewidth]{TBox.png}
-      {\small\textit{TBox of the MusicRecSys KG, showing ontology classes, properties, and Wikidata alignments}}
-    \end{minipage}
-    \vspace{8pt}
+  \begin{tcolorbox}[posterbox, title=Knowledge Graph]
+    \begin{center}
+      \begin{minipage}[t]{0.6\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{TBox.png}\\[2pt]
+        \fcap{TBox: ontology classes, properties and Wikidata alignments~[7].}
+      \end{minipage}\hfill
+      \begin{minipage}[t]{0.37\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{KG_summary.png}\\[2pt]
+        \fcap{Entity composition.}
+      \end{minipage}
+    \end{center}
+    \vspace{2pt}
     \begin{itemize}
-    \item The ontology is enriched via Wikidata entity linking: music genre instances are mapped to Wikidata classes via owl:equivalentClass (e.g. mrc:Genre $\longleftrightarrow$ wd:Q188451), while named individuals such as tempo markings (e.g. Allegro, Grave) and musical modes (Major, Minor) carry owl:sameAs links to their Wikidata counterparts. Decade individuals are chained temporally using Wikidata properties (e.g. wdt:P155/P156)(follows/followed by). 
-    \item Blank nodes for \_:ListeningEvent and \_:GenreAssociation encode weighted, reified relationships (listen count per user-track pair; per-genre confidence weight per artist).
+    \item \textbf{286,889} users~[5], \textbf{7,050} songs (Lakh MIDI~[3] $\leftrightarrow$ MSD~[4], DTW $\geq 0.55$); songs carry 1,525 symbolic descriptors~[6] + audio metadata.
+    \item Genres / tempo / mode linked to \textbf{Wikidata} (\texttt{owl:equivalentClass}, \texttt{sameAs}); reified blank nodes encode weighted listening \& genre events.
     \end{itemize}
-    \vspace{3pt}
-    % ABox + Table — side by side
-    \begin{minipage}[t]{0.48\linewidth}
-      \centering
-      \includegraphics[width=\linewidth]{ABox.png}
-      {\small\textit{ABox neighbourhood of track When She Dances as rendered in GraphDB.}}
-    \end{minipage}
-    \hfill
-    \begin{minipage}[t]{0.48\linewidth}
-      \centering
-      \includegraphics[width=\linewidth]{KG_summary.png}
-      {\small\textit{Entity composition of the KG}}
-    \end{minipage}
-    \vspace{8pt}
+  \end{tcolorbox}
+
+  \vspace{0.16cm}
+
+  % -- Latent Space ----
+  \begin{tcolorbox}[posterbox, title=Latent Space]
+    \begin{center}
+      \includegraphics[width=0.92\linewidth]{latent_users_poster.png}\\[2pt]
+      \fcap{UMAP of the HGT \emph{user} embeddings; BIC-selected GMM clusters (numbered centroid badges).}
+    \end{center}
     \begin{itemize}
-        \item SPARQL genre ranking shows rock as the most frequent genre (2,117 artists), while average-weight ranking reveals that focused genres such as dance pop (0.81) and trance (0.795) rank above rock (0.759), reflecting that broadly tagged artists accumulate many low-weight associations, whereas niche artists tend to carry fewer but stronger genre tags. 
-        \item High-confidence key queries (keyConf $\geq 0.8$) recover the expected Western-music prevalence of C (211 tracks), G (196), and D (150).
-        \item The most listened tracks are: "Secrets" by OneRepublic (50,058 distinct listeners), and  "The One" by Dwight Yoakam (390,283 plays across 42,810 users).
+    \item A Gaussian Mixture over the learned user vectors yields interpretable \textbf{listener archetypes} (top genres / tempo / mode / decade).
+    \item These archetypes drive the \textbf{cold-start} persona app: a new user is mapped to the nearest archetype.
     \end{itemize}
-  \end{center}
-\end{tcolorbox}
+  \end{tcolorbox}
 
+\end{minipage}
 
-  \vspace{0.4cm}
+\vspace{0.4cm}
+
+% ============================================================
+%  BOTTOM BAND — two balanced columns (no page break: total fits)
+% ============================================================
+\begin{minipage}[t]{0.48\textwidth}\vspace{0pt}
+
+  % -- HGT Training & Ablations ----
+  \begin{tcolorbox}[posterbox, title=HGT Training \& Ablations]
+    \begin{center}
+      \includegraphics[width=0.78\linewidth]{hgt_training_panel.png}\\[2pt]
+      \fcap{(a) train/val listwise loss; (b) validation Overall@10 \& components; (c) $\lambda_{\text{reg}}$ accuracy–coverage trade-off; (d) RotatE-KGE vs random node init.}
+    \end{center}
+    \begin{itemize}
+    \item Best config: \textbf{hidden 256, 4 heads, 2 layers, $\lambda_{\text{reg}}{=}0.5$, $\tau{=}0.1$}, early-stopped at epoch $\sim$240 on validation Overall@10.
+    \item \textbf{RotatE-KGE node init}~[2] clearly beats random (Overall@10 0.373 vs 0.329): the pretrained KG embeddings carry useful structure.
+    \end{itemize}
+  \end{tcolorbox}
+
+  \vspace{0.16cm}
+
+  % -- Recommendation Benchmark ----
+  \begin{tcolorbox}[posterbox, title=Recommendation Benchmark]
+    \begin{center}
+      \includegraphics[width=0.62\linewidth]{benchmark_heatmap_poster.png}\\[4pt]
+      \includegraphics[width=0.78\linewidth]{benchmark_significance_poster.png}\\[2pt]
+      \fcap{Lighter = better. Violins = per-user NDCG distribution; bars = set-level Overall Score $\pm$ bootstrap std; $\ast$ = significant.}
+    \end{center}
+    \begin{itemize}
+    \item HGT trails KNN-CF for short lists but \textbf{overtakes it for $K\geq 50$}: Overall Score \textbf{0.474 vs 0.455} and NDCG \textbf{0.148 vs 0.112} at $K{=}100$, with the \textbf{lowest popularity bias (0.090)} throughout.
+    \item MostPopular's high raw NDCG (0.114) is a \textbf{popularity artifact}: near-zero coverage (0.006), extreme bias (0.611) → composite 0.148.
+    \end{itemize}
+  \end{tcolorbox}
+
+\end{minipage}%
+\hfill
+\begin{minipage}[t]{0.48\textwidth}\vspace{0pt}
+
+  % -- Explainability ----
+  \begin{tcolorbox}[posterbox, title=Explainability]
+    \begin{center}
+      \includegraphics[width=0.92\linewidth]{explain_attention_poster.png}\\[2pt]
+      \fcap{Faithful attention traces a rec to the user's tracks $\to$ shared attributes $\to$ recommendation.}
+    \end{center}
+    \begin{itemize}
+    \item Captured HGT \textbf{attention} (not a post-hoc proxy) explains \emph{why} each track was recommended, attribute by attribute.
+    \item Cross-checked against \textbf{occlusion $\Delta$score} and \textbf{Integrated Gradients} — the three agree on the top drivers.
+    \end{itemize}
+  \end{tcolorbox}
+
+  \vspace{0.16cm}
 
   % -- Conclusions ----
-  \begin{tcolorbox}[posterbox, title=Conclusions]
+  \begin{tcolorbox}[posterbox, title=Conclusions \& Future Work]
     \begin{itemize}
-      \item Main takeaway
-      \item Successes and failures
-      \item Possible future directions
+      \item The HGT \textbf{matches and overtakes} the strongest CF baseline at depth ($K\geq50$) on NDCG, coverage \& Overall Score, with the \textbf{lowest popularity bias} of all recommenders.
+      \item Symbolic + audio content in a \textbf{typed KG} gives interpretable, diverse recommendations; brand-new users are served through \textbf{listener archetypes} (cold-start).
+      \item Captured \textbf{HGT attention} yields faithful, attribute-level explanations, corroborated by occlusion $\Delta$score and Integrated Gradients.
+    \end{itemize}
+    \vspace{2pt}{\bfseries\color{sectionfg} Future work}
+    \begin{itemize}
+      \item \textbf{Adaptive popularity control}: learn / anneal the debiasing weight $\lambda$ and temperature $\tau$ to trade relevance against fairness on demand.
+      \item A \textbf{hybrid HGT\,+\,CF} re-ranker that exploits the depth crossover — CF for short lists, the HGT for long, diverse ones.
+      \item \textbf{Richer, multi-hop KG signals} (lyrics, mood, social ties) and deeper propagation beyond the single user$\to$track hop.
+      \item \textbf{Temporal / session-aware} modelling, plus a human study of how useful the attention explanations are to listeners.
     \end{itemize}
   \end{tcolorbox}
 
@@ -221,56 +267,26 @@ where Coverage rewards catalogue diversity and Popularity Bias is inverted so th
 
 \vspace{0.5cm}
 
-% ── REFERENCES (full width) ──────────────────────────────────
-% \begin{tcolorbox}[posterbox, title=References]
-%   \begin{multicols}{3}
-%   \footnotesize\setlength{\parskip}{1pt}\setlength{\columnsep}{10pt}
-%   \noindent[1] Z. Hu et al. Heterogeneous graph transformer. \textit{WWW}, 2020.
-
-%   \noindent[2] C. Raffel. Learning-Based Methods for Comparing Sequences. PhD thesis, Columbia Univ., 2016.
-
-%   \noindent[3] T. Bertin-Mahieux et al. The million song dataset. \textit{ISMIR}, 2011.
-
-%   \noindent[4] Z. Sun et al. RotatE: KG embedding by relational rotation. \textit{ICLR}, 2019.
-
-%   \noindent[5] T. Trouillon et al. Complex embeddings for simple link prediction. \textit{ICML}, 2016.
-
-%   \noindent[6] S. Rendle et al. BPR: Bayesian personalized ranking. \textit{UAI}, 2009.
-
-%   \noindent[7] X. He et al. Neural collaborative filtering. \textit{WWW}, 2017.
-
-%   \noindent[8] C. McKay et al. jSymbolic 2.2. \textit{ISMIR}, 2018.
-
-%   \noindent[9] M. Cuthbert et al. music21, 2026.
-
-%   \noindent[10] H. Wang et al. KG convolutional networks for recommender systems. \textit{WWW}, 2019.
-
-%   \noindent[11] X. Wang et al. KGAT: KG attention network for recommendation. \textit{KDD}, 2019.
-
-%   \noindent[12] X. He et al. LightGCN. \textit{SIGIR}, 2020.
-
-%   \noindent[13] X. Liu et al. Music recommendation via KG and multi-task learning. \textit{Sci. Reports}, 2024.
-
-%   \noindent[14] The Echo Nest. Taste profile subset of the MSD, 2011.
-
-%   \noindent[15] Y. Raimond et al. The music ontology. \textit{ISMIR}, 2007.
-%   \end{multicols}
-% \end{tcolorbox}
-
-% ── FOOTER ───────────────────────────────────────────────────
-\vspace{0.3cm}
-\begin{minipage}[c]{0.6\textwidth}
-  \footnotesize\color{gray}
-  Acknowledgements: This poster session is kindly sponsored by:
-\end{minipage}%
-\hfill
-\begin{minipage}[c]{0.35\textwidth}\raggedleft
-  % Replace with sponsor logo:
-  % \includegraphics[height=1cm]{nttdata_logo.png}
-  \color{ulblue}\textbf{NTT DATA}
-\end{minipage}
+% ── REFERENCES (full width footnote) ─────────────────────────
+\begin{tcolorbox}[posterbox, title=References]
+  {\footnotesize\setlength{\parskip}{1pt}\setlength{\columnsep}{14pt}
+  \begin{multicols}{3}\raggedright
+  [1] Z. Hu et al. Heterogeneous Graph Transformer. \textit{WWW}, 2020.\par
+  [2] Z. Sun et al. RotatE: KG embedding by relational rotation. \textit{ICLR}, 2019.\par
+  [3] C. Raffel. Learning-based methods for comparing sequences (Lakh MIDI). PhD thesis, 2016.\par
+  [4] T. Bertin-Mahieux et al. The Million Song Dataset. \textit{ISMIR}, 2011.\par
+  [5] The Echo Nest. Taste Profile subset of the MSD, 2011.\par
+  [6] C. McKay et al. jSymbolic 2.2. \textit{ISMIR}, 2018.\par
+  [7] Y. Raimond et al. The Music Ontology. \textit{ISMIR}, 2007.\par
+  [8] H. Wang et al. KG Convolutional Networks for Recommender Systems. \textit{WWW}, 2019.\par
+  [9] X. Wang et al. KGAT: KG Attention Network for Recommendation. \textit{KDD}, 2019.\par
+  [10] X. Liu et al. Music recommendation via KG \& multi-task learning. \textit{Sci. Reports}, 2024.\par
+  [11] S. Rendle et al. BPR: Bayesian Personalized Ranking. \textit{UAI}, 2009.\par
+  \end{multicols}}
+\end{tcolorbox}
 
 % ── thin footer rule ──────────────────────────────────────────
+\vspace{2pt}
 \begin{tikzpicture}
   \draw[ulblue, line width=3pt] (0,0) -- (\textwidth,0);
 \end{tikzpicture}
