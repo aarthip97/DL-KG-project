@@ -133,16 +133,25 @@
   % -- Methodology ----
   \begin{tcolorbox}[posterbox, title=Methodology]
     \begin{center}
-      \includegraphics[width=0.74\linewidth]{pipeline.png}
+      \includegraphics[width=0.68\linewidth]{pipeline.png}
     \end{center}
-    {\small \textbf{HGT}~[1] message-passing over the undirected KG; $\ell_2$-normalised embeddings $\to$ \textbf{cosine} scoring. Trained with a \textbf{custom listwise loss} — \emph{not} pointwise binary cross-entropy nor pairwise BPR~[11] — a soft cross-entropy over each user's candidate softmax with a logit-adjustment that down-weights popular tracks:}
+    {\small \textbf{HGT}~[1] message-passing over the undirected KG; $\ell_2$-normalised embeddings $\to$ \textbf{cosine} scoring. Trained with a \textbf{custom listwise loss} (\emph{not} pointwise binary cross-entropy nor pairwise BPR~[11]): a soft cross-entropy over each user's candidate softmax, logit-adjusted to down-weight popular tracks:}
     {\small
     \[ s_i = \tfrac{\hat{\mathbf{u}}^\top\hat{\mathbf{t}}_i}{\tau} + \lambda\log p_i,\qquad
        \mathcal{L} = -\tfrac{1}{|B|}\sum_{u}\sum_i \tilde{p}_{ui}\,\log\mathrm{softmax}(\mathbf{s}_u)_i \]}
-    {\small $\tau{=}0.1$ sharpens the softmax; soft targets $\tilde{p}_{ui}\!\propto\!\log(1{+}c_{ui})$ encode engagement. As $\log p_i<0$, the $\lambda\log p_i$ term \textbf{boosts less-heard tracks} — directly driving the low popularity bias seen below.}
+    {\small $\tau{=}0.1$; soft targets $\tilde{p}_{ui}\!\propto\!\log(1{+}c_{ui})$. As $\log p_i<0$, the $\lambda\log p_i$ term \textbf{boosts less-heard tracks} — driving the low popularity bias below.}
+    {\small Models selected by \textbf{Overall Score@10}$=0.6\,$NDCG$+0.2\,$Cov$+0.2(1{-}$PB$)$ — relevance, diversity \& fairness.}
+  \end{tcolorbox}
+
+  \vspace{0.16cm}
+
+  % -- Baselines ----
+  \begin{tcolorbox}[posterbox, title=Baselines]
+    {\small\itshape each: features $\cdot$ preprocessing $\cdot$ objective $\to$ output}
     \begin{itemize}
-    \item Model selected by composite \textbf{Overall Score@10}$=0.6\,$NDCG$+0.2\,$Cov$+0.2(1{-}$PB$)$.
-    \item Baselines: MostPopular, user–user KNN-CF, XGBoost-Hybrid.
+    \item \textbf{MostPopular} — global play counts, no user features; rank by frequency $\to$ one list shared by all users.
+    \item \textbf{KNN-CF} — binarised, $\ell_2$-normalised interactions; user–user cosine $k$NN ($k{=}6$) $\to$ neighbour-weighted scores.
+    \item \textbf{XGBoost-Hybrid} — AE user+track embeddings $+$ 44 categorical (1-hot key/mode/tempo; target-enc.\ genre/artist; multi-hot instrument); 200 AE-cosine candidates/user, gradient-boosted LTR re-rank (\texttt{rank:ndcg@10}) $\to$ top-$K$.
     \end{itemize}
   \end{tcolorbox}
 
@@ -265,7 +274,7 @@
 
 \end{minipage}
 
-\vspace{0.5cm}
+\vspace{0.2cm}
 
 % ── REFERENCES (full width footnote) ─────────────────────────
 \begin{tcolorbox}[posterbox, title=References]
