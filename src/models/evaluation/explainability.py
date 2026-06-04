@@ -681,6 +681,39 @@ class HGTExplainer:
         self.faithful = fa
         return self
 
+    @classmethod
+    def from_attribution(
+        cls,
+        model: torch.nn.Module,
+        data,
+        node_mappings: Mapping[str, Sequence[str]],
+        attribution: "FaithfulAttribution",
+        *,
+        eval_undirected: bool = True,
+        **kwargs,
+    ) -> "HGTExplainer":
+        """Wrap an **already-computed** :class:`FaithfulAttribution` as an explainer.
+
+        Like :meth:`from_faithful`, but for an attribution you produced yourself
+        (e.g. :func:`faithful_attribution_ig`) — it just runs one forward pass for
+        the scoring embeddings and stores the attribution as the edge weights.
+        ``attribution.by_edge_type`` must be aligned to ``data`` (already undirected
+        when ``eval_undirected=False``), matching how the attribution was computed.
+        """
+        import torch_geometric.transforms as T
+
+        g = T.ToUndirected(merge=False)(data) if eval_undirected else data
+        dev = next(model.parameters()).device
+        x_dict = {nt: g[nt].x.to(dev) for nt in g.node_types
+                  if g[nt].get("x") is not None}
+        eid = {et: g[et].edge_index.to(dev) for et in g.edge_types}
+        model.eval()
+        with torch.no_grad():
+            emb = {k: v.detach().cpu() for k, v in model(x_dict, eid).items()}
+        self = cls(g, attribution, node_mappings, embeddings=emb, **kwargs)
+        self.faithful = attribution
+        return self
+
     # ── labels ───────────────────────────────────────────────────────────────
     @staticmethod
     def _uri_tail(uri: str) -> str:
@@ -840,6 +873,40 @@ class HGTExplainer:
             coverage=coverage,
         )
 
+    def reweight_like(self, canonical: "Explanation") -> "Explanation":
+        """Re-express ``canonical``'s anchors/reasons with **this** explainer's weights.
+
+        Keeps the *same* anchor set, ordering and shared-attribute reasons as
+        ``canonical`` (so several strategies draw on identical layouts), but swaps
+        every weight for the one this explainer holds — its captured attention,
+        occlusion Δscore or IG attribution. Each anchor's value becomes this
+        explainer's ``track → user`` edge weight; each reason's strength/support is
+        re-summed from the re-weighted backing anchors. The score is reused (the
+        recommendation is the same ``(user, track)`` under the same model).
+        """
+        w_by_track: Dict[int, float] = {}
+        for et, src, w in self.incoming(self.user_type, canonical.user_kg):
+            if et[0] == self.item_type:
+                w_by_track.setdefault(int(src), float(w))
+        new_anchors = [dict(a, attn=w_by_track.get(int(a["track_kg"]), 0.0))
+                       for a in canonical.anchors]
+        w_by_label = {a["label"]: a["attn"] for a in new_anchors}
+        denom = float(sum(abs(a["attn"]) for a in new_anchors)) or 1.0
+        new_reasons: List[Reason] = []
+        for r in canonical.reasons:
+            backing = [(lab, float(w_by_label.get(lab, 0.0))) for lab, _ in r.anchors]
+            strength = float(sum(w for _, w in backing))
+            new_reasons.append(Reason(
+                kind=r.kind, value=r.value, strength=strength,
+                support=strength / denom,
+                anchors=sorted(backing, key=lambda x: abs(x[1]), reverse=True)))
+        return Explanation(
+            user_kg=canonical.user_kg, track_kg=canonical.track_kg,
+            track_label=canonical.track_label, score=canonical.score,
+            is_hit=canonical.is_hit, anchors=new_anchors, drivers=canonical.drivers,
+            reasons=new_reasons, track_attrs=canonical.track_attrs,
+            coverage=canonical.coverage)
+
     # ── renderings ───────────────────────────────────────────────────────────
     def explain_text(self, expl: Explanation, *, max_reasons: int = 6) -> str:
         """Render an :class:`Explanation` as a readable multi-line string."""
@@ -937,7 +1004,7 @@ class HGTExplainer:
     def plot_explanation_graph(self, expl: Explanation, *, top_k: int = 5,
                                top_k_drivers: int = 5, figsize=(14, 8),
                                attn_label: str = "attention",
-                               caption: Optional[str] = None):
+                               caption: Optional[str] = None, ax=None):
         """Draw *how the HGT built this recommendation* as a left->right pipeline::
 
             [USER] ->attn-> tracks you played ->links-> shared attributes ->support-> [REC]
@@ -968,7 +1035,11 @@ class HGTExplainer:
 
         xU, xA, xS, xT = 0.0, 1.9, 3.9, 5.7
         yU = yT = 0.5
-        fig, ax = plt.subplots(figsize=figsize)
+        own_fig = ax is None
+        if own_fig:
+            fig, ax = plt.subplots(figsize=figsize)
+        else:
+            fig = ax.figure
 
         def _ys(n, lo=0.12, hi=0.88):
             if n == 0:
@@ -1086,14 +1157,127 @@ class HGTExplainer:
                    "recommendation score when that listened-track edge is removed "
                    "(> 0 = it supported the rec). attribute->rec = support, the "
                    "share of that signed weight sitting on tracks carrying the attribute.")
-        fig.text(0.5, 0.01, cap, ha="center", va="bottom", fontsize=8, color="#555",
-                 wrap=True)
+        if own_fig:
+            fig.text(0.5, 0.01, cap, ha="center", va="bottom", fontsize=8,
+                     color="#555", wrap=True)
+        else:
+            ax.text(0.5, -0.06, cap, transform=ax.transAxes, ha="center", va="top",
+                    fontsize=7.5, color="#555", wrap=True)
 
         verdict = "" if expl.is_hit is None else ("  [HIT]" if expl.is_hit else "  [miss]")
         ax.set_title(f"How the HGT built this recommendation — {attn_label}{verdict}",
                      fontsize=12, fontweight="bold")
-        fig.subplots_adjust(left=0.02, right=0.98, top=0.91, bottom=0.12)
+        if own_fig:
+            fig.subplots_adjust(left=0.02, right=0.98, top=0.91, bottom=0.12)
         return fig
+
+
+def build_attribution_panels(
+    model: torch.nn.Module,
+    data,
+    node_mappings: Mapping[str, Sequence[str]],
+    user_kg: int,
+    track_kg: int,
+    *,
+    strategies: Sequence[str] = ("attention", "delta", "ig"),
+    attn_explainer: "Optional[HGTExplainer]" = None,
+    contrast_track_kg: Optional[int] = None,
+    ig_steps: int = 24,
+    top_k_anchors: int = 5,
+    top_k_drivers: int = 5,
+    eval_undirected: bool = True,
+    user_type: str = "user",
+    item_type: str = "track",
+    **explainer_kwargs,
+):
+    """Build aligned per-strategy explanation panels for ONE ``(user, track)`` rec.
+
+    Returns ``(panels, canonical)`` where ``panels`` is a list of
+    ``(label, HGTExplainer, Explanation)`` — one per requested strategy, all sharing
+    the **same** anchor set / ordering (taken from the attention rationale) so only
+    the per-edge *values* differ:
+
+    * ``"attention"`` — captured softmax (what the model looked at);
+    * ``"delta"``     — occlusion Δscore (what moved the score, signed);
+    * ``"ig"``        — integrated-gradients edge attribution (additive).
+
+    Pass ``attn_explainer`` to reuse an already-built attention explainer (e.g.
+    :class:`ColdStartHGT`'s, whose graph already carries the synthetic user node);
+    its ``.data`` is then used as the evaluation graph and the occlusion/IG passes
+    run on it directly (``eval_undirected`` is ignored in that case). Otherwise the
+    undirected graph is built from ``data``. Costs a handful of extra forward
+    passes (occlusion ≈ a dozen, IG ≈ ``ig_steps``), so it is meant for one rec at
+    a time / behind a button.
+    """
+    import torch_geometric.transforms as T
+
+    if attn_explainer is not None:
+        attn_ex = attn_explainer
+        g = attn_ex.data                       # already the eval graph (undirected)
+        eu = False
+    else:
+        g = T.ToUndirected(merge=False)(data) if eval_undirected else data
+        attn_ex = HGTExplainer.from_model(
+            model, g, node_mappings, user_type=user_type, item_type=item_type,
+            **explainer_kwargs)
+        eu = False                             # g is already the eval graph
+
+    canonical = attn_ex.explain(user_kg, track_kg, top_k_anchors=top_k_anchors,
+                                top_k_drivers=top_k_drivers)
+    panels: List[Tuple[str, "HGTExplainer", "Explanation"]] = []
+    for s in strategies:
+        if s == "attention":
+            panels.append(("attention", attn_ex, canonical))
+        elif s == "delta":
+            fa = faithful_attribution(
+                model, g, user_kg, track_kg, contrast_track_kg=contrast_track_kg,
+                eval_undirected=eu, user_type=user_type, item_type=item_type)
+            ex = HGTExplainer.from_attribution(
+                model, g, node_mappings, fa, eval_undirected=eu,
+                user_type=user_type, item_type=item_type, **explainer_kwargs)
+            panels.append(("Δscore", ex, ex.reweight_like(canonical)))
+        elif s == "ig":
+            fa = faithful_attribution_ig(
+                model, g, user_kg, track_kg, steps=ig_steps,
+                contrast_track_kg=contrast_track_kg, eval_undirected=eu,
+                user_type=user_type, item_type=item_type)
+            ex = HGTExplainer.from_attribution(
+                model, g, node_mappings, fa, eval_undirected=eu,
+                user_type=user_type, item_type=item_type, **explainer_kwargs)
+            panels.append(("IG", ex, ex.reweight_like(canonical)))
+        else:
+            raise ValueError(f"unknown strategy {s!r} (use attention/delta/ig)")
+    return panels, canonical
+
+
+def plot_explanation_graphs(
+    panels,
+    *,
+    suptitle: Optional[str] = None,
+    figsize_per=(8.5, 7.5),
+    top_k: int = 5,
+    top_k_drivers: int = 5,
+):
+    """Draw several strategies' rationale graphs **side by side** for one rec.
+
+    ``panels`` is the ``[(label, HGTExplainer, Explanation), ...]`` list from
+    :func:`build_attribution_panels`. Every panel uses the same anchors/layout, so
+    reading left→right across panels shows how attention, Δscore and IG put
+    *different values on the same edges*.
+    """
+    import matplotlib.pyplot as plt
+
+    n = max(len(panels), 1)
+    fig, axes = plt.subplots(1, n, figsize=(figsize_per[0] * n, figsize_per[1]))
+    if n == 1:
+        axes = [axes]
+    for ax, (label, ex, expl) in zip(axes, panels):
+        ex.plot_explanation_graph(expl, ax=ax, attn_label=label, top_k=top_k,
+                                  top_k_drivers=top_k_drivers)
+    if suptitle:
+        fig.suptitle(suptitle, fontsize=13, fontweight="bold")
+    fig.tight_layout()
+    return fig
 
 
 __all__ = (
@@ -1104,6 +1288,8 @@ __all__ = (
     "faithful_attribution_ig",
     "plot_edge_type_importance",
     "plot_attention_vs_faithful",
+    "build_attribution_panels",
+    "plot_explanation_graphs",
     "Reason",
     "Explanation",
     "HGTExplainer",

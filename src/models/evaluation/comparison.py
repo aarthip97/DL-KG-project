@@ -28,7 +28,7 @@ W&B ``Table`` or a notebook display.
 from __future__ import annotations
 
 from itertools import combinations
-from typing import Dict, Iterable, List, Mapping, Sequence
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -429,3 +429,169 @@ def summarise_comparison(
             m: friedman_nemenyi(per_user_metrics, m, user_col=user_col) for m in metrics
         }
     return {"pairwise": pair_df, "global": global_results, "alpha": alpha}
+
+
+# ─── benchmark visualisations ─────────────────────────────────────────────────
+# Metrics where a LOWER value is better (so the heatmap colour flips). Anything
+# named "Anti…Popularity" is higher-is-better and explicitly excluded.
+_LOWER_BETTER = ("popularitybias", "pop_bias", "popbias")
+
+
+def _lower_is_better(metric: str) -> bool:
+    m = metric.lower()
+    return any(t in m for t in _LOWER_BETTER) and "anti" not in m
+
+
+def _p_to_stars(p) -> str:
+    """``*** <.001, ** <.01, * <.05, ns`` (``""`` when p is missing)."""
+    if p is None or not np.isfinite(p):
+        return ""
+    if p < 1e-3:
+        return "***"
+    if p < 1e-2:
+        return "**"
+    if p < 5e-2:
+        return "*"
+    return "ns"
+
+
+def plot_benchmark_heatmaps(
+    agg: pd.DataFrame,
+    *,
+    metrics: Optional[Sequence[str]] = None,
+    ncols: int = 3,
+    save_path=None,
+    title: str = "Benchmark — metric × model × K",
+):
+    """Grid of per-metric heatmaps (rows = model, cols = K), annotated with the raw
+    value.
+
+    Colour is min-max normalised **within each metric** (green = better, flipped
+    for lower-is-better metrics such as PopularityBias) so every panel is readable
+    on its own scale. ``agg`` is ``run_benchmark()["agg"]`` — a ``(model, K) ×
+    metric`` frame. Saved to ``save_path`` (PNG) when given.
+    """
+    import matplotlib.pyplot as plt
+
+    df = agg.copy()
+    if not isinstance(df.index, pd.MultiIndex) or df.index.nlevels < 2:
+        raise ValueError("agg must be indexed by (model, K) — pass run_benchmark()['agg']")
+    df.index = df.index.set_names(["model", "K"])
+    metrics = list(metrics or df.columns)
+    models = list(dict.fromkeys(df.index.get_level_values("model")))
+    ks = sorted(dict.fromkeys(df.index.get_level_values("K")))
+
+    n = len(metrics)
+    ncols = max(1, min(ncols, n))
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(
+        nrows, ncols,
+        figsize=(2.0 + 2.6 * ncols, 1.2 + 0.9 * nrows * max(len(models), 1)),
+        squeeze=False)
+    axes_flat = axes.ravel()
+    for ax, metric in zip(axes_flat, metrics):
+        M = df[metric].unstack("K").reindex(index=models, columns=ks)
+        arr = M.to_numpy(dtype=float)
+        finite = arr[np.isfinite(arr)]
+        lo, hi = (float(finite.min()), float(finite.max())) if finite.size else (0.0, 1.0)
+        span = (hi - lo) or 1.0
+        norm = (arr - lo) / span
+        if _lower_is_better(metric):
+            norm = 1.0 - norm
+        ax.imshow(norm, aspect="auto", cmap="RdYlGn", vmin=0.0, vmax=1.0)
+        ax.set_xticks(range(len(ks)))
+        ax.set_xticklabels([f"@{k}" for k in ks], fontsize=8)
+        ax.set_yticks(range(len(models)))
+        ax.set_yticklabels(models, fontsize=8)
+        ax.set_title(metric + ("  ↓lower better" if _lower_is_better(metric) else ""),
+                     fontsize=9)
+        for i in range(arr.shape[0]):
+            for j in range(arr.shape[1]):
+                v = arr[i, j]
+                if np.isfinite(v):
+                    ax.text(j, i, f"{v:.3f}", ha="center", va="center",
+                            fontsize=7, color="#111")
+    for ax in axes_flat[n:]:
+        ax.axis("off")
+    fig.suptitle(title, fontsize=12, fontweight="bold")
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    if save_path is not None:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
+def plot_significance_bars(
+    pairwise: pd.DataFrame,
+    *,
+    metrics: Optional[Sequence[str]] = None,
+    model_order: Optional[Sequence[str]] = None,
+    ncols: int = 2,
+    save_path=None,
+    title: str = "Per-model means + pairwise significance",
+):
+    """Per-model bar chart for each significance metric, with pairwise brackets and
+    significance stars (``*** <.001, ** <.01, * <.05``; ``ns`` pairs are skipped).
+
+    ``pairwise`` is ``run_benchmark()["pairwise"]`` (from
+    :func:`overall_significance`): each row is one model pair for one metric, with
+    ``mean_A``/``mean_B`` and ``p_value``/``significant``. Saved to ``save_path``
+    (PNG) when given.
+    """
+    import matplotlib.pyplot as plt
+
+    df = pairwise.copy()
+    metrics = list(metrics or dict.fromkeys(df["metric"]))
+    n = len(metrics)
+    ncols = max(1, min(ncols, n))
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5.6 * ncols, 4.0 * nrows),
+                             squeeze=False)
+    axes_flat = axes.ravel()
+
+    for ax, metric in zip(axes_flat, metrics):
+        sub = df[df["metric"] == metric]
+        vals: Dict[str, float] = {}
+        for _, r in sub.iterrows():
+            vals.setdefault(str(r["model_A"]), float(r["mean_A"]))
+            vals.setdefault(str(r["model_B"]), float(r["mean_B"]))
+        models = [m for m in (model_order or list(vals)) if m in vals]
+        y = [vals[m] for m in models]
+        idx = {m: i for i, m in enumerate(models)}
+        xpos = np.arange(len(models))
+        bars = ax.bar(xpos, y, color="#6baed6", edgecolor="#3a6f93")
+        ax.set_xticks(xpos)
+        ax.set_xticklabels(models, rotation=20, ha="right", fontsize=8)
+        ax.set_title(str(metric), fontsize=10)
+        for b, v in zip(bars, y):
+            ax.text(b.get_x() + b.get_width() / 2, v, f"{v:.3f}", ha="center",
+                    va="bottom", fontsize=7)
+
+        # significant pairs only, shorter brackets first to reduce crossings.
+        sig = []
+        for _, r in sub.iterrows():
+            a, b = str(r["model_A"]), str(r["model_B"])
+            if a not in idx or b not in idx:
+                continue
+            stars = _p_to_stars(r.get("p_value"))
+            keep = bool(r.get("significant", stars not in ("", "ns")))
+            if keep and stars not in ("", "ns"):
+                sig.append((abs(idx[a] - idx[b]), idx[a], idx[b], stars))
+        sig.sort()
+        ymax = max(y) if y else 1.0
+        step = (ymax * 0.09) or 0.05
+        ax.set_ylim(0, (ymax * 1.05 + step * (len(sig) + 1)) if ymax > 0 else 1.0)
+        for level, (_, x0, x1, stars) in enumerate(sig):
+            x0, x1 = sorted((x0, x1))
+            yb = ymax * 1.04 + step * level
+            ax.plot([x0, x0, x1, x1],
+                    [yb, yb + step * 0.3, yb + step * 0.3, yb], lw=1.0, color="#444")
+            ax.text((x0 + x1) / 2, yb + step * 0.32, stars, ha="center",
+                    va="bottom", fontsize=8, color="#222")
+    for ax in axes_flat[n:]:
+        ax.axis("off")
+    fig.suptitle(title + "   (*** p<.001  ** p<.01  * p<.05)", fontsize=11,
+                 fontweight="bold")
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    if save_path is not None:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig

@@ -37,6 +37,8 @@ from .comparison import (
     cosine_mean_comparison,
     friedman_nemenyi,
     summarise_comparison,
+    plot_benchmark_heatmaps,
+    plot_significance_bars,
 )
 from .explainability import (
     HGTExplainer,
@@ -49,6 +51,8 @@ from .explainability import (
     faithful_attribution_ig,
     plot_edge_type_importance,
     plot_attention_vs_faithful,
+    build_attribution_panels,
+    plot_explanation_graphs,
 )
 from .training_panel import plot_hgt_panel, overall_at_k
 from .rehydrate import (
@@ -71,11 +75,13 @@ __all__ = [
     # comparison
     "pairwise_significance", "overall_significance", "cosine_mean_comparison",
     "friedman_nemenyi", "summarise_comparison",
+    "plot_benchmark_heatmaps", "plot_significance_bars",
     # explainability
     "HGTExplainer", "Explanation", "Reason", "EdgeAttention",
     "capture_hgt_attention",
     "FaithfulAttribution", "faithful_attribution", "faithful_attribution_ig",
     "plot_edge_type_importance", "plot_attention_vs_faithful",
+    "build_attribution_panels", "plot_explanation_graphs",
     "plot_hgt_panel", "overall_at_k",
     # rehydration
     "rebuild_baselines_from_disk", "rebuild_hgt_recommender_from_disk",

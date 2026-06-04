@@ -1424,7 +1424,12 @@ def launch_persona_app(
     attr_types = [nt for nt in ATTR_TYPES if pack.options(nt)]
     sources = ((["Persona centroid", "k-NN blend", "Compare: persona vs blend"]
                 if has_user else []) + ["Attribute taste"])
-    explains = ["Cosine / anchors"] + (["HGT attention"] if has_hgt else [])
+    # Axis 2 actually selects the recommendation ENGINE (+ its native rationale),
+    # not just a way to phrase the same recs: "Cosine" ranks on the latent manifold
+    # with no graph (fast); "HGT message passing" inserts the new user as a temporary
+    # node, runs a real forward pass, and both ranks AND explains from that pass.
+    explains = (["Cosine (fast · no graph)"]
+                + (["HGT message passing (faithful attention)"] if has_hgt else []))
 
     # ── compute: (weighted selections, controls) → (recs_html, why_html, figure) ──
     def _hgt_outputs(res):
@@ -1491,6 +1496,41 @@ def launch_persona_app(
         recs, e = pack.recommend(selections, k=k)
         return _recs_table_html(recs, "sim"), format_explanation_html(e), None
 
+    # ── side-by-side rationale comparison (attention vs Δscore vs IG) ─────────────
+    def _compare_rationales(selections, source, k, k_users, seed_k):
+        """Run the HGT forward-pass rec for ``source`` and draw the top pick's three
+        edge-importance rationales side by side: captured attention, occlusion
+        Δscore and integrated gradients — same edges, different values."""
+        if not has_hgt or not selections:
+            return None
+        from models.evaluation.explainability import (
+            build_attribution_panels, plot_explanation_graphs)
+        vec = taste_vector_from_selections(selections, pack.attr_vectors,
+                                           weights=pack.weights)
+        src = str(source)
+        if src.startswith("Persona") and has_user:
+            pid, _ = assign_persona(vec, pack.user_centroids)
+            res = cold_start.recommend(selections, k=k, seed_k=seed_k,
+                                       seed_vec=pack.user_centroids[pid])
+        elif src.startswith("k-NN") and has_user:
+            b, idx, _w, _s = blend_user_embedding(
+                vec, pack.user_emb, k=k_users, temperature=pack.blend_temperature)
+            seed_kg = cold_start.tracks_listened_by(idx, top=seed_k)
+            res = cold_start.recommend(selections, k=k, seed_k=seed_k, seed_vec=b,
+                                       seed_kg=(seed_kg if len(seed_kg) else None))
+        else:                                   # Attribute taste / Compare → attr seed
+            res = cold_start.recommend(selections, k=k, seed_k=seed_k)
+        ex, recs = res["explainer"], res["recs"]
+        panels, _ = build_attribution_panels(
+            cold_start.model, None, ex.node_mappings,
+            int(res["synth_idx"]), int(recs.iloc[0]["kg_idx"]),
+            strategies=("attention", "delta", "ig"), attn_explainer=ex,
+            ig_steps=16, track_label_fn=cold_start._track_label)
+        title = recs.iloc[0].get("title") or "?"
+        return plot_explanation_graphs(
+            panels, suptitle=f"“{title}” — same recommendation, three rationales "
+            "(attention · Δscore · IG)")
+
     # ── per-pick weight wiring ───────────────────────────────────────────────────
     # A FIXED pool of weight sliders (shown/hidden by a dropdown `.change`) instead
     # of `gr.render` dynamic components. `gr.render` re-registers the button's click
@@ -1531,22 +1571,39 @@ def launch_persona_app(
         # ordered [(node_type, label), ...] currently mapped onto the slider slots
         sel_state = gr.State([])
 
-        gr.Markdown("#### How to build & explain")
+        gr.Markdown("#### How to build & which engine\n"
+                    "*“recommend via” builds your new-user vector; the engine picks "
+                    "**Cosine** (fast manifold ranking, no graph) or **HGT message "
+                    "passing** (a real forward pass that both ranks and explains via "
+                    "attention). “Compare rationales” below overlays attention vs "
+                    "Δscore vs IG on the HGT pass.*")
         with gr.Row():
             w_mode = gr.Radio(sources, value=sources[0], label="recommend via")
-            w_explain = gr.Radio(explains, value=explains[0], label="explain via",
-                                 visible=has_hgt)
+            w_explain = gr.Radio(explains, value=explains[0],
+                                  label="engine / rationale", visible=has_hgt)
         with gr.Row():
             w_k = gr.Slider(3, 30, value=default_k, step=1, label="top-k")
             w_kusers = gr.Slider(3, 50, value=pack.blend_k, step=1,
                                  label="blend users", visible=has_user)
             w_seed = gr.Slider(3, 20, value=default_seed_k, step=1,
                                label="HGT seed tracks", visible=has_hgt)
-        w_btn = gr.Button("Get recommendations  →", variant="primary")
+        with gr.Row():
+            w_btn = gr.Button("Get recommendations  →", variant="primary")
+            w_cmp = gr.Button("Compare rationales (attention · Δscore · IG)",
+                              visible=has_hgt)
 
         out_recs = gr.HTML(label="Recommendations")
         out_why = gr.HTML(label="Why these?")
         out_plot = gr.Plot(label="How the HGT built it", visible=has_hgt)
+        if has_hgt:
+            gr.Markdown("*Comparison runs the HGT forward pass for your **recommend "
+                        "via** choice, then overlays the three edge-importance "
+                        "strategies on the top pick's rationale graph — same edges, "
+                        "different values. It adds a handful of forward passes "
+                        "(occlusion + integrated gradients), so it takes a few "
+                        "seconds longer.*")
+        out_cmp = gr.Plot(label="Same rec — attention vs Δscore vs IG",
+                          visible=has_hgt)
 
         # Dropdown edits reconfigure the slider pool: relabel/show one slider per
         # pick (carrying any weight the user already set for that label forward),
@@ -1593,6 +1650,32 @@ def launch_persona_app(
             _run,
             inputs=[sel_state] + sliders + [w_mode, w_explain, w_k, w_kusers, w_seed],
             outputs=[out_recs, out_why, out_plot])
+
+        # Comparison ignores the engine radio (it always uses the HGT pass) but
+        # honours "recommend via" so the rationale matches what that source builds.
+        def _run_compare(meta, *vals):
+            slider_vals = vals[:max_picks]
+            mode_v, k_v, ku_v, sd_v = vals[max_picks:]
+            selections: Dict[str, Dict[str, float]] = {}
+            for (nt, lab), wv in zip(meta or [], slider_vals):
+                selections.setdefault(nt, {})[lab] = float(wv)
+            if not selections:
+                return None
+            try:
+                return _compare_rationales(selections, mode_v,
+                                           int(k_v), int(ku_v), int(sd_v))
+            except Exception as err:  # noqa: BLE001
+                import matplotlib.pyplot as plt
+                fig, ax = plt.subplots(figsize=(9, 2))
+                ax.text(0.5, 0.5, f"Comparison failed:\n{err}", ha="center",
+                        va="center", color="#b00", fontsize=10)
+                ax.axis("off")
+                return fig
+
+        w_cmp.click(
+            _run_compare,
+            inputs=[sel_state] + sliders + [w_mode, w_k, w_kusers, w_seed],
+            outputs=[out_cmp])
 
     demo.queue()
     launch_kwargs.setdefault("show_error", True)
