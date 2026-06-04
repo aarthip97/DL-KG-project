@@ -1004,7 +1004,8 @@ class HGTExplainer:
     def plot_explanation_graph(self, expl: Explanation, *, top_k: int = 5,
                                top_k_drivers: int = 5, figsize=(14, 8),
                                attn_label: str = "attention",
-                               caption: Optional[str] = None, ax=None):
+                               caption: Optional[str] = None, ax=None,
+                               show_legend: bool = True):
         """Draw *how the HGT built this recommendation* as a left->right pipeline::
 
             [USER] ->attn-> tracks you played ->links-> shared attributes ->support-> [REC]
@@ -1100,14 +1101,19 @@ class HGTExplainer:
         _box(xT, yT, expl.track_label, "#f6c6c6", ec="#9c2b2b", lw=1.6,
              width=16, bold=True)
 
-        # No shared-attribute path -> connect directly, latent-similarity note.
+        # No shared-attribute path -> dashed arrow from *each* anchor (or the user,
+        # if no anchors) straight to the rec, plus a clear note in the empty middle
+        # column: the rec is then carried by latent similarity, not a named attribute.
         if not reasons:
-            ax.annotate("", xy=(xT, yT), xytext=(xA if anchors else xU, yU), zorder=1,
-                        arrowprops=dict(arrowstyle="-|>", color="#888", lw=1.6,
-                                        ls="--", shrinkA=30, shrinkB=34))
-            ax.text(xS, yU + 0.12, "no shared attribute -\nranked by latent "
-                    "KGE/audio similarity", fontsize=8.5, ha="center", va="center",
-                    style="italic", color="#666")
+            srcs = [(xA, y) for y in yA] or [(xU, yU)]
+            for sx, sy in srcs:
+                ax.annotate("", xy=(xT, yT), xytext=(sx, sy), zorder=1,
+                            arrowprops=dict(arrowstyle="-|>", color="#9aa0a6", lw=1.4,
+                                            ls="--", alpha=0.85, shrinkA=26, shrinkB=34))
+            ax.text(xS, 0.5, "no shared attribute\n— ranked by latent\nKGE / audio "
+                    "similarity", fontsize=9, ha="center", va="center", style="italic",
+                    color="#666", bbox=dict(boxstyle="round,pad=0.4", fc="#f3f3f3",
+                                            ec="#bbb", lw=0.8))
 
         # score chip under the recommended track
         if expl.score is not None:
@@ -1126,19 +1132,22 @@ class HGTExplainer:
         ax.set_ylim(-0.04, 1.10)
         ax.axis("off")
 
+        unit_left = "share, %" if is_share else "signed, score units"
+        unit_right = "% of your attention" if is_share else f"% of total |{attn_label}|"
         legend = [
             Line2D([0], [0], color="#2c7fb8", lw=3,
-                   label=f"{attn_label}: how much each track defines you"),
+                   label=f"USER→track  =  {attn_label}  ({unit_left})"),
             Line2D([0], [0], color="#bdbdbd", lw=2,
-                   label="track carries this attribute"),
+                   label="thin link  =  track carries this attribute"),
             Line2D([0], [0], color="#c97a14", lw=3,
-                   label="support: the attribute's weight on the rec"),
+                   label=f"attribute→rec  =  support  ({unit_right})"),
             Line2D([0], [0], marker="s", color="w", markerfacecolor="#cdeac0",
                    markeredgecolor="#3f8f3f", markersize=12,
-                   label="anchor that shares an attribute"),
+                   label="anchor backing a shared attribute"),
         ]
-        ax.legend(handles=legend, loc="lower center", ncol=2, fontsize=8.5,
-                  frameon=False, bbox_to_anchor=(0.5, -0.08))
+        if show_legend:
+            ax.legend(handles=legend, loc="lower center", ncol=2, fontsize=8.5,
+                      frameon=False, bbox_to_anchor=(0.5, -0.08))
 
         def _cov(side, shown_n):
             c = expl.coverage.get(side, {})
@@ -1148,15 +1157,22 @@ class HGTExplainer:
         if caption is not None:
             cap = caption
         elif is_share:
-            cap = ("Edge labels = genuine HGT softmax attention (averaged over heads). "
-                   "USER->track = the track's share of your incoming message "
-                   f"({_cov('anchors', len(anchors))}); attribute->rec = support, the "
-                   "share of your attention on tracks that carry that attribute.")
+            cap = ("Left edge = each track's attention share (%, of your incoming "
+                   f"attention; {_cov('anchors', len(anchors))}).  Right edge = support "
+                   "= the share of that attention sitting on tracks that carry the "
+                   "attribute.  Softmax attention, averaged over heads.")
+        elif "gradient" in attn_label.lower():
+            cap = (f"Left edge = {attn_label} (signed, in score units): each track edge's "
+                   "additive contribution to the recommendation score (> 0 pushed it up). "
+                   "Right edge = support = the share of the total |attribution| on tracks "
+                   "carrying the attribute — a % like the attention panel, but normalised "
+                   "over IG instead of attention.")
         else:
-            cap = (f"Edge labels = {attn_label}: the counterfactual change in the "
-                   "recommendation score when that listened-track edge is removed "
-                   "(> 0 = it supported the rec). attribute->rec = support, the "
-                   "share of that signed weight sitting on tracks carrying the attribute.")
+            cap = (f"Left edge = {attn_label} (signed, in score units): the change in the "
+                   "recommendation score when that track edge is removed (> 0 supported "
+                   "the rec). Right edge = support = the share of the total |Δscore| on "
+                   "tracks carrying the attribute — a % like the attention panel, but "
+                   "normalised over Δscore instead of attention.")
         if own_fig:
             fig.text(0.5, 0.01, cap, ha="center", va="bottom", fontsize=8,
                      color="#555", wrap=True)
@@ -1244,7 +1260,7 @@ def build_attribution_panels(
             ex = HGTExplainer.from_attribution(
                 model, g, node_mappings, fa, eval_undirected=eu,
                 user_type=user_type, item_type=item_type, **explainer_kwargs)
-            panels.append(("IG", ex, ex.reweight_like(canonical)))
+            panels.append(("Integrated Gradients", ex, ex.reweight_like(canonical)))
         else:
             raise ValueError(f"unknown strategy {s!r} (use attention/delta/ig)")
     return panels, canonical
@@ -1254,29 +1270,58 @@ def plot_explanation_graphs(
     panels,
     *,
     suptitle: Optional[str] = None,
-    figsize_per=(8.5, 7.5),
+    layout: str = "column",
+    figsize_per: Optional[Tuple[float, float]] = None,
     top_k: int = 5,
     top_k_drivers: int = 5,
+    save_path=None,
+    dpi: int = 150,
 ):
-    """Draw several strategies' rationale graphs **side by side** for one rec.
+    """Draw several strategies' rationale graphs for one rec, one strategy per panel.
 
     ``panels`` is the ``[(label, HGTExplainer, Explanation), ...]`` list from
     :func:`build_attribution_panels`. Every panel uses the same anchors/layout, so
-    reading left→right across panels shows how attention, Δscore and IG put
-    *different values on the same edges*.
+    each strategy puts *different values on the same edges* — read down the column
+    to compare attention vs Δscore vs IG on the very same graph.
+
+    ``layout``:
+      * ``"column"`` (default) — stack the panels **vertically at full width**.
+        Each panel keeps the room the dense pipeline diagram needs, so nothing
+        overlaps. This is the readable one (use it for the notebook / Gradio).
+      * ``"row"`` — the old side-by-side; only legible for 1–2 panels with a wide
+        ``figsize_per`` (kept for back-compat).
+
+    The legend is identical across strategies, so it is drawn on **one** panel only
+    (the last). ``save_path`` writes the figure to disk (PNG) at ``dpi`` so you can
+    inspect it outside the notebook. Returns the Matplotlib figure.
     """
     import matplotlib.pyplot as plt
 
     n = max(len(panels), 1)
-    fig, axes = plt.subplots(1, n, figsize=(figsize_per[0] * n, figsize_per[1]))
-    if n == 1:
-        axes = [axes]
-    for ax, (label, ex, expl) in zip(axes, panels):
+    col = str(layout).lower().startswith("col")
+    per = figsize_per or ((13.0, 6.4) if col else (8.5, 7.5))
+    if col:
+        fig, axes = plt.subplots(n, 1, figsize=(per[0], per[1] * n), squeeze=False)
+        axes = axes.ravel()
+    else:
+        fig, axes = plt.subplots(1, n, figsize=(per[0] * n, per[1]), squeeze=False)
+        axes = axes.ravel()
+
+    for i, (ax, (label, ex, expl)) in enumerate(zip(axes, panels)):
         ex.plot_explanation_graph(expl, ax=ax, attn_label=label, top_k=top_k,
-                                  top_k_drivers=top_k_drivers)
+                                  top_k_drivers=top_k_drivers,
+                                  show_legend=(i == n - 1))   # one shared legend
     if suptitle:
         fig.suptitle(suptitle, fontsize=13, fontweight="bold")
-    fig.tight_layout()
+    # vertical stacks need slack between panels: each carries its own title on top
+    # and a caption + (last) legend underneath.
+    if col:
+        fig.tight_layout(rect=(0, 0, 1, 0.98 if suptitle else 1.0))
+        fig.subplots_adjust(hspace=0.55)
+    else:
+        fig.tight_layout()
+    if save_path is not None:
+        fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
     return fig
 
 

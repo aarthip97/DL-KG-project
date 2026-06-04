@@ -564,10 +564,12 @@ def plot_benchmark_heatmaps(
             ax.set_xlabel("cutoff K", fontsize=8.5)
         ax.set_title(metric + ("  (↓ lower better)" if low_better else ""), fontsize=9)
 
-        # crisp white separators between cells instead of stray interpolation lines
-        ax.set_xticks(np.arange(-0.5, len(ks), 1), minor=True)
-        ax.set_yticks(np.arange(-0.5, len(models), 1), minor=True)
-        ax.grid(which="minor", color="white", linewidth=1.4)
+        # crisp white separators on *internal* cell boundaries only — drawing them
+        # from -0.5 left a stray half-cell line hanging off the top/left edge
+        # (spines are hidden) while missing the far edge, which looked ragged.
+        ax.set_xticks(np.arange(0.5, len(ks) - 1, 1), minor=True)
+        ax.set_yticks(np.arange(0.5, len(models) - 1, 1), minor=True)
+        ax.grid(which="minor", color="white", linewidth=1.5)
         ax.tick_params(which="both", length=0)
         for spine in ax.spines.values():
             spine.set_visible(False)
@@ -682,20 +684,27 @@ def plot_significance_bars(
             data = [psamp.loc[psamp["model"] == m, metric].dropna().to_numpy()
                     for m in models]
             data = [d if len(d) else np.zeros(1) for d in data]
+            allv = np.concatenate(data)
+            # NDCG / PopularityBias are bounded in [0,1] but the violin KDE has
+            # infinite support, so it smears mass well past the data — the blob
+            # spills above 1.0 and brackets then stack into the 1.0–1.8 void.
+            # Clip every body to the real [min,max] so the violin respects bounds.
+            lo, hi = float(allv.min()), float(allv.max())
             # mark the quartiles (Q1 · median · Q3) inside each violin.
             vp = ax.violinplot(data, positions=xpos, widths=0.85, showextrema=False,
                                quantiles=[[0.25, 0.5, 0.75]] * len(data))
             for body in vp["bodies"]:
                 body.set_facecolor("#6baed6"); body.set_edgecolor("#3a6f93")
                 body.set_alpha(0.7)
+                v = body.get_paths()[0].vertices
+                v[:, 1] = np.clip(v[:, 1], lo, hi)          # kill the KDE overshoot
             if "cquantiles" in vp:
                 vp["cquantiles"].set_color("#16324a"); vp["cquantiles"].set_linewidth(1.0)
             for i, d in enumerate(data):           # annotate the median
                 med = float(np.median(d))
                 ax.text(i, med, f"{med:.3f}", ha="center", va="bottom", fontsize=7,
                         color="#16324a", fontweight="bold")
-            allv = np.concatenate(data)
-            ymax = float(np.quantile(allv, 0.99)) if allv.size else 1.0
+            ymax = hi                              # true data top (≤ 1 for bounded metrics)
         else:
             used_bar = True
             yerr = None
@@ -729,11 +738,14 @@ def plot_significance_bars(
                 sig.append((abs(idx[a] - idx[b]), idx[a], idx[b], stars,
                             r.get("cliffs_delta", np.nan)))
         sig.sort(key=lambda t: t[0])
-        step = (ymax * 0.10) or 0.05
-        ax.set_ylim(0, (ymax * 1.05 + step * (len(sig) + 1)) if ymax > 0 else 1.0)
+        # compact stacking just above the data top (was 0.10·ymax → brackets for a
+        # [0,1] metric climbed to ~1.8); 0.07 keeps the band tight and readable.
+        step = (ymax * 0.07) or 0.05
+        base = ymax * 1.02
+        ax.set_ylim(0, (base + step * (len(sig) + 1.2)) if ymax > 0 else 1.0)
         for level, (_, x0, x1, stars, cliff) in enumerate(sig):
             x0, x1 = sorted((x0, x1))
-            yb = ymax * 1.04 + step * level
+            yb = base + step * level
             ax.plot([x0, x0, x1, x1],
                     [yb, yb + step * 0.3, yb + step * 0.3, yb], lw=1.0, color="#444")
             lbl = (f"|δ|={abs(cliff):.2f} {stars}"
