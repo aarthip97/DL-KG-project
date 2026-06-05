@@ -1,4 +1,4 @@
-\begin{thebibliography}{13}
+\begin{thebibliography}{16}
 \providecommand{\natexlab}[1]{#1}
 \providecommand{\url}[1]{\texttt{#1}}
 \expandafter\ifx\csname urlstyle\endcsname\relax
@@ -99,6 +99,29 @@ X.~Liu, Z.~Yang, and J.~Cheng.
   multi-task feature learning.
 \newblock \emph{Scientific Reports}, 14:\penalty0 2055, 2024.
 \newblock \doi{10.1038/s41598-024-52463-z}.
-\newblock URL \url{https://doi.org/10.1038/s41598-024-52463-z}.
+
+\bibitem[Bordes et~al.(2013)Bordes, Usunier, Garcia-Dur\'{a}n, Weston, and
+  Yakhnenko]{bordes2013transe}
+Antoine Bordes, Nicolas Usunier, Alberto Garcia-Dur\'{a}n, Jason Weston, and
+  Oksana Yakhnenko.
+\newblock Translating embeddings for modeling multi-relational data.
+\newblock In \emph{Proceedings of the 27th International Conference on Neural
+  Information Processing Systems (NeurIPS)}, pages 2787--2795, 2013.
+\newblock \doi{10.5555/2999792.2999923}.
+
+\bibitem[Yang et~al.(2015)Yang, Yih, He, Gao, and Deng]{yang2015distmult}
+Bishan Yang, Wen-tau Yih, Xiaodong He, Jianfeng Gao, and Li~Deng.
+\newblock Embedding entities and relations for learning and inference in
+  knowledge bases.
+\newblock In \emph{International Conference on Learning Representations
+  (ICLR)}, 2015.
+\newblock \doi{10.48550/arXiv.1412.6575}.
+
+\bibitem[Nickel et~al.(2011)Nickel, Tresp, and Kriegel]{nickel2011rescal}
+Maximilian Nickel, Volker Tresp, and Hans-Peter Kriegel.
+\newblock A three-way model for collective learning on multi-relational data.
+\newblock In \emph{Proceedings of the 28th International Conference on Machine
+  Learning (ICML)}, pages 809--816, 2011.
+\newblock \doi{10.5555/3104482.3104584}.
 
 \end{thebibliography}

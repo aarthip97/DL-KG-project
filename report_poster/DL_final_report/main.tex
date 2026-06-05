@@ -7,6 +7,13 @@
 \definecolor{cvprblue}{rgb}{0.21,0.49,0.74}
 \usepackage[pagebackref,breaklinks,colorlinks,allcolors=cvprblue]{hyperref}
 
+% Render bibliography DOIs as a single clickable link to the resolver:
+% the visible text is the DOI itself (breakable, in the body font) and clicking
+% it opens https://doi.org/<doi> in a browser. Pre-defining \doi makes the
+% \providecommand{\doi} in the .bbl a no-op, so this definition always wins.
+\newcommand{\doi}[1]{doi:~\href{https://doi.org/#1}{%
+  \begingroup\urlstyle{same}\nolinkurl{#1}\endgroup}}
+
 \def\paperID{*****}
 \def\confName{KG-DL}
 \def\confYear{2026}
@@ -28,6 +35,7 @@ Knowledge-Graph-Informed Heterogeneous Graph Transformer}
 
 \begin{document}
 \maketitle
+\thispagestyle{plain}  % CVPR \maketitle calls \thispagestyle{empty}; restore footer
 
 % ─────────────────────────────────────────────────────────────────────────────
 \begin{abstract}
@@ -35,9 +43,9 @@ We present a deep-learning pipeline for content- and preference-aware music
 recommendation built on a heterogeneous music knowledge graph (KG). Starting from
 the Lakh MIDI and Million Song datasets, we align 7{,}013 tracks, compress their
 1{,}526-dimensional symbolic feature vectors to a 128-dimensional embedding with a
-fully connected autoencoder (final MSE~0.616), and pre-train KG embeddings
-(RotatE, ComplEx) over 807{,}955 relational triples to initialise every entity
-type. A Heterogeneous Graph Transformer (HGT) is then trained with an
+fully connected autoencoder (final MSE~0.616), and pre-train KG embeddings over
+807{,}955 relational triples --- RotatE (with ComplEx as a reference) --- using
+RotatE to initialise every entity type. A Heterogeneous Graph Transformer (HGT) is then trained with an
 intensity-weighted listwise loss augmented by logit adjustment for popularity
 debiasing. Against three baselines (MostPopular, KNN collaborative filtering, and
 an XGBoost content--behaviour hybrid), the HGT reaches Recall@10~0.105,
@@ -70,8 +78,8 @@ content-grounded items while remaining competitive on ranking quality.
 We (i)~integrate the Lakh MIDI Dataset~\cite{raffel2016lakh} and Million Song
 Dataset~\cite{msd2011} into a music KG; (ii)~compress high-dimensional symbolic
 descriptors with a \emph{symbolic-feature autoencoder} and pre-train
-\emph{KG embeddings} (RotatE~\cite{sun2019rotate},
-ComplEx~\cite{trouillon2016complex}) to initialise all node types;
+\emph{KG embeddings} (RotatE~\cite{sun2019rotate}, with
+ComplEx~\cite{trouillon2016complex} as a reference) to initialise all node types;
 (iii)~train a \emph{Heterogeneous Graph Transformer}~\cite{hu2020hgt} with a
 popularity-debiased listwise loss; and (iv)~evaluate the model family against three
 baselines on a ranking-plus-diversity metric suite, complemented by latent-space
@@ -221,6 +229,18 @@ streamed into a PyTorch Geometric \texttt{HeteroData} object for learning. (KG
 design and SPARQL validation are detailed in the companion Knowledge Graphs
 report; here we focus on the learning stack.)
 
+\paragraph{KG statistics.} The fully populated graph spans
+$1.91\!\times\!10^{7}$ triples; \texttt{rdf:type} (612{,}827) and
+\texttt{instrument} (56{,}891) dominate the relation distribution, followed by
+genre, performance, and listening links (Tab.~\ref{tab:kgstats}, Appendix). Genre
+tags are heavy-tailed --- led by \emph{rock} (2{,}117 artists), \emph{pop}
+(1{,}062), and \emph{electronic} (1{,}037) --- and high-confidence key detections
+recover the Western tonal prevalence of C (211), G (196), and D (150). The
+most-reached track is \emph{Secrets} (OneRepublic, 50{,}058 distinct listeners),
+while the highest total play count is \emph{You're The One} (Dwight Yoakam,
+390{,}283 plays). The schema-level ontology (TBox) and a concrete track
+neighbourhood (ABox) are shown in Figs.~\ref{fig:tbox}--\ref{fig:abox} (Appendix).
+
 \paragraph{Splits.} A single user-level stratified split (by primary genre and
 decade, 2{,}186 strata) gives 1{,}943{,}681 train, 348{,}054 validation, and
 559{,}806 test interactions over 284{,}864 users and 6{,}054 evaluated songs.
@@ -328,8 +348,9 @@ We run the following experiments, all on the splits of Sec.~\ref{sec:data}:
 \begin{itemize}\setlength\itemsep{1pt}
   \item \textbf{Autoencoder compression}: 200-epoch transductive run over 6{,}054
         tracks; per-epoch MSE monitored.
-  \item \textbf{KGE comparison}: RotatE vs.\ ComplEx (200 epochs each) as HGT node
-        initialisers.
+  \item \textbf{KGE training}: RotatE and ComplEx trained (200 epochs each) and
+        compared at the embedding-loss level; RotatE alone initialises the HGT
+        (ComplEx is a reference only).
   \item \textbf{Architecture search}: HGT sweeps over width, heads, layers,
         dropout, learning rate, weight decay, and temperature, ranked by Overall@10
         on validation.
@@ -464,8 +485,8 @@ HGT          & .105 & .097 & .175 & .074 & .797 & \textbf{.053} & .399\\
   & XGBoost     & .570 & .667 & .751 & .826 & .859\\
 \midrule
 \multirow{4}{*}{Overall}
-  & HGT         & .372 & .399 & \textbf{.425} & \textbf{.456} & \textbf{.474}\\
-  & KNN-CF      & \textbf{.392} & \textbf{.421} & .440 & .451 & .455\\
+  & HGT         & .372 & .399 & .425 & \textbf{.456} & \textbf{.474}\\
+  & KNN-CF      & \textbf{.392} & \textbf{.421} & \textbf{.440} & .451 & .455\\
   & MostPopular & .110 & .148 & .182 & .232 & .267\\
   & XGBoost     & .304 & .336 & .364 & .389 & .401\\
 \bottomrule
@@ -528,7 +549,7 @@ recommender of Sec.~\ref{sec:coldstart}.
 \paragraph{Caveats on the latent analysis.} Two limitations temper this reading.
 First, the embeddings inhabit a 128-dimensional space whose spatial arrangement is
 not directly comprehensible to humans; the 2-D UMAP plots are a non-isometric,
-lossy projection that distorts true distances and densities, so they are a
+a projection that distorts true distances and densities, so they are a
 qualitative aid rather than a faithful picture of the latent geometry (the GMM is
 fit in the full 128-D space --- UMAP is used only for display). Second, for the
 selected full-covariance model the BIC decreased monotonically up to the largest
@@ -581,7 +602,8 @@ from a few declared preferences, with no retraining. The user selects musical
 attributes; we average the chosen anchor embeddings into a taste vector and offer
 three inference paths. (i)~\textbf{Persona snap}: assign the vector to the nearest
 of 20 \emph{listener archetypes} --- the centroids of a users-only GMM fit on the
-HGT latent space (Sec.~\ref{sec:results}, Tab.~\ref{tab:personas}). (ii)~\textbf{k-NN
+HGT latent space (Sec.~\ref{sec:results}; examples in Tab.~\ref{tab:personas},
+Appendix). (ii)~\textbf{k-NN
 user blend}: form a bespoke point on the user manifold as a similarity-weighted
 softmax mean of the $k{=}15$ nearest real users, with neighbour dispersion as a
 confidence signal. (iii)~\textbf{Inductive HGT}: insert a temporary user node into
@@ -592,27 +614,6 @@ used in Sec.~\ref{sec:results} produces faithful per-edge rationales for the new
 user. All three are pure inference and are exposed through an interactive widget
 (taste form $\rightarrow$ ranked recommendations $\rightarrow$ ``why'' panel),
 turning the learned latent geometry into a usable cold-start recommender.
-
-\begin{table}[t]
-\centering\footnotesize
-\caption{Example HGT listener archetypes (users-only GMM centroids, labelled by
-their nearest tracks' dominant genre, tempo class, and decade) used for cold-start
-persona snapping. Twenty archetypes are learned in total.}
-\label{tab:personas}
-\setlength{\tabcolsep}{5pt}
-\renewcommand{\arraystretch}{1.1}
-\begin{tabular}{clr}
-\toprule
-\textbf{ID} & \textbf{Archetype (genre\,$\cdot$\,tempo\,$\cdot$\,decade)} & \textbf{\#\,users}\\
-\midrule
-1  & rock $\cdot$ Allegro $\cdot$ 2000s     & 18{,}244\\
-5  & rock $\cdot$ Andante $\cdot$ 2000s (hip hop/rap) & 13{,}375\\
-12 & rock $\cdot$ Allegro $\cdot$ 1970s     & 19{,}238\\
-17 & dance pop $\cdot$ Andante $\cdot$ 2000s & 12{,}791\\
-19 & rock $\cdot$ Allegro $\cdot$ 2000s (metal/hard rock) & 13{,}430\\
-\bottomrule
-\end{tabular}
-\end{table}
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Discussion: Known Issues and Limitations}
@@ -651,13 +652,13 @@ Overall Score    & 0.399 & 0.208 & 0.192\\
 \end{table}
 
 \paragraph{Offline evaluation is an incomplete proxy.} The composite score exposes
-a genuine ranking-versus-diversity tension. MostPopular maximises NDCG by
-exploiting long-tail play-count structure yet ignores 99.4\% of the catalogue,
-while HGT and KNN-CF trade a little NDCG for near-complete coverage. Crucially,
-absence of a track from a user's history does not mean dislike; a held-out
-implicit-feedback test set therefore under-credits models (like HGT) that surface
-unheard but plausibly-liked items. This is consistent with HGT's high latent-space
-alignment to user profiles despite a modest hit rate, and motivates a user study.
+a genuine ranking-versus-diversity tension: MostPopular maximises NDCG by exploiting
+long-tail play counts yet ignores 99.4\% of the catalogue, while HGT and KNN-CF
+trade a little NDCG for near-complete coverage. Crucially, a track's absence from a
+user's history does not imply dislike, so a held-out implicit-feedback test set
+under-credits models (like HGT) that surface unheard but plausibly-liked items ---
+consistent with HGT's high latent alignment despite a modest hit rate, and
+motivating a user study.
 
 \paragraph{Retrieval bottleneck.} The XGBoost hybrid's low NDCG is a first-stage
 ceiling from 200-candidate retrieval, not a re-ranking failure; an approximate
@@ -667,7 +668,10 @@ nearest-neighbour candidate stage is the highest-value fix.
 improves the composite score via coverage, but random init still wins on raw NDCG,
 so the KGE structural prior is partly subsumed by HGT's own message passing. A
 controlled study of frozen vs.\ fine-tuned KGE and of corpus composition is
-warranted.
+warranted. Importantly, only RotatE was ever plugged into the HGT --- ComplEx was
+trained but never used as an initialiser --- so a natural next step is to compare a
+\emph{spectrum} of KGE algorithms as initialisers and observe how each inductive
+bias propagates through message passing.
 
 \paragraph{Limited search.} Hyperparameters were chosen by a coarse one-axis sweep
 under time pressure; a joint Bayesian search over width, depth, heads, $\tau$, and
@@ -685,8 +689,13 @@ overtakes it on Overall Score for $K\!\geq\!20$, and achieves the lowest popular
 bias of any model while remaining interpretable. Future work includes ANN-based
 candidate generation for the hybrid, a factorial ablation isolating KG structure /
 symbolic features / debiasing, graph-collaborative baselines
-(LightGCN~\cite{he2020lightgcn}, KGCN~\cite{wang2019kgcn}), a broader KGE
-comparison, joint hyperparameter optimisation, a larger-component or hierarchical
+(LightGCN~\cite{he2020lightgcn}, KGCN~\cite{wang2019kgcn}), initialising the HGT
+with alternative KG embeddings that span the inductive-bias spectrum --- ComplEx
+(complex-valued, asymmetry by conjugation rather than rotation) and models that do
+or do not capture edge asymmetry and node-type distinctions, from translational
+(TransE~\cite{bordes2013transe}) and bilinear (DistMult~\cite{yang2015distmult},
+symmetric by construction) to tensor-factorisation
+(RESCAL~\cite{nickel2011rescal}) --- joint hyperparameter optimisation, a larger-component or hierarchical
 clustering of the latent space, and an online user study to address the
 offline-evaluation gap.
 
@@ -721,6 +730,79 @@ offline-evaluation gap.
 \appendix
 \section*{Appendix: Additional Results}
 \addcontentsline{toc}{section}{Appendix}
+
+\subsection*{A. Data and Knowledge-Graph Statistics}
+
+\begin{table}[h]
+\centering\footnotesize
+\caption{Knowledge-graph composition: instance counts per node type (left) and per
+relation (right). The graph totals $1.91\times10^{7}$ triples over 304{,}110
+entities and 29 relation types.}
+\label{tab:kgstats}
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{lr@{\hskip 18pt}lr}
+\toprule
+\textbf{Node type} & \textbf{\#} & \textbf{Relation} & \textbf{\#}\\
+\midrule
+Listener         & 285{,}037 & \texttt{rdf:type}      & 612{,}827\\
+Track/Perf./Event& 7{,}013   & \texttt{instrument}    & 56{,}891\\
+Artist           & 3{,}668   & \texttt{factor}        & 56{,}891\\
+Genre            & 645       & \texttt{hasGenre}      & 18{,}136\\
+Instrument       & 129       & \texttt{subClassOf}    & 12{,}167\\
+Key              & 12        & \texttt{performer}     & 7{,}013\\
+Tempo class      & 9         & \texttt{hasKey/Mode}   & 7{,}013\\
+Decade           & 7         & \texttt{hasTempoClass} & 7{,}013\\
+Mode             & 2         & \texttt{inDecade}      & 4{,}768\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{TBox.png}
+  \caption{Schema-level ontology (TBox). \texttt{mrc:Listener} (a
+  \texttt{foaf:Agent}) participates in \texttt{ListeningEvent}s on
+  \texttt{MSDTrack}s; each track has a \texttt{Performance} carrying key, mode,
+  tempo class, instruments, and a reified \texttt{GenreAssociation} with a weight.
+  Structural classes are aligned to Wikidata via \texttt{owl:equivalentClass}
+  (e.g.\ Key$\equiv$wd:Q534932, Instrument$\equiv$wd:Q34379,
+  Genre$\equiv$wd:Q188451).}
+  \label{fig:tbox}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.9\linewidth]{ABox.png}
+  \caption{Concrete instance neighbourhood (ABox): a single track linked to its
+  decade (2000s), key (C), mode (Major), tempo class (Andante), three instruments,
+  and its artist, who in turn connects to genres (blues, blues-rock, hard rock,
+  rock, jazz).}
+  \label{fig:abox}
+\end{figure}
+
+\subsection*{B. Model Curves and Explanations}
+
+\begin{table}[h]
+\centering\footnotesize
+\caption{Example HGT listener archetypes (users-only GMM centroids, labelled by
+their nearest tracks' dominant genre, tempo class, and decade) used for cold-start
+persona snapping. Twenty archetypes are learned in total.}
+\label{tab:personas}
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{clr}
+\toprule
+\textbf{ID} & \textbf{Archetype (genre\,$\cdot$\,tempo\,$\cdot$\,decade)} & \textbf{\#\,users}\\
+\midrule
+1  & rock $\cdot$ Allegro $\cdot$ 2000s     & 18{,}244\\
+5  & rock $\cdot$ Andante $\cdot$ 2000s (hip hop/rap) & 13{,}375\\
+12 & rock $\cdot$ Allegro $\cdot$ 1970s     & 19{,}238\\
+17 & dance pop $\cdot$ Andante $\cdot$ 2000s & 12{,}791\\
+19 & rock $\cdot$ Allegro $\cdot$ 2000s (metal/hard rock) & 13{,}430\\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \begin{figure}[h]
   \centering

@@ -12,6 +12,31 @@
 \usepackage{ragged2e}
 \usepackage{multirow}
 
+% ── Running header / footer ──────────────────────────────────────────────────
+% CVPR zeroes headheight/headsep and sets pagestyle{empty}.
+% We restore proper header space here in the preamble (after cvpr.sty loads)
+% and compensate by shifting topmargin up so the body text block is unchanged.
+\usepackage{fancyhdr}
+\setlength{\headheight}{13.6pt}
+\setlength{\headsep}{8pt}
+\addtolength{\topmargin}{-13.6pt}
+\addtolength{\topmargin}{-8pt}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\itshape Neuro-Symbolic Music Recommendation with a KG-Informed HGT}
+\fancyhead[R]{\small Group 7~\textperiodcentered~Deep Learning Course, FCUL 2025/26}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}
+% Title page: centred page number, no header rule
+\fancypagestyle{plain}{%
+  \fancyhf{}%
+  \fancyfoot[C]{\small\thepage}%
+  \renewcommand{\headrulewidth}{0pt}%
+  \renewcommand{\footrulewidth}{0pt}%
+}
+
 \graphicspath{
   {figures/}
 }
