@@ -23,6 +23,7 @@
 \usepackage{amsmath, amssymb}
 \usepackage{url}
 \usepackage{calc}
+\usepackage[pages=some]{background}
 
 \tcbuselibrary{skins, breakable}
 
@@ -38,7 +39,7 @@
 \setlength{\parskip}{2pt}
 
 % ── Bullet style ─────────────────────────────────────────────
-\setlist[itemize]{leftmargin=1.3em, itemsep=1pt, topsep=1pt}
+\setlist[itemize]{leftmargin=1.3em, itemsep=0.7pt, topsep=1pt}
 
 % ── Section box style ────────────────────────────────────────
 \tcbset{
@@ -49,7 +50,7 @@
     boxrule=2pt,
     arc=2pt,
     left=5pt, right=5pt, top=6pt, bottom=4pt,
-    fontupper=\color{bodytext}\small,
+    fontupper=\color{bodytext}\LARGE,
     attach boxed title to top left={yshift=-2pt, xshift=4pt},
     boxed title style={
       colback=sectionbg,
@@ -59,95 +60,107 @@
       left=4pt, right=4pt, top=3pt, bottom=3pt,
     },
     coltitle=sectionfg,
-    fonttitle=\bfseries\large,
+    fonttitle=\bfseries\huge,
   }
 }
 
 % caption helper for figures inside boxes
-\newcommand{\fcap}[1]{{\small\itshape #1}}
+\newcommand{\fcap}[1]{{\LARGE\itshape #1}}
 
 \pagestyle{empty}
-
+\backgroundsetup{
+scale=1,
+color=black,
+opacity=0.15,
+angle=0,
+contents={%
+  \includegraphics[width=\paperheight,height=\paperheight]{background.png}
+  }%
+}
 % ============================================================
 \begin{document}
 % ============================================================
+\BgThispage
 
 % ── HEADER ───────────────────────────────────────────────────
 \begin{tikzpicture}[remember picture, overlay]
   \fill[ulblue] (current page.north west)
-    rectangle ([yshift=-7.5cm] current page.north east);
+    rectangle ([yshift=-6.5cm] current page.north east);
 \end{tikzpicture}
 
-\begin{minipage}[t][4.2cm][t]{\textwidth}
-\vspace{0.3cm}
+\begin{minipage}[t][5.5cm][t]{\textwidth}
   \color{white}
-  \begin{minipage}[c]{0.18\textwidth}
+  \begin{minipage}[c]{0.15\textwidth}
     \includegraphics[width=\linewidth]{ulisboa_logo.png}
     {\footnotesize Ciências ULisboa}
   \end{minipage}%
   \hfill
-  \begin{minipage}[c]{0.60\textwidth}\centering
-    {\LARGE\bfseries Neuro-Symbolic Music Recommendation with a\\[3pt]
+  \begin{minipage}[c]{0.65\textwidth}\centering
+    {\Huge\bfseries Neuro-Symbolic Music Recommendation with a\\[3pt]
      Knowledge-Graph-Informed Heterogeneous Graph Transformer}\\[10pt]
-    {\normalsize\itshape Pedro Fanica$^{1}$, Aarthi Perumpillichira $^{2}$, Maja Skwaron$^{3}$}\\[5pt]
-    {\small Student numbers: 54346, 66404, 66083}
+    {\LARGE\itshape Pedro Fanica, Aarthi Perumpillichira , Maja Skwaron}\\[5pt]
+    % {\small Student numbers: 54346, 66404, 66083}
   \end{minipage}%
   \hfill
-  \begin{minipage}[c]{0.18\textwidth}\raggedleft
-    {\small M.Sc.\ Data Science\\
+  \begin{minipage}[c]{0.15\textwidth}\raggedleft
+    {\Large M.Sc.\ Data Science\\
     Deep Learning \& Knowledge Graphs 2025/2026}
   \end{minipage}
 \end{minipage}
-
-\vspace{2.5cm}
 
 % ============================================================
 %  TOP BAND — three columns: text | HGT diagram (centre) | KG
 %  When the tall diagram ends, the layout drops back to 2 columns.
 % ============================================================
 % -- TOP-LEFT: intro text ----
-\begin{minipage}[t]{0.42\textwidth}\vspace{0pt}
+\begin{minipage}[t]{0.48\textwidth}\vspace{0pt}
 
   % -- Objectives ----
   \begin{tcolorbox}[posterbox, title=Objectives]
     \begin{itemize}
     \item Recommend new music by enriching collaborative filtering (CF) with \textbf{symbolic + audio content} — genre, artist links, instrumentation, tempo.
     \item Encode it as a typed \textbf{Knowledge Graph} relating users, tracks, artists and genres beyond a user–item matrix.
-    \item Learn over the KG with a \textbf{Heterogeneous Graph Transformer (HGT)}~[1] for diversity, cold-start robustness and \textbf{explainability}.
+    \item Learn over the KG with a \textbf{Heterogeneous Graph Transformer (HGT)} for diversity, cold-start robustness and \textbf{explainability}.
     \end{itemize}
   \end{tcolorbox}
-
-  \vspace{0.16cm}
 
   % -- Problem ----
   \begin{tcolorbox}[posterbox, title=Problem]
     \begin{itemize}
-      \item CF uses only interaction history~[11] → \textbf{popularity bias} and \textbf{cold-start} failures, ignoring musical content.
-      \item Most KG-enhanced work uses shallow embeddings~[8,\,10], without a GNN that propagates \textbf{multi-hop typed} structure~[9].
+      \item CF uses only interaction history → \textbf{popularity bias} and \textbf{cold-start} failures, ignoring musical content.
+      \item Most KG-enhanced work uses shallow embeddings~[8,\,10], without a GNN that propagates \textbf{multi-hop typed} structure.
       \item \textit{Can symbolic features + a heterogeneous KG + an HGT reason over shared genre / artist / instrumentation to close that gap?}
     \end{itemize}
   \end{tcolorbox}
 
-  \vspace{0.16cm}
-
   % -- Methodology ----
   \begin{tcolorbox}[posterbox, title=Methodology]
     \begin{center}
-      \includegraphics[width=0.68\linewidth]{pipeline.png}
+      \includegraphics[width=0.98\linewidth]{methodology.png}
     \end{center}
-    {\small \textbf{HGT}~[1] message-passing over the undirected KG; $\ell_2$-normalised embeddings $\to$ \textbf{cosine} scoring. Trained with a \textbf{custom listwise loss} (\emph{not} pointwise binary cross-entropy nor pairwise BPR~[11]): a soft cross-entropy over each user's candidate softmax, logit-adjusted to down-weight popular tracks:}
-    {\small
-    \[ s_i = \tfrac{\hat{\mathbf{u}}^\top\hat{\mathbf{t}}_i}{\tau} + \lambda\log p_i,\qquad
-       \mathcal{L} = -\tfrac{1}{|B|}\sum_{u}\sum_i \tilde{p}_{ui}\,\log\mathrm{softmax}(\mathbf{s}_u)_i \]}
-    {\small $\tau{=}0.1$; soft targets $\tilde{p}_{ui}\!\propto\!\log(1{+}c_{ui})$. As $\log p_i<0$, the $\lambda\log p_i$ term \textbf{boosts less-heard tracks} — driving the low popularity bias below.}
-    {\small Models selected by \textbf{Overall Score@10}$=0.6\,$NDCG$+0.2\,$Cov$+0.2(1{-}$PB$)$ — relevance, diversity \& fairness.}
+    % {\small \textbf{HGT}~[1] message-passing over the undirected KG; $\ell_2$-normalised embeddings $\to$ \textbf{cosine} scoring. Trained with a \textbf{custom listwise loss} (\emph{not} pointwise binary cross-entropy nor pairwise BPR~[11]): a soft cross-entropy over each user's candidate softmax, logit-adjusted to down-weight popular tracks:}
+    % {\small
+    % \[ s_i = \tfrac{\hat{\mathbf{u}}^\top\hat{\mathbf{t}}_i}{\tau} + \lambda\log p_i,\qquad
+    %    \mathcal{L} = -\tfrac{1}{|B|}\sum_{u}\sum_i \tilde{p}_{ui}\,\log\mathrm{softmax}(\mathbf{s}_u)_i \]}
+    % {\small $\tau{=}0.1$; soft targets $\tilde{p}_{ui}\!\propto\!\log(1{+}c_{ui})$. As $\log p_i<0$, the $\lambda\log p_i$ term \textbf{boosts less-heard tracks} — driving the low popularity bias below.}
+    Model selection accounts for relevance, diversity \& fairness by using: \\\textbf{Overall Score@10}$=0.6 NDCG + 0.2 Cov + 0.2 (1 - PopularityBias)$
   \end{tcolorbox}
-
-  \vspace{0.16cm}
-
+  
+  \begin{tcolorbox}[posterbox, title=Recommendation Benchmark]
+    \begin{center}
+      \includegraphics[width=\linewidth]{benchmark_heatmap_poster.png}\\[4pt]
+      % \includegraphics[width=0.78\linewidth]{benchmark_significance_poster.png}\\[2pt]
+      % \fcap{Lighter = better. Violins = per-user NDCG distribution; bars = set-level Overall Score $\pm$ bootstrap std; $\ast$ = significant.}
+    \end{center}
+    \begin{itemize}
+    \item HGT trails KNN-CF for short lists but \textbf{overtakes it for $K\geq 50$}: Overall Score \textbf{0.474 vs 0.455} and NDCG \textbf{0.148 vs 0.112} at $K{=}100$, with the \textbf{lowest popularity bias (0.090)} throughout.
+    % \item MostPopular's high raw NDCG (0.114) is a \textbf{popularity artifact}: near-zero coverage (0.006), extreme bias (0.611) → composite 0.148.
+    \end{itemize}
+  \end{tcolorbox}
+  
   % -- Baselines ----
   \begin{tcolorbox}[posterbox, title=Baselines]
-    {\small\itshape each: features $\cdot$ preprocessing $\cdot$ objective $\to$ output}
+    % {\small\itshape each: features $\cdot$ preprocessing $\cdot$ objective $\to$ output}
     \begin{itemize}
     \item \textbf{MostPopular} — global play counts, no user features; rank by frequency $\to$ one list shared by all users.
     \item \textbf{KNN-CF} — binarised, $\ell_2$-normalised interactions; user–user cosine $k$NN ($k{=}6$) $\to$ neighbour-weighted scores.
@@ -157,104 +170,47 @@
 
 \end{minipage}%
 \hfill
-% -- CENTRE STRIP: HGT architecture (transparent, tall) ----
-\begin{minipage}[t]{0.14\textwidth}\vspace{0pt}\centering
-  \begin{tcolorbox}[posterbox, title=HGT Layer]
-    \includegraphics[width=0.99\linewidth]{hgt_combined.pdf}\\[2pt]
-    \fcap{HGTConv (exploded): per-edge-type K/Q/V, typed attention, aggregation.}
-  \end{tcolorbox}
-\end{minipage}%
-\hfill
+% % -- CENTRE STRIP: HGT architecture (transparent, tall) ----
+% \begin{minipage}[t]{0.14\textwidth}\vspace{0pt}\centering
+%   \begin{tcolorbox}[posterbox, title=HGT Layer]
+%     \includegraphics[width=0.99\linewidth]{hgt_combined.pdf}\\[2pt]
+%     \fcap{HGTConv (exploded): per-edge-type K/Q/V, typed attention, aggregation.}
+%   \end{tcolorbox}
+% \end{minipage}%
+% \hfill
 % -- TOP-RIGHT: KG ----
-\begin{minipage}[t]{0.42\textwidth}\vspace{0pt}
+\begin{minipage}[t]{0.48\textwidth}\vspace{0pt}
 
   \begin{tcolorbox}[posterbox, title=Knowledge Graph]
     \begin{center}
-      \begin{minipage}[t]{0.6\linewidth}
+      \begin{minipage}[t]{\linewidth}
         \centering
         \includegraphics[width=\linewidth]{TBox.png}\\[2pt]
-        \fcap{TBox: ontology classes, properties and Wikidata alignments~[7].}
+        \fcap{TBox: ontology classes, properties and Wikidata alignments.}
       \end{minipage}\hfill
-      \begin{minipage}[t]{0.37\linewidth}
-        \centering
-        \includegraphics[width=\linewidth]{KG_summary.png}\\[2pt]
-        \fcap{Entity composition.}
-      \end{minipage}
+      % \begin{minipage}[t]{0.37\linewidth}
+      %   \centering
+      %   \includegraphics[width=\linewidth]{KG_summary.png}\\[2pt]
+      %   \fcap{Entity composition.}
+      % \end{minipage}
     \end{center}
     \vspace{2pt}
     \begin{itemize}
-    \item \textbf{286,889} users~[5], \textbf{7,050} songs (Lakh MIDI~[3] $\leftrightarrow$ MSD~[4], DTW $\geq 0.55$); songs carry 1,525 symbolic descriptors~[6] + audio metadata.
+    \item \textbf{286,889} users, \textbf{7,050} songs (Lakh MIDI $\leftrightarrow$ MSD, DTW $\geq 0.55$); songs carry 1,525 symbolic descriptors + audio metadata.
     \item Genres / tempo / mode linked to \textbf{Wikidata} (\texttt{owl:equivalentClass}, \texttt{sameAs}); reified blank nodes encode weighted listening \& genre events.
     \end{itemize}
   \end{tcolorbox}
 
-  \vspace{0.16cm}
-
-  % -- Latent Space ----
-  \begin{tcolorbox}[posterbox, title=Latent Space]
-    \begin{center}
-      \includegraphics[width=0.92\linewidth]{latent_users_poster.png}\\[2pt]
-      \fcap{UMAP of the HGT \emph{user} embeddings; BIC-selected GMM clusters (numbered centroid badges).}
-    \end{center}
-    \begin{itemize}
-    \item A Gaussian Mixture over the learned user vectors yields interpretable \textbf{listener archetypes} (top genres / tempo / mode / decade).
-    \item These archetypes drive the \textbf{cold-start} persona app: a new user is mapped to the nearest archetype.
-    \end{itemize}
-  \end{tcolorbox}
-
-\end{minipage}
-
-\vspace{0.4cm}
-
-% ============================================================
-%  BOTTOM BAND — two balanced columns (no page break: total fits)
-% ============================================================
-\begin{minipage}[t]{0.48\textwidth}\vspace{0pt}
-
-  % -- HGT Training & Ablations ----
-  \begin{tcolorbox}[posterbox, title=HGT Training \& Ablations]
-    \begin{center}
-      \includegraphics[width=0.78\linewidth]{hgt_training_panel.png}\\[2pt]
-      \fcap{(a) train/val listwise loss; (b) validation Overall@10 \& components; (c) $\lambda_{\text{reg}}$ accuracy–coverage trade-off; (d) RotatE-KGE vs random node init.}
-    \end{center}
-    \begin{itemize}
-    \item Best config: \textbf{hidden 256, 4 heads, 2 layers, $\lambda_{\text{reg}}{=}0.5$, $\tau{=}0.1$}, early-stopped at epoch $\sim$240 on validation Overall@10.
-    \item \textbf{RotatE-KGE node init}~[2] clearly beats random (Overall@10 0.373 vs 0.329): the pretrained KG embeddings carry useful structure.
-    \end{itemize}
-  \end{tcolorbox}
-
-  \vspace{0.16cm}
-
-  % -- Recommendation Benchmark ----
-  \begin{tcolorbox}[posterbox, title=Recommendation Benchmark]
-    \begin{center}
-      \includegraphics[width=0.62\linewidth]{benchmark_heatmap_poster.png}\\[4pt]
-      \includegraphics[width=0.78\linewidth]{benchmark_significance_poster.png}\\[2pt]
-      \fcap{Lighter = better. Violins = per-user NDCG distribution; bars = set-level Overall Score $\pm$ bootstrap std; $\ast$ = significant.}
-    \end{center}
-    \begin{itemize}
-    \item HGT trails KNN-CF for short lists but \textbf{overtakes it for $K\geq 50$}: Overall Score \textbf{0.474 vs 0.455} and NDCG \textbf{0.148 vs 0.112} at $K{=}100$, with the \textbf{lowest popularity bias (0.090)} throughout.
-    \item MostPopular's high raw NDCG (0.114) is a \textbf{popularity artifact}: near-zero coverage (0.006), extreme bias (0.611) → composite 0.148.
-    \end{itemize}
-  \end{tcolorbox}
-
-\end{minipage}%
-\hfill
-\begin{minipage}[t]{0.48\textwidth}\vspace{0pt}
-
-  % -- Explainability ----
   \begin{tcolorbox}[posterbox, title=Explainability]
     \begin{center}
-      \includegraphics[width=0.92\linewidth]{explain_attention_poster.png}\\[2pt]
-      \fcap{Faithful attention traces a rec to the user's tracks $\to$ shared attributes $\to$ recommendation.}
+      \includegraphics[width=\linewidth]{explain_attention_poster.png}\\[2pt]
+      \fcap{Left edge: Each track's attention share (top 5 of 134). Right edge: Share of attention sitting on tracks carrying the attribute.\\Faithful attention traces users {\large$\to$} tracks {\large$\to$} shared attributes {\large$\to$} recs.}
     \end{center}
     \begin{itemize}
     \item Captured HGT \textbf{attention} (not a post-hoc proxy) explains \emph{why} each track was recommended, attribute by attribute.
     \item Cross-checked against \textbf{occlusion $\Delta$score} and \textbf{Integrated Gradients} — the three agree on the top drivers.
     \end{itemize}
   \end{tcolorbox}
-
-  \vspace{0.16cm}
 
   % -- Conclusions ----
   \begin{tcolorbox}[posterbox, title=Conclusions \& Future Work]
@@ -272,32 +228,91 @@
     \end{itemize}
   \end{tcolorbox}
 
+  % -- Latent Space ----
+  % \begin{tcolorbox}[posterbox, title=Latent Space]
+  %   \begin{center}
+  %     \includegraphics[width=0.92\linewidth]{latent_users_poster.png}\\[2pt]
+  %     \fcap{UMAP of the HGT \emph{user} embeddings; BIC-selected GMM clusters (numbered centroid badges).}
+  %   \end{center}
+  %   \begin{itemize}
+  %   \item A Gaussian Mixture over the learned user vectors yields interpretable \textbf{listener archetypes} (top genres / tempo / mode / decade).
+  %   \item These archetypes drive the \textbf{cold-start} persona app: a new user is mapped to the nearest archetype.
+  %   \end{itemize}
+  % \end{tcolorbox}
+  
+% ── Acknowledgements (full width footnote) ─────────────────────────
+% \begin{tcolorbox}[posterbox, title=Acknowledgements]
+\vspace{6cm}
+{\large We would like to give thanks to Professors Catia Pesquita and Nuno Garcia for their support and feedback}
+% \end{tcolorbox}
+
 \end{minipage}
 
-\vspace{0.2cm}
+% \vspace{0.4cm}
+
+% ============================================================
+%  BOTTOM BAND — two balanced columns (no page break: total fits)
+% ============================================================
+% \begin{minipage}[t]{0.48\textwidth}\vspace{0pt}
+
+  % % -- HGT Training & Ablations ----
+  % \begin{tcolorbox}[posterbox, title=HGT Training \& Ablations]
+  %   \begin{center}
+  %     \includegraphics[width=0.78\linewidth]{hgt_training_panel.png}\\[2pt]
+  %     \fcap{(a) train/val listwise loss; (b) validation Overall@10 \& components; (c) $\lambda_{\text{reg}}$ accuracy–coverage trade-off; (d) RotatE-KGE vs random node init.}
+  %   \end{center}
+  %   \begin{itemize}
+  %   \item Best config: \textbf{hidden 256, 4 heads, 2 layers, $\lambda_{\text{reg}}{=}0.5$, $\tau{=}0.1$}, early-stopped at epoch $\sim$240 on validation Overall@10.
+  %   \item \textbf{RotatE-KGE node init}~[2] clearly beats random (Overall@10 0.373 vs 0.329): the pretrained KG embeddings carry useful structure.
+  %   \end{itemize}
+  % \end{tcolorbox}
+
+  % \vspace{0.16cm}
+
+  % -- Recommendation Benchmark ----
+
+% \end{minipage}%
+% \hfill
+% \begin{minipage}[t]{0.48\textwidth}\vspace{0pt}
+
+% -- Population-Level Comparison ----
+% \begin{tcolorbox}[posterbox, title=Population-Level Comparison]
+%   \begin{center}
+%     \includegraphics[width=0.78\linewidth]{pop_lev_com.jpeg}\\[2pt]
+%     \fcap{All four models compared across distribution shift, profile alignment, and hit-rate at population level.}
+%   \end{center}
+% \end{tcolorbox}
+% \vspace{0.16cm}
+
+
+  % -- Explainability ----
+
+% \end{minipage}
+
+% \vspace{0.08cm}
 
 % ── REFERENCES (full width footnote) ─────────────────────────
-\begin{tcolorbox}[posterbox, title=References]
-  {\footnotesize\setlength{\parskip}{1pt}\setlength{\columnsep}{14pt}
-  \begin{multicols}{3}\raggedright
-  [1] Z. Hu et al. Heterogeneous Graph Transformer. \textit{WWW}, 2020.\par
-  [2] Z. Sun et al. RotatE: KG embedding by relational rotation. \textit{ICLR}, 2019.\par
-  [3] C. Raffel. Learning-based methods for comparing sequences (Lakh MIDI). PhD thesis, 2016.\par
-  [4] T. Bertin-Mahieux et al. The Million Song Dataset. \textit{ISMIR}, 2011.\par
-  [5] The Echo Nest. Taste Profile subset of the MSD, 2011.\par
-  [6] C. McKay et al. jSymbolic 2.2. \textit{ISMIR}, 2018.\par
-  [7] Y. Raimond et al. The Music Ontology. \textit{ISMIR}, 2007.\par
-  [8] H. Wang et al. KG Convolutional Networks for Recommender Systems. \textit{WWW}, 2019.\par
-  [9] X. Wang et al. KGAT: KG Attention Network for Recommendation. \textit{KDD}, 2019.\par
-  [10] X. Liu et al. Music recommendation via KG \& multi-task learning. \textit{Sci. Reports}, 2024.\par
-  [11] S. Rendle et al. BPR: Bayesian Personalized Ranking. \textit{UAI}, 2009.\par
-  \end{multicols}}
-\end{tcolorbox}
+% \begin{tcolorbox}[posterbox, title=References]
+%   {\footnotesize\setlength{\parskip}{1pt}\setlength{\columnsep}{14pt}
+%   \begin{multicols}{3}\raggedright
+%   [1] Z. Hu et al. Heterogeneous Graph Transformer. \textit{WWW}, 2020.\par
+%   [2] Z. Sun et al. RotatE: KG embedding by relational rotation. \textit{ICLR}, 2019.\par
+%   [3] C. Raffel. Learning-based methods for comparing sequences (Lakh MIDI). PhD thesis, 2016.\par
+%   [4] T. Bertin-Mahieux et al. The Million Song Dataset. \textit{ISMIR}, 2011.\par
+%   [5] The Echo Nest. Taste Profile subset of the MSD, 2011.\par
+%   [6] C. McKay et al. jSymbolic 2.2. \textit{ISMIR}, 2018.\par
+%   [7] Y. Raimond et al. The Music Ontology. \textit{ISMIR}, 2007.\par
+%   [8] H. Wang et al. KG Convolutional Networks for Recommender Systems. \textit{WWW}, 2019.\par
+%   [9] X. Wang et al. KGAT: KG Attention Network for Recommendation. \textit{KDD}, 2019.\par
+%   [10] X. Liu et al. Music recommendation via KG \& multi-task learning. \textit{Sci. Reports}, 2024.\par
+%   [11] S. Rendle et al. BPR: Bayesian Personalized Ranking. \textit{UAI}, 2009.\par
+%   \end{multicols}}
+% \end{tcolorbox}
 
 % ── thin footer rule ──────────────────────────────────────────
-\vspace{2pt}
-\begin{tikzpicture}
-  \draw[ulblue, line width=3pt] (0,0) -- (\textwidth,0);
-\end{tikzpicture}
+% \vspace{0.5pt}
+% \begin{tikzpicture}
+%   \draw[ulblue, line width=3pt] (0,0) -- (\textwidth,0);
+% \end{tikzpicture}
 
 \end{document}
