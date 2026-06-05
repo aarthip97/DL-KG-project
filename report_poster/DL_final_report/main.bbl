@@ -1,0 +1,104 @@
+\begin{thebibliography}{13}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Raffel(2016)]{raffel2016lakh}
+Colin Raffel.
+\newblock \emph{Learning-Based Methods for Comparing Sequences, with
+  Applications to Audio-to-MIDI Alignment and Matching}.
+\newblock PhD thesis, Columbia University, 2016.
+\newblock URL \url{https://colinraffel.com/projects/lmd/}.
+\newblock Includes the Lakh MIDI Dataset.
+
+\bibitem[Bertin-Mahieux et~al.(2011)Bertin-Mahieux, Ellis, Whitman, and
+  Lamere]{msd2011}
+Thierry Bertin-Mahieux, Daniel P.~W. Ellis, Brian Whitman, and Paul Lamere.
+\newblock The million song dataset.
+\newblock In \emph{Proceedings of the 12th International Society for Music
+  Information Retrieval Conference (ISMIR)}, 2011.
+\newblock URL \url{http://millionsongdataset.com/}.
+
+\bibitem[Sun et~al.(2019)Sun, Deng, Nie, and Tang]{sun2019rotate}
+Zhiqing Sun, Zhi-Hong Deng, Jian-Yun Nie, and Jian Tang.
+\newblock {RotatE}: Knowledge graph embedding by relational rotation in complex
+  space, 2019.
+\newblock Accepted at ICLR 2019.
+
+\bibitem[Trouillon et~al.(2016)Trouillon, Welbl, Riedel, Gaussier, and
+  Bouchard]{trouillon2016complex}
+Th\'{e}o Trouillon, Johannes Welbl, Sebastian Riedel, \'{E}ric Gaussier, and
+  Guillaume Bouchard.
+\newblock Complex embeddings for simple link prediction, 2016.
+\newblock Accepted at ICML 2016.
+
+\bibitem[Hu et~al.(2020)Hu, Dong, Wang, and Sun]{hu2020hgt}
+Ziniu Hu, Yuxiao Dong, Kuansan Wang, and Yizhou Sun.
+\newblock Heterogeneous graph transformer.
+\newblock In \emph{Proceedings of The Web Conference 2020}, WWW '20, pages
+  2704--2710, 2020.
+\newblock \doi{10.1145/3366423.3380027}.
+
+\bibitem[Rendle et~al.(2009)Rendle, Freudenthaler, Gantner, and
+  Schmidt-Thieme]{rendle2009bpr}
+Steffen Rendle, Christoph Freudenthaler, Zeno Gantner, and Lars Schmidt-Thieme.
+\newblock {BPR}: Bayesian personalized ranking from implicit feedback.
+\newblock In \emph{Proceedings of the 25th Conference on Uncertainty in
+  Artificial Intelligence (UAI)}, pages 452--461, 2009.
+\newblock \doi{10.48550/arXiv.1205.2618}.
+
+\bibitem[He et~al.(2017)He, Liao, Zhang, Nie, Hu, and Chua]{he2017ncf}
+Xiangnan He, Lizi Liao, Hanwang Zhang, Liqiang Nie, Xia Hu, and Tat-Seng Chua.
+\newblock Neural collaborative filtering.
+\newblock In \emph{Proceedings of the 26th International World Wide Web
+  Conference (WWW)}, pages 173--182, 2017.
+\newblock \doi{10.1145/3038912.3052569}.
+
+\bibitem[McKay et~al.(2018)McKay, Cumming, and Fujinaga]{mckay2018jsymbolic}
+Cory McKay, Julie Cumming, and Ichiro Fujinaga.
+\newblock Jsymbolic 2.2: Extracting features from symbolic music for use in
+  musicological and mir research.
+\newblock In \emph{Proceedings of the 19th International Society for Music
+  Information Retrieval Conference (ISMIR)}, pages 348--354, 2018.
+
+\bibitem[Cuthbert and Oberholzer(2026)]{music21docs}
+Hogue Cuthbert, Ariza and Oberholzer.
+\newblock \emph{music21}.
+\newblock music21, 3rd edition, May 2026.
+\newblock Available at \url{https://music21.org/music21docs/}.
+
+\bibitem[Wang et~al.(2019{\natexlab{a}})Wang, Zhao, Xie, Li, and
+  Guo]{wang2019kgcn}
+Hongwei Wang, Miao Zhao, Xing Xie, Wenjie Li, and Minyi Guo.
+\newblock Knowledge graph convolutional networks for recommender systems.
+\newblock In \emph{Proceedings of the World Wide Web Conference (WWW)}, pages
+  3307--3313, 2019{\natexlab{a}}.
+\newblock \doi{10.1145/3308558.3313417}.
+
+\bibitem[Wang et~al.(2019{\natexlab{b}})Wang, He, Cao, Liu, and
+  Chua]{wang2019kgat}
+Xiang Wang, Xiangnan He, Yixin Cao, Meng Liu, and Tat-Seng Chua.
+\newblock {KGAT}: Knowledge graph attention network for recommendation.
+\newblock In \emph{Proceedings of the 25th ACM SIGKDD International Conference
+  on Knowledge Discovery \& Data Mining}, pages 950--958, 2019{\natexlab{b}}.
+\newblock \doi{10.1145/3292500.3330989}.
+
+\bibitem[He et~al.(2020)He, Deng, Wang, Li, Zhang, and Wang]{he2020lightgcn}
+Xiangnan He, Kuan Deng, Xiang Wang, Yan Li, Yongdong Zhang, and Meng Wang.
+\newblock {LightGCN}: Simplifying and powering graph convolution network for
+  recommendation.
+\newblock In \emph{Proceedings of the 43rd International ACM SIGIR Conference
+  on Research and Development in Information Retrieval}, pages 639--648, 2020.
+\newblock \doi{10.1145/3397271.3401063}.
+
+\bibitem[Liu et~al.(2024)Liu, Yang, and Cheng]{liu2024kgmusic}
+X.~Liu, Z.~Yang, and J.~Cheng.
+\newblock Music recommendation algorithms based on knowledge graph and
+  multi-task feature learning.
+\newblock \emph{Scientific Reports}, 14:\penalty0 2055, 2024.
+\newblock \doi{10.1038/s41598-024-52463-z}.
+\newblock URL \url{https://doi.org/10.1038/s41598-024-52463-z}.
+
+\end{thebibliography}

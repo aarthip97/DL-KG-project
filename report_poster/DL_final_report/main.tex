@@ -1,0 +1,802 @@
+\documentclass[10pt,twocolumn,letterpaper]{article}
+
+\usepackage[pagenumbers]{cvpr}
+
+\input{preamble}
+
+\definecolor{cvprblue}{rgb}{0.21,0.49,0.74}
+\usepackage[pagebackref,breaklinks,colorlinks,allcolors=cvprblue]{hyperref}
+
+\def\paperID{*****}
+\def\confName{KG-DL}
+\def\confYear{2026}
+
+\title{Neuro-Symbolic Music Recommendation with a\\
+Knowledge-Graph-Informed Heterogeneous Graph Transformer}
+
+\author{%
+  \textbf{Group 7} \quad
+  Pedro Fanica (54346) \quad
+  Aarthi Perumpillichira (66404) \quad
+  Maja Skwaro\'n (66083)\\[0.25em]
+  {\small Deep Learning Course (Prof.\ Nuno Garcia)
+    $\,\cdot\,$
+    Faculdade de Ci\^encias da Universidade de Lisboa (FCUL)
+    $\,\cdot\,$
+    Academic Year 2025/26}%
+}
+
+\begin{document}
+\maketitle
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{abstract}
+We present a deep-learning pipeline for content- and preference-aware music
+recommendation built on a heterogeneous music knowledge graph (KG). Starting from
+the Lakh MIDI and Million Song datasets, we align 7{,}013 tracks, compress their
+1{,}526-dimensional symbolic feature vectors to a 128-dimensional embedding with a
+fully connected autoencoder (final MSE~0.616), and pre-train KG embeddings
+(RotatE, ComplEx) over 807{,}955 relational triples to initialise every entity
+type. A Heterogeneous Graph Transformer (HGT) is then trained with an
+intensity-weighted listwise loss augmented by logit adjustment for popularity
+debiasing. Against three baselines (MostPopular, KNN collaborative filtering, and
+an XGBoost content--behaviour hybrid), the HGT reaches Recall@10~0.105,
+NDCG@10~0.097 and 79.7\% catalogue coverage with the lowest popularity bias of all
+models (0.053), giving an Overall Score of 0.399 --- second only to KNN-CF (0.421)
+and significantly ahead of the XGBoost hybrid (0.336) and the popularity baseline
+(0.148). Relative to our Milestone~2 report, evaluating the HGT with message
+passing consistent with training (undirected) resolves the directed-evaluation
+artefact that had previously collapsed its scores, and a retuned architecture plus
+RotatE initialisation now outperform the earlier configuration on the composite
+objective. We further analyse
+the learned latent space (20 emergent user archetypes) and produce per-edge
+attention rationales that explain individual recommendations.
+\end{abstract}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Introduction}
+\label{sec:intro}
+
+Music recommendation is dominated by collaborative filtering (CF), which infers
+taste from interaction overlap alone. CF favours popular content and is blind to
+\emph{why} a user likes a track: a listener of Baroque counterpoint and a listener
+of jazz both interact with mainstream pop, so a purely behavioural model conflates
+two distinct preferences. We ask whether a deep model that reasons over explicit
+musical structure --- tracks, artists, genres, keys, tempo classes, instruments,
+and users connected by typed relations --- can recommend more diverse and
+content-grounded items while remaining competitive on ranking quality.
+
+\textbf{Plan.} Our approach is an end-to-end deep-learning pipeline (Fig.~\ref{fig:pipeline}).
+We (i)~integrate the Lakh MIDI Dataset~\cite{raffel2016lakh} and Million Song
+Dataset~\cite{msd2011} into a music KG; (ii)~compress high-dimensional symbolic
+descriptors with a \emph{symbolic-feature autoencoder} and pre-train
+\emph{KG embeddings} (RotatE~\cite{sun2019rotate},
+ComplEx~\cite{trouillon2016complex}) to initialise all node types;
+(iii)~train a \emph{Heterogeneous Graph Transformer}~\cite{hu2020hgt} with a
+popularity-debiased listwise loss; and (iv)~evaluate the model family against three
+baselines on a ranking-plus-diversity metric suite, complemented by latent-space
+and attention-based interpretability analyses.
+
+This document is the final Deep Learning report. It consolidates the proposal and
+the two milestone reports and updates them to match the work actually done. The
+single most consequential change since Milestone~2 is that the HGT --- previously
+crippled by an evaluation-protocol mismatch --- now ranks second among all models,
+with the lowest popularity bias and strong catalogue coverage, once inference is
+made consistent with training and the architecture is retuned. Our contributions are: (1)~a deep representation stack coupling a
+symbolic autoencoder, transductive KG embeddings, and a heterogeneous GNN;
+(2)~an intensity-weighted listwise loss with logit adjustment that exposes a
+tunable ranking-versus-diversity trade-off; (3)~a controlled study of node
+initialisation, debiasing strength, and architecture; and (4)~interpretable
+recommendation rationales grounded in HGT attention.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Problem Statement}
+\label{sec:problem}
+
+\paragraph{Task.} Given a user's listening history, recommend a ranked list of
+$K$ unseen tracks. We treat this as implicit-feedback top-$K$ ranking over a fixed
+catalogue of 6{,}054 modelled songs and 284{,}864 users.
+
+\paragraph{Data.} We use the Lakh MIDI Dataset (symbolic MIDI aligned to audio via
+chroma DTW) and the Million Song Dataset (audio-derived scalars, artist/genre
+metadata, and the Echo Nest Taste Profile of $\sim$48M user--song--playcount
+triplets). After mismatch removal, an inner join to the LMD-matched tracks, and a
+5-interaction cold-start floor, 3{,}048{,}959 interactions remain over 285{,}037
+users and 7{,}227 songs; 7{,}013 tracks yield valid symbolic features and form the
+modelling set (Sec.~\ref{sec:data}).
+
+\paragraph{Expected result.} A model that exploits musical content and relational
+structure should (a)~match or approach CF ranking quality while (b)~substantially
+improving catalogue coverage and lowering popularity bias, and (c)~offering
+human-readable explanations --- properties that popularity-driven CF cannot
+provide.
+
+\paragraph{Evaluation.} A user-level stratified 70/10/20 split (by primary genre
+and release decade) preserves popularity and content distributions across folds;
+KG structure and track features are visible to all folds and only interactions are
+partitioned. We report per-user Recall, Precision, F1, HitRate, MRR, and NDCG at
+$K\in\{5,10,20,50,100\}$, plus two catalogue-level metrics --- coverage
+$\mathrm{Cov}=|\bigcup_u R_u|/|\mathcal{I}|$ and popularity bias PB@$K$ --- fused
+into a composite
+\begin{equation}\label{eq:overall}
+  \mathrm{Overall@}K = 0.6\,\mathrm{NDCG@}K + 0.2\,\mathrm{Cov} + 0.2(1-\mathrm{PB@}K),
+\end{equation}
+which rewards accurate \emph{and} diverse recommendation and serves as the HGT
+checkpoint criterion. Significance is assessed with paired Wilcoxon signed-rank,
+$t$-tests, and bootstrap confidence intervals over a shared 284{,}864-user
+evaluation set.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Related Work}
+\label{sec:related}
+
+\textbf{Collaborative and neural CF.} User--user/item--item similarity and matrix
+factorisation, often optimised with BPR~\cite{rendle2009bpr}, dominate implicit
+feedback; Neural CF~\cite{he2017ncf} replaces the inner product with an MLP. These
+methods are content-agnostic and amplify popularity bias --- the gap our model
+targets. We use KNN-CF and a popularity baseline as references.
+
+\textbf{Content-based and hybrid.} jSymbolic~\cite{mckay2018jsymbolic} and
+music21~\cite{music21docs} extract hundreds of symbolic descriptors from MIDI;
+their high dimensionality and redundancy motivate autoencoder compression before
+recommendation. Our XGBoost hybrid retrieves on autoencoder embeddings and
+re-ranks with a gradient-boosted LTR model, isolating the value of graph structure.
+
+\textbf{KG-enhanced recommendation.} KGCN~\cite{wang2019kgcn} and
+KGAT~\cite{wang2019kgat} propagate KG semantics into item representations;
+LightGCN~\cite{he2020lightgcn} shows that minimal propagation suffices for
+homogeneous user--item graphs; Liu et al.~\cite{liu2024kgmusic} combine KG features
+with multi-task learning for music. We differ by building the KG from scratch, by
+using KG embeddings as \emph{node initialisers} for a heterogeneous GNN rather than
+as a separate aggregation module, and by injecting 1{,}526-dimensional symbolic
+content the KG structure cannot capture.
+
+\textbf{Heterogeneous GNNs and KG embeddings.} The Heterogeneous Graph
+Transformer~\cite{hu2020hgt} learns per-(source,edge,target)-type transformation
+and attention, preserving typed structure and exposing inspectable attention.
+Complex-valued KG embeddings RotatE~\cite{sun2019rotate} and
+ComplEx~\cite{trouillon2016complex} model asymmetric and compositional relations;
+we train them on the non-interaction triples and use them to initialise every
+entity type, including structural nodes (genres, keys, instruments) that have no
+other numeric representation.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Data Pipeline and Preprocessing}
+\label{sec:data}
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=0.96\linewidth]{methodology.png}
+  \caption{End-to-end methodology. Three data sources (Lakh MIDI, Million Song,
+  Echo Nest Taste Profile) are aligned and filtered; 1{,}525 symbolic descriptors
+  per track are compressed to 128-D by an autoencoder; an RDF knowledge graph is
+  built in GraphDB; RotatE KG embeddings (256-D) initialise all node types; the HGT
+  consumes a 9-node-type PyTorch Geometric \texttt{HeteroData} object (track nodes
+  384-D $=$ 128-D AE $\Vert$ 256-D KGE) and is trained against three baselines;
+  all models share a 70/10/20 stratified split and are evaluated at $K{=}10$.}
+  \label{fig:pipeline}
+\end{figure*}
+
+\paragraph{Alignment.} MIDI files are matched to MSD tracks using precomputed
+chroma DTW similarities~\cite{raffel2016lakh}; we keep matches with score
+$\geq 0.55$ and deduplicate, yielding $\sim$19k unique tracks.
+
+\paragraph{Interaction filtering.} Raw Taste Profile interactions
+(48{,}373{,}586) are cleaned in three stages (Tab.~\ref{tab:filtering}): MSD
+mismatch IDs are removed, interactions are inner-joined to the LMD-matched track
+set, and users with fewer than five remaining interactions are dropped to mitigate
+cold-start, leaving 3{,}048{,}959 interactions over 285{,}037 users and 7{,}227
+songs.
+
+\begin{table}[t]
+\centering\footnotesize
+\caption{Interaction filtering pipeline.}
+\label{tab:filtering}
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Step} & \textbf{Interactions} & \textbf{Users} & \textbf{Songs}\\
+\midrule
+Raw            & 48{,}373{,}586 & 1{,}019{,}318 & 384{,}546\\
+$-$Mismatches  & 45{,}795{,}100 & 1{,}019{,}318 & 378{,}309\\
+$\cap$\,LMD     & 4{,}243{,}384  &   848{,}243 &   7{,}465\\
+$-$Cold-start  & 3{,}048{,}959  &   285{,}037 &   7{,}227\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Symbolic features.} jSymbolic and music21 are applied to all MIDI
+files; 7{,}013 tracks succeed, each described by 1{,}526 numerical descriptors
+spanning pitch, melody, harmony, rhythm, dynamics, texture, and instrumentation.
+Features are standardised before autoencoding.
+
+\paragraph{Knowledge graph.} Tracks, performances, artists, genres, instruments,
+keys, modes, tempo classes, and decades become typed nodes; user listening events
+become \texttt{user}$\to$\texttt{track} edges. The populated graph contains
+$1.9\!\times\!10^{7}$ triples; the entity composition is 285{,}037 listeners,
+7{,}013 tracks/performances, 3{,}668 artists, 645 genres, 129 instruments, 12 keys,
+9 tempo classes, 7 decades. The KG is loaded into GraphDB for validation and
+streamed into a PyTorch Geometric \texttt{HeteroData} object for learning. (KG
+design and SPARQL validation are detailed in the companion Knowledge Graphs
+report; here we focus on the learning stack.)
+
+\paragraph{Splits.} A single user-level stratified split (by primary genre and
+decade, 2{,}186 strata) gives 1{,}943{,}681 train, 348{,}054 validation, and
+559{,}806 test interactions over 284{,}864 users and 6{,}054 evaluated songs.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Models and Technical Approach}
+\label{sec:models}
+
+\subsection{Symbolic-Feature Autoencoder}
+A fully connected autoencoder compresses the standardised 1{,}526-dimensional
+symbolic vector to a 128-dimensional bottleneck. The encoder is
+$1526\!\to\!512\!\to\!256\!\to\!128$ with a symmetric decoder, each hidden layer
+followed by ReLU and dropout~0.2. The bottleneck embedding serves both as the
+track node feature in the GNN and as the item/user representation in the hybrid
+baseline. It minimises reconstruction MSE.
+
+\subsection{Knowledge-Graph Embeddings}
+Our KG is dominated by \emph{asymmetric} relations (a user listens to a track, not
+the reverse), which real-valued translation models cannot represent. \textbf{RotatE}
+encodes each relation as a complex rotation ($h\circ r\approx t$), naturally
+capturing asymmetry, inversion, and \emph{compositional} chains (e.g.\ a decade
+predecessor/successor traversal); it is our primary initialiser. \textbf{ComplEx}
+achieves asymmetry by conjugation and is retained for comparison. Both are trained
+on 807{,}955 triples (listening edges excluded to prevent target leakage),
+entity\_dim~128, producing 256-dimensional vectors for all 304{,}110 entities.
+
+\subsection{From KG to Learnable Tensors}
+Each ontology class becomes a node type and each predicate a typed directed edge.
+Track nodes are initialised with the 384-dimensional concatenation of the 128-dim
+autoencoder embedding and the 256-dim RotatE vector; all other node types receive
+their 256-dim KG embedding. Because listening events are direct
+\texttt{user}$\to$\texttt{track} edges, user-to-item message passing requires a
+single hop. To let the user node receive and emit messages symmetrically, message
+passing is performed on the \emph{undirected} graph; this consistency between
+training and inference is the fix for the Milestone~2 directed-evaluation artefact.
+
+\subsection{Heterogeneous Graph Transformer}
+The HGT~\cite{hu2020hgt} stack uses 2 message-passing layers, 4 attention heads,
+hidden dimension 256, and dropout~0.1, learning separate transformation and
+attention parameters per (source-type, edge-type, target-type) triple
+(see the main-model column of Fig.~\ref{fig:pipeline}). Each \texttt{HGTConv} layer
+applies per-node-type Q/K/V projections and per-edge-type message/attention
+weights, computes 4-head attention over typed neighbours, aggregates, and passes
+through a per-target-type output linear, LayerNorm, ReLU, dropout, and a residual
+connection. A per-type MLP head ($256\!\to\!256\!\to\!128$) projects the final
+hidden state to a 128-dimensional output that is $\ell_2$-normalised; scoring is
+cosine similarity between user and track embeddings with seen items masked.
+
+\paragraph{Loss.} For normalised user embedding $\hat{\mathbf{u}}$ and track
+embeddings $\hat{\mathbf{t}}_i$, the logit-adjusted score is
+\begin{equation}
+  s_i = \tfrac{\hat{\mathbf{u}}^\top\hat{\mathbf{t}}_i}{\tau} + \lambda\log p_i,
+\end{equation}
+where $\tau{=}0.1$ sharpens the softmax and $p_i$ is the Laplace-smoothed marginal
+listen probability. Since $\log p_i<0$, popular tracks are penalised and long-tail
+items are surfaced. With soft targets $\tilde{p}_{ui}\propto\log(1+c_{ui})$
+(play-count intensity, row-normalised), the objective is the listwise
+cross-entropy
+\begin{equation}
+  \mathcal{L}=-\frac{1}{|B|}\sum_{u\in B}\sum_i
+  \tilde{p}_{ui}\,\log\mathrm{softmax}(\mathbf{s}_u)_i .
+\end{equation}
+Checkpoints are selected by Overall@10 (Eq.~\ref{eq:overall}) on validation.
+
+\subsection{Baselines}
+\textbf{MostPopular} ranks unseen items by global play frequency, identically for
+all users. \textbf{KNN-CF} is a user--user collaborative filter on the
+$\ell_2$-normalised interaction matrix; $k{=}6$ is selected by a validation sweep.
+\textbf{XGBoost Hybrid} retrieves 200 candidates per user via autoencoder-profile
+cosine similarity and re-ranks with a gradient-boosted LTR model
+(\texttt{rank:ndcg@10}) on 300-dimensional feature vectors (128-dim user-profile
+$\Vert$ 128-dim track AE $\Vert$ 44 categorical features: one-hot key/mode/tempo
+class, target-encoded genre/artist, multi-hot instruments), fusing content and
+behaviour without graph structure.
+
+\begin{table*}[t]
+\centering\scriptsize
+\caption{Model and training budget. Input shape is per-example. AE / KGE / XGBoost
+wall-clock is logged; the HGT was trained for 300 epochs (best checkpoint at
+epoch~240) on the same A100 class but per-run wall-clock was not separately logged.
+Hardware: NVIDIA A100 80\,GB (A2~Ultra) for most runs; NVIDIA RTX~PRO~6000 (G4) for
+a subset.}
+\label{tab:budget}
+\setlength{\tabcolsep}{3.5pt}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{lllllllll}
+\toprule
+\textbf{Model} & \textbf{Architecture / depth} & \textbf{Input} & \textbf{Loss} & \textbf{Optimiser} & \textbf{Epochs} & \textbf{LR} & \textbf{Batch} & \textbf{Time}\\
+\midrule
+Autoencoder & MLP $1526$-$512$-$256$-$128$ ($+$sym.\ dec.) & $1526$ & MSE & Adam & 200 & $10^{-3}$ & 2048 & $\approx$\,11\,s\\
+RotatE (KGE) & complex rotation, dim 128 ($\to$256) & triple & neg.-sampling rank & Adam & 200 & $10^{-2}$ & 32{,}768 & 44\,m\\
+ComplEx (KGE) & complex bilinear, dim 128 ($\to$256) & triple & neg.-sampling rank & Adam & 200 & $10^{-2}$ & 32{,}768 & 66\,m\\
+HGT & 2 layers, 4 heads, hidden 256, out 128 & 384/256 & logit-adj.\ listwise CE & Adam (cos., wd $10^{-4}$) & 300 & $10^{-3}$ & per-user & A100\\
+KNN-CF & user--user cosine, $k{=}6$ & interactions & --- & --- & --- & --- & --- & $<$\,1\,m\\
+XGBoost Hybrid & GBDT, 300 rounds (ES 30) & 300 & \texttt{rank:ndcg@10} & --- & 300\,rd & --- & --- & 23\,s\\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Experiments}
+\label{sec:experiments}
+
+We run the following experiments, all on the splits of Sec.~\ref{sec:data}:
+\begin{itemize}\setlength\itemsep{1pt}
+  \item \textbf{Autoencoder compression}: 200-epoch transductive run over 6{,}054
+        tracks; per-epoch MSE monitored.
+  \item \textbf{KGE comparison}: RotatE vs.\ ComplEx (200 epochs each) as HGT node
+        initialisers.
+  \item \textbf{Architecture search}: HGT sweeps over width, heads, layers,
+        dropout, learning rate, weight decay, and temperature, ranked by Overall@10
+        on validation.
+  \item \textbf{Initialisation ablation}: RotatE vs.\ random node features at the
+        selected configuration.
+  \item \textbf{Debiasing ($\lambda$) ablation}: $\lambda\in\{0,0.1,0.2,0.3,0.5\}$
+        to characterise the ranking-versus-coverage trade-off.
+  \item \textbf{Multi-$K$ benchmark}: all four models at
+        $K\in\{5,10,20,50,100\}$ with paired significance testing.
+  \item \textbf{Interpretability}: latent-space clustering (GMM over UMAP) and
+        per-edge attention rationales.
+\end{itemize}
+Training budgets and hardware are summarised in Tab.~\ref{tab:budget}.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Results}
+\label{sec:results}
+
+\subsection{Representation Learning Curves}
+The autoencoder trains for the full 200 epochs (early stopping never triggers),
+with MSE falling from 0.964 to 0.616, steepest in the first $\sim$75 epochs
+(Fig.~\ref{fig:ae}). The residual MSE reflects the aggressive $12\times$
+dimensionality reduction. RotatE converges to a lower absolute loss than ComplEx
+(0.356 vs.\ 0.381; Fig.~\ref{fig:kge}), consistent with its better fit to the
+asymmetric/compositional relations in the KG.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.80\linewidth]{ae_loss_curve.png}
+  \caption{Autoencoder reconstruction MSE over 200 epochs ($0.964\!\to\!0.616$).}
+  \label{fig:ae}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.80\linewidth]{kge_loss_curve.png}
+  \caption{KGE training loss (log scale) for RotatE and ComplEx over 200 epochs.
+  RotatE reaches a lower final loss (0.356 vs.\ 0.381).}
+  \label{fig:kge}
+\end{figure}
+
+\subsection{HGT Training, Selection, and Ablations}
+Figure~\ref{fig:hgt} summarises the HGT. Training and validation listwise loss
+decrease smoothly with no divergence (panel a); validation Overall@10 and its
+components rise and plateau, with the best checkpoint at epoch~240
+(Overall@10~0.367; panel b). The debiasing ablation (panel c) reveals a clean
+monotonic trade-off: increasing $\lambda$ lowers NDCG/Recall but raises coverage
+and lowers popularity bias. Concretely (validation, selected configuration):
+$\lambda{=}0$ gives Recall@10~0.123, NDCG@10~0.069, coverage~1.6\%, whereas
+$\lambda{=}0.5$ gives Recall@10~0.070, NDCG@10~0.038, coverage~18.9\% and the best
+Overall@10 (0.246); checkpoint selection on the composite score therefore lands at
+$\lambda{=}0.5$. The initialisation ablation (panel d) shows that, \emph{unlike our
+Milestone~2 finding}, RotatE now beats random initialisation on the composite
+objective (Overall@10~0.372 vs.\ 0.320), driven by markedly higher coverage
+(0.696 vs.\ 0.406); random init retains a small NDCG edge (0.088 vs.\ 0.067),
+confirming that KGE structure mainly helps diversity rather than raw ranking.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{hgt_training_panel.png}
+  \caption{HGT (hidden 256, 4 heads, 2 layers, $\lambda{=}0.5$, $\tau{=}0.1$).
+  (a)~train/validation listwise loss; (b)~validation Overall@10 and components,
+  best at epoch~240; (c)~$\lambda$ accuracy--coverage trade-off; (d)~RotatE vs.\
+  random node initialisation on test.}
+  \label{fig:hgt}
+\end{figure}
+
+\subsection{Benchmark}
+Table~\ref{tab:benchmark} reports all models at $K{=}10$ over the full
+284{,}864-user test set, and Table~\ref{tab:multik} the multi-$K$ sweep.
+\textbf{KNN-CF} attains the best Overall Score (0.421), combining competitive
+NDCG@10 (0.106) with 91.6\% coverage. \textbf{The retrained HGT is a close
+second} (Overall~0.399): it \emph{beats KNN-CF on per-user Recall@10}
+(0.105 vs.\ 0.103, $p<10^{-5}$), reaches 79.7\% coverage, and has the
+\emph{lowest popularity bias of all models} (0.053 vs.\ 0.130 for KNN-CF).
+MostPopular leads raw NDCG@10 (0.114) but recommends from only 0.6\% of the
+catalogue (Overall~0.148). XGBoost reaches 66.7\% coverage but a retrieval
+bottleneck caps NDCG@10 at 0.044. All pairwise Recall/NDCG differences are
+statistically significant ($p<0.001$ except HGT vs.\ KNN-CF on Recall,
+$p\approx9\!\times\!10^{-6}$); Figure~\ref{fig:sig} shows per-user distributions
+with set-level significance bars. The multi-$K$ sweep (Tab.~\ref{tab:multik})
+confirms the ordering: HGT's Overall Score climbs from 0.372 at $K{=}5$ to 0.474
+at $K{=}100$ and overtakes KNN-CF for $K\!\geq\!20$ as its coverage and low
+popularity bias compound.
+
+\begin{table}[t]
+\centering\footnotesize
+\caption{Test benchmark at $K{=}10$ (all 284{,}864 test users). Coverage and
+Popularity Bias (PB) are catalogue-level. Overall weights NDCG:Cov:$(1-$PB$)$ as
+$0.6{:}0.2{:}0.2$. Best per column in \textbf{bold}.}
+\label{tab:benchmark}
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{lccccccc}
+\toprule
+\textbf{Model} & \textbf{Rec.} & \textbf{NDCG} & \textbf{HR} & \textbf{MRR} & \textbf{Cov.} & \textbf{PB} & \textbf{Ovrl.}\\
+\midrule
+MostPopular  & \textbf{.129} & \textbf{.114} & \textbf{.200} & \textbf{.090} & .006 & .611 & .148\\
+KNN-CF       & .103 & .106 & .169 & .087 & \textbf{.916} & .130 & \textbf{.421}\\
+XGBoost      & .038 & .044 & .072 & .035 & .667 & .118 & .336\\
+HGT          & .105 & .097 & .175 & .074 & .797 & \textbf{.053} & .399\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering\footnotesize
+\caption{Multi-$K$ evaluation. Overall $=0.6\,$NDCG$+0.2\,$Cov$+0.2(1{-}$PB$)$.}
+\label{tab:multik}
+\setlength{\tabcolsep}{3.2pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{llccccc}
+\toprule
+\textbf{Metric} & \textbf{Model} & \textbf{K=5} & \textbf{K=10} & \textbf{K=20} & \textbf{K=50} & \textbf{K=100}\\
+\midrule
+\multirow{4}{*}{Recall}
+  & HGT         & .069 & .105 & .155 & .241 & .324\\
+  & KNN-CF      & .079 & .103 & .115 & .121 & .129\\
+  & MostPopular & .088 & .129 & .196 & .303 & .399\\
+  & XGBoost     & .028 & .038 & .050 & .069 & .085\\
+\midrule
+\multirow{4}{*}{NDCG}
+  & HGT         & .079 & .097 & .113 & .133 & .148\\
+  & KNN-CF      & .095 & .106 & .109 & .111 & .113\\
+  & MostPopular & .096 & .114 & .135 & .159 & .177\\
+  & XGBoost     & .038 & .044 & .049 & .055 & .059\\
+\midrule
+\multirow{4}{*}{Cov.}
+  & HGT         & .716 & .797 & .871 & .949 & .984\\
+  & KNN-CF      & .851 & .916 & .950 & .959 & .960\\
+  & MostPopular & .005 & .006 & .009 & .014 & .024\\
+  & XGBoost     & .570 & .667 & .751 & .826 & .859\\
+\midrule
+\multirow{4}{*}{Overall}
+  & HGT         & .372 & .399 & \textbf{.425} & \textbf{.456} & \textbf{.474}\\
+  & KNN-CF      & \textbf{.392} & \textbf{.421} & .440 & .451 & .455\\
+  & MostPopular & .110 & .148 & .182 & .232 & .267\\
+  & XGBoost     & .304 & .336 & .364 & .389 & .401\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{benchmark_significance_bars.png}
+  \caption{Per-user metric distributions with set-level significance bars
+  (\texttt{***}$p{<}.001$). HGT has the lowest popularity bias (0.053) and the
+  second-highest Overall Score (0.399), behind KNN-CF (0.421).}
+  \label{fig:sig}
+\end{figure}
+
+\subsection{Latent Space and Interpretability}
+Projecting all nine node types from the HGT's 128-dimensional output space to 2-D
+with UMAP (Fig.~\ref{fig:latentall}) reveals a strongly \emph{type-structured}
+geometry: in most cases the model places each node type in its own region. Artists
+and the attribute/concept nodes --- genres, keys, modes, tempo classes,
+instruments, and decades --- collapse into a single, well-separated cluster (GMM
+cluster~13), distinct from the user--track mass. Within that mass, however, users
+and tracks are deliberately \emph{not} pulled apart: a dense track region sits
+alongside the user clusters and individual users fall right among tracks. We read
+this user--track proximity not as noise but as the geometric signature of the
+training objective --- recommendation scores are cosine similarities between user
+and track embeddings, so the model is rewarded for embedding each user into the
+track manifold near the items it would recommend. In other words, on top of the
+clean content/structure separation, the HGT learns a collaborative-filtering-like
+placement of users among the tracks they are predicted to like.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{latent_clusters_all.png}
+  \caption{All-node-type HGT latent space (UMAP). Left: by node type; right: 20
+  BIC-selected GMM components. Artists and attribute/concept nodes form a
+  well-separated region (cluster~13), while users and tracks share a common region
+  and intermix --- consistent with the cosine user--track scoring objective.}
+  \label{fig:latentall}
+\end{figure}
+
+Restricting the projection to users alone and fitting a BIC-optimal Gaussian
+Mixture yields 20 components (Fig.~\ref{fig:latent}) that form coherent
+\emph{listener archetypes} described by their dominant genre, tempo class, mode,
+and decade (e.g.\ ``rock$\,\cdot\,$Allegro$\,\cdot\,$2000s'',
+``dance pop$\,\cdot\,$Andante$\,\cdot\,$2000s'',
+``rock$\,\cdot\,$Allegro$\,\cdot\,$1970s''). That such structure emerges at all is
+evidence that HGT message passing propagates musically meaningful context rather
+than merely fitting interactions; these archetypes also seed the cold-start persona
+recommender of Sec.~\ref{sec:coldstart}.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{latent_clusters_users.png}
+  \caption{HGT user latent space (UMAP). Left: all users; right: 20 BIC-selected
+  GMM components, each an interpretable listening archetype.}
+  \label{fig:latent}
+\end{figure}
+
+\paragraph{Caveats on the latent analysis.} Two limitations temper this reading.
+First, the embeddings inhabit a 128-dimensional space whose spatial arrangement is
+not directly comprehensible to humans; the 2-D UMAP plots are a non-isometric,
+lossy projection that distorts true distances and densities, so they are a
+qualitative aid rather than a faithful picture of the latent geometry (the GMM is
+fit in the full 128-D space --- UMAP is used only for display). Second, for the
+selected full-covariance model the BIC decreased monotonically up to the largest
+component count we tested (20) without reaching a minimum (Fig.~\ref{fig:bic},
+Appendix), so the 20-component choice is a boundary selection rather than a true
+optimum. We capped the sweep at 20 deliberately: a cold-start persona system that
+must slot a new user into one of \emph{more} than twenty profiles defeats its own
+purpose, and our aim here was chiefly to confirm that the continuous embeddings
+cluster meaningfully in high dimensions rather than to identify the globally
+optimal mixture. Extending the component sweep or adopting a different clustering
+method (e.g.\ agglomerative/hierarchical clustering) is left to future work.
+
+Because HGT learns typed attention, we can attribute each recommendation to
+specific neighbours and edge types. Figure~\ref{fig:rationale} contrasts three
+attribution views --- raw attention, score-delta ablation, and integrated
+gradients --- for one recommendation, showing that shared instruments and a
+matching mode/genre drive the suggested track. Such rationales are produced at no
+extra modelling cost and are unavailable to the CF baselines.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{rationale_compare.png}
+  \caption{Three explanation views of a single HGT recommendation (attention,
+  score-delta, integrated gradients), tracing the suggestion to shared instruments
+  and a matching genre/mode.}
+  \label{fig:rationale}
+\end{figure}
+
+At the population level (Fig.~\ref{fig:population}, Appendix), HGT attains by far
+the highest user--recommendation cosine alignment in its own latent space
+(mean~0.004 vs.\ $\leq$0.001 for MostPopular) while distributing hits across the
+hit-rate-vs-cosine plane more evenly than the popularity baseline. A per-user
+contrastive study (Tab.~\ref{tab:cases}, Appendix) further shows cases where the
+HGT is the \emph{only} model to score hits (e.g.\ user~15906: 4 hits vs.\ 0 for all
+baselines), supporting the view that the graph model surfaces content-consistent
+items the behavioural baselines miss. For the XGBoost hybrid, gain- and SHAP-based
+attribution (Figs.~\ref{fig:xgbimp}--\ref{fig:shap}, Appendix) show that the track
+autoencoder dimensions dominate ranking (mean$|$SHAP$|$ 0.032 vs.\ 0.016 for the
+user profile and 0.007 for categorical features), with \texttt{key=G} the single
+most influential categorical feature --- confirming that content embeddings, not
+metadata, carry the hybrid's signal.
+
+\subsection{Cold-Start Persona Recommendation}
+\label{sec:coldstart}
+Every model evaluated above needs interaction history, so none can serve a brand-new
+user --- the cold-start problem. We exploit a property unique to the HGT: because
+attribute nodes (genres, tempo classes, modes, decades, instruments), tracks, and
+users all share \emph{one} embedding space, a new user can be placed in that space
+from a few declared preferences, with no retraining. The user selects musical
+attributes; we average the chosen anchor embeddings into a taste vector and offer
+three inference paths. (i)~\textbf{Persona snap}: assign the vector to the nearest
+of 20 \emph{listener archetypes} --- the centroids of a users-only GMM fit on the
+HGT latent space (Sec.~\ref{sec:results}, Tab.~\ref{tab:personas}). (ii)~\textbf{k-NN
+user blend}: form a bespoke point on the user manifold as a similarity-weighted
+softmax mean of the $k{=}15$ nearest real users, with neighbour dispersion as a
+confidence signal. (iii)~\textbf{Inductive HGT}: insert a temporary user node into
+the undirected graph, feed it a KGE-space feature from the picked attributes, wire
+it to a few taste-matched seed tracks, and run a single forward pass; this yields an
+inductive user embedding \emph{and} genuine softmax attention, so the same explainer
+used in Sec.~\ref{sec:results} produces faithful per-edge rationales for the new
+user. All three are pure inference and are exposed through an interactive widget
+(taste form $\rightarrow$ ranked recommendations $\rightarrow$ ``why'' panel),
+turning the learned latent geometry into a usable cold-start recommender.
+
+\begin{table}[t]
+\centering\footnotesize
+\caption{Example HGT listener archetypes (users-only GMM centroids, labelled by
+their nearest tracks' dominant genre, tempo class, and decade) used for cold-start
+persona snapping. Twenty archetypes are learned in total.}
+\label{tab:personas}
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{clr}
+\toprule
+\textbf{ID} & \textbf{Archetype (genre\,$\cdot$\,tempo\,$\cdot$\,decade)} & \textbf{\#\,users}\\
+\midrule
+1  & rock $\cdot$ Allegro $\cdot$ 2000s     & 18{,}244\\
+5  & rock $\cdot$ Andante $\cdot$ 2000s (hip hop/rap) & 13{,}375\\
+12 & rock $\cdot$ Allegro $\cdot$ 1970s     & 19{,}238\\
+17 & dance pop $\cdot$ Andante $\cdot$ 2000s & 12{,}791\\
+19 & rock $\cdot$ Allegro $\cdot$ 2000s (metal/hard rock) & 13{,}430\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Discussion: Known Issues and Limitations}
+\label{sec:discussion}
+
+\paragraph{Resolving the Milestone~2 evaluation artefact.} Our Milestone~2 report
+recorded a near-zero HGT benchmark caused by a train/inference mismatch: the model
+was trained with undirected message passing but evaluated on the directed graph,
+which prevents messages from reaching user nodes at inference. Re-running inference
+on the undirected graph --- matching training --- recovers the full performance
+(Tab.~\ref{tab:dirfix}): Overall Score rises from 0.208 to 0.399 and Recall@10 from
+0.001 to 0.105. This single protocol fix, not any architectural change, is what
+moves the HGT from last to second place; all numbers in this report use the
+consistent undirected protocol.
+
+\begin{table}[t]
+\centering\footnotesize
+\caption{HGT under directed vs.\ consistent undirected inference (test set). The
+directed/undirected mismatch alone, not model capacity, explains the Milestone~2
+collapse.}
+\label{tab:dirfix}
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Metric} & \textbf{Undirected} & \textbf{Directed} & \textbf{$\Delta$}\\
+\midrule
+Recall@10        & 0.105 & 0.001 & 0.104\\
+NDCG@10          & 0.097 & 0.002 & 0.095\\
+HitRate@10       & 0.175 & 0.003 & 0.172\\
+Coverage@10      & 0.796 & 0.041 & 0.755\\
+Popularity Bias  & 0.090 & 0.009 & 0.082\\
+Overall Score    & 0.399 & 0.208 & 0.192\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Offline evaluation is an incomplete proxy.} The composite score exposes
+a genuine ranking-versus-diversity tension. MostPopular maximises NDCG by
+exploiting long-tail play-count structure yet ignores 99.4\% of the catalogue,
+while HGT and KNN-CF trade a little NDCG for near-complete coverage. Crucially,
+absence of a track from a user's history does not mean dislike; a held-out
+implicit-feedback test set therefore under-credits models (like HGT) that surface
+unheard but plausibly-liked items. This is consistent with HGT's high latent-space
+alignment to user profiles despite a modest hit rate, and motivates a user study.
+
+\paragraph{Retrieval bottleneck.} The XGBoost hybrid's low NDCG is a first-stage
+ceiling from 200-candidate retrieval, not a re-ranking failure; an approximate
+nearest-neighbour candidate stage is the highest-value fix.
+
+\paragraph{KGE contributes diversity, not ranking.} RotatE initialisation now
+improves the composite score via coverage, but random init still wins on raw NDCG,
+so the KGE structural prior is partly subsumed by HGT's own message passing. A
+controlled study of frozen vs.\ fine-tuned KGE and of corpus composition is
+warranted.
+
+\paragraph{Limited search.} Hyperparameters were chosen by a coarse one-axis sweep
+under time pressure; a joint Bayesian search over width, depth, heads, $\tau$, and
+$\lambda$ could shift the operating point.
+
+\section{Conclusion and Future Work}
+\label{sec:conclusion}
+We built a deep pipeline --- symbolic autoencoder, transductive KG embeddings, and
+a heterogeneous graph transformer with a popularity-debiased listwise loss --- for
+content- and preference-aware music recommendation. Evaluating the HGT with
+message passing consistent with training (undirected) fixes the Milestone~2
+evaluation artefact, and a retuned architecture lifts it further: the model is now
+a strong second overall (0.399), beats KNN-CF on Recall@10,
+overtakes it on Overall Score for $K\!\geq\!20$, and achieves the lowest popularity
+bias of any model while remaining interpretable. Future work includes ANN-based
+candidate generation for the hybrid, a factorial ablation isolating KG structure /
+symbolic features / debiasing, graph-collaborative baselines
+(LightGCN~\cite{he2020lightgcn}, KGCN~\cite{wang2019kgcn}), a broader KGE
+comparison, joint hyperparameter optimisation, a larger-component or hierarchical
+clustering of the latent space, and an online user study to address the
+offline-evaluation gap.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Member Contributions}
+\label{sec:contributions}
+\begin{description}\setlength\itemsep{2pt}
+  \item[\normalfont\textbf{Pedro Fanica (54346)}] Pipeline architecture and
+        environment bootstrap, GraphDB upload and SPARQL validation, KG$\to$PyG
+        conversion, HGT model and training loop with the logit-adjusted listwise
+        loss, architecture/$\lambda$/init ablations, latent-space GMM/UMAP analysis
+        and cold-start persona recommender, attention/IG explanation rationales.
+  \item[\normalfont\textbf{Aarthi Perumpillichira (66404)}] KG design and
+        construction: OWL ontology schema, \texttt{kg\_builder}, Wikidata entity
+        alignment, decade temporal chain, rich-KG reification, SPARQL query library
+        and GraphDB inspection.
+  \item[\normalfont\textbf{Maja Skwaro\'n (66083)}] Data pipeline: LMD--MSD linking,
+        Taste Profile filtering, jSymbolic/music21 feature extraction, the
+        symbolic-feature autoencoder, KNN-CF and XGBoost baselines, the evaluation
+        protocol and statistical significance testing.
+\end{description}
+
+{
+  \small
+  \bibliographystyle{unsrtnat}
+  \bibliography{main}
+}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\clearpage
+\onecolumn
+\appendix
+\section*{Appendix: Additional Results}
+\addcontentsline{toc}{section}{Appendix}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.95\linewidth]{benchmark_multiK_heatmaps.png}
+  \caption{Full metric $\times$ model $\times$ $K$ benchmark heatmaps. Darker is
+  better per cell (popularity bias inverted). The HGT row is competitive across all
+  $K$, dominating coverage and popularity bias among the high-NDCG models.}
+  \label{fig:heatmaps}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.70\linewidth]{xgb_loss_curve.png}
+  \caption{XGBoost LTR training curve (\texttt{rank:ndcg@10}, up to 300 rounds,
+  early stopping 30). Rapid convergence confirms the 200-candidate retrieval
+  bottleneck, not under-training, limits NDCG.}
+  \label{fig:xgb}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.70\linewidth]{latent_gmm_bic.png}
+  \caption{BIC over GMM component count for the HGT user latent space; the minimum
+  selects 20 components.}
+  \label{fig:bic}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{population_summary.png}
+  \caption{Population-level qualitative comparison across all four models. Rows:
+  (top)~attribute-distribution violins of recommended genre/mode/decade/tempo
+  vs.\ the training profile; (middle)~distribution of user--recommendation cosine
+  similarity in the HGT latent space (HGT mean~0.004 vs.\ $\leq$0.001 for
+  MostPopular); (bottom)~hit-rate vs.\ cosine. HGT concentrates probability mass at
+  higher cosine alignment than the behavioural baselines.}
+  \label{fig:population}
+\end{figure}
+
+\begin{table}[h]
+\centering\footnotesize
+\caption{Per-user contrastive case studies (hits@10 per model; all ``heavy''
+profiles). Selected to expose disagreement between models. The HGT is sometimes the
+only model with any hits (user~15906), illustrating complementarity with the
+behavioural baselines.}
+\label{tab:cases}
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{lrcccc}
+\toprule
+\textbf{Case} & \textbf{$n_{\text{tr}}$} & \textbf{MostPop} & \textbf{KNN} & \textbf{XGB} & \textbf{HGT}\\
+\midrule
+hgt-win-heavy (u15906)  & 24  & 0 & 0 & 0 & \textbf{4}\\
+hgt-edge (u123955)      & 62  & 0 & 1 & 1 & \textbf{4}\\
+baseline-win (u204163)  & 79  & 5 & \textbf{8} & 0 & 0\\
+all-success (u19316)    & 102 & 6 & \textbf{7} & 1 & 2\\
+all-fail (u155906)      & 81  & 0 & 0 & 0 & 0\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.78\linewidth]{xgb_feature_importance.png}
+  \caption{XGBoost hybrid: top-20 features by gain. Track autoencoder dimensions
+  dominate, with \texttt{key=G} the strongest categorical feature.}
+  \label{fig:xgbimp}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.92\linewidth]{xgb_shap_summary.png}
+  \caption{XGBoost hybrid: SHAP summary over a 1{,}000-user sample. Mean$|$SHAP$|$
+  by block: track-AE 0.032, user-profile 0.016, categorical/content 0.007 ---
+  content embeddings drive the re-ranking far more than metadata.}
+  \label{fig:shap}
+\end{figure}
+
+\end{document}
