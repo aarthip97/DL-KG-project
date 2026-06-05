@@ -50,7 +50,7 @@ intensity-weighted listwise loss augmented by logit adjustment for popularity
 debiasing. Against three baselines (MostPopular, KNN collaborative filtering, and
 an XGBoost content--behaviour hybrid), the HGT reaches Recall@10~0.105,
 NDCG@10~0.097 and 79.7\% catalogue coverage with the lowest popularity bias of all
-models (0.053), giving an Overall Score of 0.399 --- second only to KNN-CF (0.421)
+models (0.090), giving an Overall Score of 0.399 --- second only to KNN-CF (0.421)
 and significantly ahead of the XGBoost hybrid (0.336) and the popularity baseline
 (0.148). Relative to our Milestone~2 report, evaluating the HGT with message
 passing consistent with training (undirected) resolves the directed-evaluation
@@ -119,10 +119,10 @@ improving catalogue coverage and lowering popularity bias, and (c)~offering
 human-readable explanations --- properties that popularity-driven CF cannot
 provide.
 
-\paragraph{Evaluation.} A user-level stratified 70/10/20 split (by primary genre
-and release decade) preserves popularity and content distributions across folds;
-KG structure and track features are visible to all folds and only interactions are
-partitioned. We report per-user Recall, Precision, F1, HitRate, MRR, and NDCG at
+\paragraph{Evaluation.} A user-level stratified 70/10/20 split (by primary genre,
+decade, key, mode, and tempo class) preserves popularity and content distributions
+across folds; KG structure and track features are visible to all folds and only
+interactions are partitioned. We report per-user Recall, Precision, F1, HitRate, MRR, and NDCG at
 $K\in\{5,10,20,50,100\}$, plus two catalogue-level metrics --- coverage
 $\mathrm{Cov}=|\bigcup_u R_u|/|\mathcal{I}|$ and popularity bias PB@$K$ --- fused
 into a composite
@@ -241,9 +241,10 @@ while the highest total play count is \emph{You're The One} (Dwight Yoakam,
 390{,}283 plays). The schema-level ontology (TBox) and a concrete track
 neighbourhood (ABox) are shown in Figs.~\ref{fig:tbox}--\ref{fig:abox} (Appendix).
 
-\paragraph{Splits.} A single user-level stratified split (by primary genre and
-decade, 2{,}186 strata) gives 1{,}943{,}681 train, 348{,}054 validation, and
-559{,}806 test interactions over 284{,}864 users and 6{,}054 evaluated songs.
+\paragraph{Splits.} A single user-level stratified split (by primary genre,
+decade, key, mode, and tempo class; 2{,}186 strata) gives 1{,}943{,}681 train,
+348{,}054 validation, and 559{,}806 test interactions over 284{,}864 users and
+6{,}054 evaluated songs.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Models and Technical Approach}
@@ -425,15 +426,17 @@ Table~\ref{tab:benchmark} reports all models at $K{=}10$ over the full
 NDCG@10 (0.106) with 91.6\% coverage. \textbf{The retrained HGT is a close
 second} (Overall~0.399): it \emph{beats KNN-CF on per-user Recall@10}
 (0.105 vs.\ 0.103, $p<10^{-5}$), reaches 79.7\% coverage, and has the
-\emph{lowest popularity bias of all models} (0.053 vs.\ 0.130 for KNN-CF).
+\emph{lowest popularity bias of all models} (0.090 vs.\ 0.130 for KNN-CF).
 MostPopular leads raw NDCG@10 (0.114) but recommends from only 0.6\% of the
 catalogue (Overall~0.148). XGBoost reaches 66.7\% coverage but a retrieval
-bottleneck caps NDCG@10 at 0.044. All pairwise Recall/NDCG differences are
-statistically significant ($p<0.001$ except HGT vs.\ KNN-CF on Recall,
-$p\approx9\!\times\!10^{-6}$); Figure~\ref{fig:sig} shows per-user distributions
-with set-level significance bars. The multi-$K$ sweep (Tab.~\ref{tab:multik})
+bottleneck caps NDCG@10 at 0.044. Every pairwise difference is statistically
+significant ($p<0.001$); the narrowest margin is HGT$\,>\,$KNN-CF on Recall@10
+($p\approx9\!\times\!10^{-6}$). Figure~\ref{fig:sig} shows the per-user
+distributions and set-level bars, and Tab.~\ref{tab:significance} (Appendix) the
+full pairwise tests --- mean $\bar{x}$ (std $s$), $\Delta\bar{x}$, test type, and
+$p$ --- for NDCG, popularity bias, coverage, and Overall Score. The multi-$K$ sweep (Tab.~\ref{tab:multik})
 confirms the ordering: HGT's Overall Score climbs from 0.372 at $K{=}5$ to 0.474
-at $K{=}100$ and overtakes KNN-CF for $K\!\geq\!20$ as its coverage and low
+at $K{=}100$ and overtakes KNN-CF for $K\!\geq\!50$ as its coverage and low
 popularity bias compound.
 
 \begin{table}[t]
@@ -451,7 +454,7 @@ $0.6{:}0.2{:}0.2$. Best per column in \textbf{bold}.}
 MostPopular  & \textbf{.129} & \textbf{.114} & \textbf{.200} & \textbf{.090} & .006 & .611 & .148\\
 KNN-CF       & .103 & .106 & .169 & .087 & \textbf{.916} & .130 & \textbf{.421}\\
 XGBoost      & .038 & .044 & .072 & .035 & .667 & .118 & .336\\
-HGT          & .105 & .097 & .175 & .074 & .797 & \textbf{.053} & .399\\
+HGT          & .105 & .097 & .175 & .074 & .797 & \textbf{.090} & .399\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -497,7 +500,8 @@ HGT          & .105 & .097 & .175 & .074 & .797 & \textbf{.053} & .399\\
   \centering
   \includegraphics[width=\linewidth]{benchmark_significance_bars.png}
   \caption{Per-user metric distributions with set-level significance bars
-  (\texttt{***}$p{<}.001$). HGT has the lowest popularity bias (0.053) and the
+  (\texttt{***}$p{<}.001$). HGT has the lowest popularity bias (per-user median
+  0.053; set mean 0.090, Tab.~\ref{tab:benchmark}) and the
   second-highest Overall Score (0.399), behind KNN-CF (0.421).}
   \label{fig:sig}
 \end{figure}
@@ -685,7 +689,7 @@ content- and preference-aware music recommendation. Evaluating the HGT with
 message passing consistent with training (undirected) fixes the Milestone~2
 evaluation artefact, and a retuned architecture lifts it further: the model is now
 a strong second overall (0.399), beats KNN-CF on Recall@10,
-overtakes it on Overall Score for $K\!\geq\!20$, and achieves the lowest popularity
+overtakes it on Overall Score for $K\!\geq\!50$, and achieves the lowest popularity
 bias of any model while remaining interpretable. Future work includes ANN-based
 candidate generation for the hybrid, a factorial ablation isolating KG structure /
 symbolic features / debiasing, graph-collaborative baselines
@@ -813,12 +817,63 @@ persona snapping. Twenty archetypes are learned in total.}
   \label{fig:heatmaps}
 \end{figure}
 
+\begin{table}[h]
+\centering\scriptsize
+\caption{Full pairwise significance over the test set ($N{=}284{,}864$ users), all
+metrics at $K{=}10$. Cells show the sample mean and standard deviation,
+$\bar{x}\pm s$, per model and the signed difference of means
+$\Delta\bar{x}{=}\bar{x}_A{-}\bar{x}_B$. Per-user metrics (NDCG, popularity bias) use the paired
+Wilcoxon signed-rank test; catalogue-level metrics (coverage, Overall Score) have no
+per-user pairs and instead use a bootstrap ($B{=}1000$) over users. ``Winner'' is
+the better model --- \emph{lower} for popularity bias, \emph{higher} otherwise. All
+24 comparisons are significant. Wilcoxon $p{=}0.0$ (below double precision) is shown
+as $<\!10^{-300}$.}
+\label{tab:significance}
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.12}
+\begin{tabular}{llccrllc}
+\toprule
+\textbf{Metric} & \textbf{Comparison} & $\boldsymbol{\bar{x}_A\,{\pm}\,s_A}$ & $\boldsymbol{\bar{x}_B\,{\pm}\,s_B}$ & $\boldsymbol{\Delta\bar{x}}$ & \textbf{Test} & $\boldsymbol{p}$ & \textbf{Winner}\\
+\midrule
+NDCG@10 & MostPop vs KNN-CF & $0.114\pm0.254$ & $0.106\pm0.258$ & +0.008 & Wilcoxon & $1.8{\times}10^{-38}$ & MostPop\\
+NDCG@10 & MostPop vs XGB & $0.114\pm0.254$ & $0.044\pm0.173$ & +0.070 & Wilcoxon & $<\!10^{-300}$ & MostPop\\
+NDCG@10 & MostPop vs HGT & $0.114\pm0.254$ & $0.097\pm0.233$ & +0.018 & Wilcoxon & $3.0{\times}10^{-199}$ & MostPop\\
+NDCG@10 & KNN-CF vs XGB & $0.106\pm0.258$ & $0.044\pm0.173$ & +0.062 & Wilcoxon & $<\!10^{-300}$ & KNN-CF\\
+NDCG@10 & KNN-CF vs HGT & $0.106\pm0.258$ & $0.097\pm0.233$ & +0.009 & Wilcoxon & $6.6{\times}10^{-79}$ & KNN-CF\\
+NDCG@10 & XGB vs HGT & $0.044\pm0.173$ & $0.097\pm0.233$ & $-$0.053 & Wilcoxon & $<\!10^{-300}$ & \textbf{HGT}\\
+\midrule
+Pop.\,Bias@10 & MostPop vs KNN-CF & $0.611\pm0.032$ & $0.130\pm0.094$ & +0.481 & Wilcoxon & $<\!10^{-300}$ & KNN-CF\\
+Pop.\,Bias@10 & MostPop vs XGB & $0.611\pm0.032$ & $0.118\pm0.062$ & +0.493 & Wilcoxon & $<\!10^{-300}$ & XGB\\
+Pop.\,Bias@10 & MostPop vs HGT & $0.611\pm0.032$ & $0.090\pm0.092$ & +0.521 & Wilcoxon & $<\!10^{-300}$ & \textbf{HGT}\\
+Pop.\,Bias@10 & KNN-CF vs XGB & $0.130\pm0.094$ & $0.118\pm0.062$ & +0.012 & Wilcoxon & $1.4{\times}10^{-264}$ & XGB\\
+Pop.\,Bias@10 & KNN-CF vs HGT & $0.130\pm0.094$ & $0.090\pm0.092$ & +0.039 & Wilcoxon & $<\!10^{-300}$ & \textbf{HGT}\\
+Pop.\,Bias@10 & XGB vs HGT & $0.118\pm0.062$ & $0.090\pm0.092$ & +0.027 & Wilcoxon & $<\!10^{-300}$ & \textbf{HGT}\\
+\midrule
+Coverage@10 & MostPop vs KNN-CF & $0.006\pm0.000$ & $0.916\pm0.002$ & $-$0.910 & bootstrap & 0.001$^{\ddagger}$ & KNN-CF\\
+Coverage@10 & MostPop vs XGB & $0.006\pm0.000$ & $0.667\pm0.002$ & $-$0.660 & bootstrap & 0.001$^{\ddagger}$ & XGB\\
+Coverage@10 & MostPop vs HGT & $0.006\pm0.000$ & $0.797\pm0.002$ & $-$0.791 & bootstrap & 0.001$^{\ddagger}$ & \textbf{HGT}\\
+Coverage@10 & KNN-CF vs XGB & $0.916\pm0.002$ & $0.667\pm0.002$ & +0.249 & bootstrap & 0.001$^{\ddagger}$ & KNN-CF\\
+Coverage@10 & KNN-CF vs HGT & $0.916\pm0.002$ & $0.797\pm0.002$ & +0.119 & bootstrap & 0.001$^{\ddagger}$ & KNN-CF\\
+Coverage@10 & XGB vs HGT & $0.667\pm0.002$ & $0.797\pm0.002$ & $-$0.130 & bootstrap & 0.001$^{\ddagger}$ & \textbf{HGT}\\
+\midrule
+Overall@10 & MostPop vs KNN-CF & $0.148\pm0.000$ & $0.421\pm0.000$ & $-$0.273 & bootstrap & 0.001$^{\ddagger}$ & KNN-CF\\
+Overall@10 & MostPop vs XGB & $0.148\pm0.000$ & $0.336\pm0.000$ & $-$0.188 & bootstrap & 0.001$^{\ddagger}$ & XGB\\
+Overall@10 & MostPop vs HGT & $0.148\pm0.000$ & $0.399\pm0.000$ & $-$0.252 & bootstrap & 0.001$^{\ddagger}$ & \textbf{HGT}\\
+Overall@10 & KNN-CF vs XGB & $0.421\pm0.000$ & $0.336\pm0.000$ & +0.085 & bootstrap & 0.001$^{\ddagger}$ & KNN-CF\\
+Overall@10 & KNN-CF vs HGT & $0.421\pm0.000$ & $0.399\pm0.000$ & +0.022 & bootstrap & 0.001$^{\ddagger}$ & KNN-CF\\
+Overall@10 & XGB vs HGT & $0.336\pm0.000$ & $0.399\pm0.000$ & $-$0.063 & bootstrap & 0.001$^{\ddagger}$ & \textbf{HGT}\\
+\bottomrule
+\multicolumn{8}{l}{\scriptsize $^{\ddagger}$ Bootstrap resolution at $B{=}1000$; the 95\% CI of $\Delta\bar{x}$ excludes 0 (significant).}\\
+\end{tabular}
+\end{table}
+
 \begin{figure}[h]
   \centering
   \includegraphics[width=0.70\linewidth]{xgb_loss_curve.png}
-  \caption{XGBoost LTR training curve (\texttt{rank:ndcg@10}, up to 300 rounds,
-  early stopping 30). Rapid convergence confirms the 200-candidate retrieval
-  bottleneck, not under-training, limits NDCG.}
+  \caption{XGBoost LTR training curve (\texttt{rank:ndcg} objective, 300 rounds,
+  early stopping 30 --- not triggered). The listwise objective converges smoothly
+  to val NDCG${\approx}0.62$, yet downstream Recall/NDCG@10 stay low, confirming the
+  200-candidate retrieval bottleneck --- not under-training --- limits ranking.}
   \label{fig:xgb}
 \end{figure}
 

@@ -40,3 +40,9 @@
 \graphicspath{
   {figures/}
 }
+
+% CVPR's cvpr.sty forces \flushbottom, which vertically justifies every column to a
+% uniform height; on pages where one column is short this inserts large inter-
+% paragraph gaps. \raggedbottom lets columns end at their natural height (slack
+% collects harmlessly at the column foot instead of mid-text).
+\raggedbottom
