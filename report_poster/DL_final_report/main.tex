@@ -67,10 +67,8 @@ attention rationales that explain individual recommendations.
 
 Music recommendation is dominated by collaborative filtering (CF), which infers
 taste from interaction overlap alone. CF favours popular content and is blind to
-\emph{why} a user likes a track: a listener of Baroque counterpoint and a listener
-of jazz both interact with mainstream pop, so a purely behavioural model conflates
-two distinct preferences. We ask whether a deep model that reasons over explicit
-musical structure --- tracks, artists, genres, keys, tempo classes, instruments,
+\emph{why} a user may like a track. We ask whether a deep model that reasons over explicit
+musical structure --- tracks, artists, genres, keys, tempo classes, instruments, progressions,
 and users connected by typed relations --- can recommend more diverse and
 content-grounded items while remaining competitive on ranking quality.
 
@@ -113,10 +111,10 @@ triplets). After mismatch removal, an inner join to the LMD-matched tracks, and 
 users and 7{,}227 songs; 7{,}013 tracks yield valid symbolic features and form the
 modelling set (Sec.~\ref{sec:data}).
 
-\paragraph{Expected result.} A model that exploits musical content and relational
+\paragraph{Expected result.} A model that utilizes musical content and relational
 structure should (a)~match or approach CF ranking quality while (b)~substantially
 improving catalogue coverage and lowering popularity bias, and (c)~offering
-human-readable explanations --- properties that popularity-driven CF cannot
+human-readable explanations --- properties that mutual-enjoyment-driven CF cannot
 provide.
 
 \paragraph{Evaluation.} A user-level stratified 70/10/20 split (by primary genre,
@@ -125,7 +123,7 @@ across folds; KG structure and track features are visible to all folds and only
 interactions are partitioned. We report per-user Recall, Precision, F1, HitRate, MRR, and NDCG at
 $K\in\{5,10,20,50,100\}$, plus two catalogue-level metrics --- coverage
 $\mathrm{Cov}=|\bigcup_u R_u|/|\mathcal{I}|$ and popularity bias PB@$K$ --- fused
-into a composite
+into a composite score
 \begin{equation}\label{eq:overall}
   \mathrm{Overall@}K = 0.6\,\mathrm{NDCG@}K + 0.2\,\mathrm{Cov} + 0.2(1-\mathrm{PB@}K),
 \end{equation}
